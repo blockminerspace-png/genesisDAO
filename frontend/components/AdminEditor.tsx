@@ -1,7 +1,78 @@
 
-import React, { useState } from 'react';
-import { Upgrade } from '../types';
+import React, { useEffect, useState } from 'react';
+import {
+  Upgrade,
+  filterNftRoomExclusiveMiningCoins,
+  isAsicMachineUpgrade,
+  ASIC_DURATION_UNITS,
+  ASIC_DURATION_UNIT_LABELS,
+  formatAsicDurationPreview,
+  resolveAsicDurationForForm,
+  type AsicDurationKind,
+  type AsicDurationUnit,
+  type MiningCoin
+} from '../types';
+import { getMiningCoins } from '../services/api';
 import { List, Cpu, Server, Battery, Plug, Zap, PlusCircle, Hexagon } from 'lucide-react';
+
+const SHOP_PRODUCT_ID_RE = /^[a-zA-Z0-9_.-]{1,160}$/;
+
+function makeSafeShopProductId(value: string): string {
+    return String(value || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9_.-]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^[-._]+|[-._]+$/g, '')
+        .toLowerCase()
+        .slice(0, 160);
+}
+
+function makeUniqueShopProductId(baseValue: string, used: Set<string>): string {
+    const base = makeSafeShopProductId(baseValue) || 'item';
+    let candidate = base;
+    let seq = 2;
+    while (used.has(candidate)) {
+        const suffix = `-${seq}`;
+        const trimmedBase = base.slice(0, Math.max(1, 160 - suffix.length));
+        candidate = `${trimmedBase}${suffix}`;
+        seq += 1;
+    }
+    used.add(candidate);
+    return candidate;
+}
+
+function normalizeUpgradeCatalogIds(upgrades: Upgrade[]): { upgrades: Upgrade[]; fixes: Array<{ name: string; from: string; to: string }> } {
+    const used = new Set<string>();
+    const idMap = new Map<string, string>();
+    const fixes: Array<{ name: string; from: string; to: string }> = [];
+
+    for (const upgrade of upgrades) {
+        const currentId = String(upgrade.id || '').trim();
+        if (SHOP_PRODUCT_ID_RE.test(currentId) && !used.has(currentId)) {
+            used.add(currentId);
+            idMap.set(currentId, currentId);
+            continue;
+        }
+
+        const nextId = makeUniqueShopProductId(currentId || upgrade.name || 'item', used);
+        idMap.set(currentId, nextId);
+        fixes.push({
+            name: String(upgrade.name || nextId),
+            from: currentId,
+            to: nextId
+        });
+    }
+
+    return {
+        upgrades: upgrades.map((upgrade) => ({
+            ...upgrade,
+            id: idMap.get(String(upgrade.id || '').trim()) || makeUniqueShopProductId(upgrade.name || 'item', used),
+            compatibleRacks: (upgrade.compatibleRacks || []).map((rackId) => idMap.get(String(rackId || '').trim()) || rackId)
+        })),
+        fixes
+    };
+}
 
 interface AdminEditorProps {
     gameUpgrades: Upgrade[];
@@ -20,6 +91,7 @@ const IMG_UPLOAD_FOLDERS = [
 export const AdminEditor: React.FC<AdminEditorProps> = ({ gameUpgrades, onUpdateGameUpgrades }) => {
     const [imageUploadFolder, setImageUploadFolder] = useState<string>('');
     const [editItemMode, setEditItemMode] = useState<boolean>(false);
+    const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
     const [editorFilter, setEditorFilter] = useState<string>('all');
     const [itemForm, setItemForm] = useState<Partial<Upgrade>>({
         id: '', name: '', category: '', type: 'machine', baseCost: 0, baseProduction: 0, description: '', status: 'normal', compatibleRacks: [], image: '', icon: '🧩',
@@ -27,10 +99,17 @@ export const AdminEditor: React.FC<AdminEditorProps> = ({ gameUpgrades, onUpdate
     });
 
     const [isUploadingImage, setIsUploadingImage] = useState(false);
+    const [miningCoins, setMiningCoins] = useState<MiningCoin[]>([]);
+
+    useEffect(() => {
+        void getMiningCoins().then((list) => {
+            if (Array.isArray(list)) setMiningCoins(list.filter((c) => c.isActive));
+        });
+    }, []);
 
     /**
      * Upload via `multipart/form-data` em `/api/admin/upload-image` — evita o
-     * tecto de 5 MB do body parser JSON e mostra erros reais do backend.
+     * multipart até 50 MB (evita o tecto de 5 MB do JSON) e mostra erros reais do backend.
      */
     const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const input = e.target;
@@ -70,6 +149,7 @@ export const AdminEditor: React.FC<AdminEditorProps> = ({ gameUpgrades, onUpdate
 
     const handleNewItem = () => {
         setEditItemMode(true);
+        setEditingSourceId(null);
         const nftTab = editorFilter === 'nft';
         const defaultType = editorFilter === 'all' || nftTab ? 'machine' : editorFilter;
         setItemForm({
@@ -83,7 +163,15 @@ export const AdminEditor: React.FC<AdminEditorProps> = ({ gameUpgrades, onUpdate
     }
 
     const handleEditItem = (item: Upgrade) => {
-        setItemForm({ ...item, compatibleRacks: item.compatibleRacks || [] });
+        setEditingSourceId(item.id);
+        const dur = resolveAsicDurationForForm(item);
+        setItemForm({
+            ...item,
+            compatibleRacks: item.compatibleRacks || [],
+            asicDurationAmount: dur.permanent ? 0 : dur.amount,
+            asicDurationUnit: dur.permanent ? undefined : dur.unit,
+            asicDurationKind: 'none' as AsicDurationKind
+        });
         setEditItemMode(true);
     };
 
@@ -91,21 +179,64 @@ export const AdminEditor: React.FC<AdminEditorProps> = ({ gameUpgrades, onUpdate
 
     const handleSaveItem = async () => {
         if (!onUpdateGameUpgrades || !itemForm.id || !itemForm.name) return;
+        const normalizedId = String(itemForm.id || '').trim();
+        if (!SHOP_PRODUCT_ID_RE.test(normalizedId)) {
+            alert('ID inválido. Use apenas letras, números, ".", "_" ou "-".');
+            return;
+        }
         setIsSaving(true);
         try {
-            const existingIndex = gameUpgrades.findIndex(u => u.id === itemForm.id);
-            const newItem = itemForm as Upgrade;
+            const existingIndex = gameUpgrades.findIndex((u) =>
+                editingSourceId ? u.id === editingSourceId : u.id === normalizedId
+            );
+            const amt = Math.floor(Number(itemForm.asicDurationAmount) || 0);
+            const unit =
+                itemForm.asicDurationUnit && ASIC_DURATION_UNITS.includes(itemForm.asicDurationUnit as AsicDurationUnit)
+                    ? (itemForm.asicDurationUnit as AsicDurationUnit)
+                    : undefined;
+            const timed = amt > 0 && !!unit;
+            const newItem: Upgrade = {
+                ...(itemForm as Upgrade),
+                id: normalizedId,
+                asicDurationKind: 'none',
+                asicDurationAmount: timed ? amt : 0,
+                asicDurationUnit: timed ? unit : undefined
+            };
+            let nextUpgrades: Upgrade[];
             if (existingIndex >= 0) {
                 const updated = [...gameUpgrades];
                 updated[existingIndex] = newItem;
-                await onUpdateGameUpgrades(updated);
+                nextUpgrades = updated;
             } else {
-                await onUpdateGameUpgrades([...gameUpgrades, newItem]);
+                nextUpgrades = [...gameUpgrades, newItem];
             }
+            const normalizedCatalog = normalizeUpgradeCatalogIds(nextUpgrades);
+            await onUpdateGameUpgrades(normalizedCatalog.upgrades);
             setEditItemMode(false);
+            setEditingSourceId(null);
             setItemForm({});
+            if (normalizedCatalog.fixes.length > 0) {
+                const preview = normalizedCatalog.fixes
+                    .slice(0, 6)
+                    .map((fix) => `${fix.name}: ${fix.to}`)
+                    .join('\n');
+                const extra = normalizedCatalog.fixes.length > 6 ? `\n... e mais ${normalizedCatalog.fixes.length - 6}` : '';
+                alert(`IDs inválidos corrigidos automaticamente no save:\n\n${preview}${extra}`);
+            }
         } catch (e: any) {
-            alert('DEBUG_ERROR: ' + e.message);
+            const rawMessage = String(e?.message || 'Erro desconhecido');
+            const invalidIdMatch = rawMessage.match(/^ID de item inválido:\s*(.+?)\.\s*Use apenas/i);
+            if (invalidIdMatch) {
+                const badId = invalidIdMatch[1]?.trim() || 'desconhecido';
+                const suggestedId = makeSafeShopProductId(badId);
+                alert(
+                    `Existe outro item no catálogo com ID inválido: ${badId}.\n\n` +
+                    `O admin salva o catálogo completo, então esse item também precisa ser corrigido.\n` +
+                    (suggestedId ? `Sugestão de ID: ${suggestedId}` : '')
+                );
+            } else {
+                alert('DEBUG_ERROR: ' + rawMessage);
+            }
         } finally {
             setIsSaving(false);
         }
@@ -165,6 +296,11 @@ export const AdminEditor: React.FC<AdminEditorProps> = ({ gameUpgrades, onUpdate
                                                     <Hexagon size={8} /> NFT
                                                 </span>
                                             )}
+                                            {!SHOP_PRODUCT_ID_RE.test(String(u.id || '').trim()) && (
+                                                <span className="text-[9px] uppercase font-bold text-red-400 border border-red-700/60 rounded px-1 py-0.5">
+                                                    ID inválido
+                                                </span>
+                                            )}
                                         </div>
                                     </div>
                                     {u.image && <div className={`w-8 ${u.type === 'infrastructure' ? 'h-10' : 'h-8'} rounded bg-slate-800 overflow-hidden shrink-0`}><img src={u.image} className={`w-full h-full ${u.type === 'infrastructure' ? 'object-contain' : 'object-cover'}`} /></div>}
@@ -219,7 +355,25 @@ export const AdminEditor: React.FC<AdminEditorProps> = ({ gameUpgrades, onUpdate
                             </div>
 
                             <div className="grid grid-cols-2 gap-4">
-                                <div><label className="text-xs font-bold text-slate-500 block mb-1">ID Único</label><input type="text" value={itemForm.id} onChange={e => setItemForm({ ...itemForm, id: e.target.value })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm" /></div>
+                                <div>
+                                    <div className="flex items-center justify-between gap-2 mb-1">
+                                        <label className="text-xs font-bold text-slate-500 block">ID Único</label>
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                setItemForm({
+                                                    ...itemForm,
+                                                    id: makeSafeShopProductId(String(itemForm.id || itemForm.name || ''))
+                                                })
+                                            }
+                                            className="text-[10px] uppercase font-bold px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-white"
+                                        >
+                                            Gerar ID seguro
+                                        </button>
+                                    </div>
+                                    <input type="text" value={itemForm.id} onChange={e => setItemForm({ ...itemForm, id: e.target.value })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm" />
+                                    <p className="mt-1 text-[10px] text-slate-500">Use apenas letras, números, ponto, underscore ou hífen. No save, o admin também corrige outros IDs inválidos do catálogo.</p>
+                                </div>
                                 <div><label className="text-xs font-bold text-slate-500 block mb-1">Nome</label><input type="text" value={itemForm.name} onChange={e => setItemForm({ ...itemForm, name: e.target.value })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm" /></div>
                                 <div><label className="text-xs font-bold text-slate-500 block mb-1">Categoria</label><input type="text" value={itemForm.category} onChange={e => setItemForm({ ...itemForm, category: e.target.value })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm" /></div>
                                 <div><label className="text-xs font-bold text-slate-500 block mb-1">Tipo</label><select value={itemForm.type} onChange={e => setItemForm({ ...itemForm, type: e.target.value as any })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"><option value="machine">GPU</option><option value="infrastructure">Rig</option><option value="battery">Bateria</option><option value="wiring">Circuito</option><option value="multiplier">Chip IA</option></select></div>
@@ -285,10 +439,141 @@ export const AdminEditor: React.FC<AdminEditorProps> = ({ gameUpgrades, onUpdate
 
 
                                 {itemForm.type === 'machine' && (
-                                    <div className="grid grid-cols-2 gap-4 mt-2">
-                                        <div><label className="text-xs font-bold text-slate-500 block mb-1">Hashrate (H/s)</label><input type="number" value={itemForm.baseProduction} onChange={e => setItemForm({ ...itemForm, baseProduction: parseFloat(e.target.value) })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm" /></div>
-                                        <div><label className="text-xs font-bold text-slate-500 block mb-1">Consumo (W)</label><input type="number" value={itemForm.powerConsumption} onChange={e => setItemForm({ ...itemForm, powerConsumption: parseFloat(e.target.value) })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm" /></div>
-                                    </div>
+                                    <>
+                                        <div className="grid grid-cols-2 gap-4 mt-2">
+                                            <div><label className="text-xs font-bold text-slate-500 block mb-1">Hashrate (H/s)</label><input type="number" value={itemForm.baseProduction} onChange={e => setItemForm({ ...itemForm, baseProduction: parseFloat(e.target.value) })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm" /></div>
+                                            <div><label className="text-xs font-bold text-slate-500 block mb-1">Consumo (W)</label><input type="number" value={itemForm.powerConsumption} onChange={e => setItemForm({ ...itemForm, powerConsumption: parseFloat(e.target.value) })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm" /></div>
+                                        </div>
+                                        <div className="mt-3">
+                                            <label className="text-xs font-bold text-amber-400 block mb-1">Moeda na Sala NFT (por ASIC)</label>
+                                            <select
+                                                value={itemForm.nftMiningCoinId || ''}
+                                                onChange={(e) =>
+                                                    setItemForm({
+                                                        ...itemForm,
+                                                        nftMiningCoinId: e.target.value.trim() || undefined
+                                                    })
+                                                }
+                                                className="w-full bg-slate-900 border border-amber-600/40 rounded p-2 text-white text-sm"
+                                            >
+                                                <option value="">— Não minera na Sala NFT —</option>
+                                                {filterNftRoomExclusiveMiningCoins(miningCoins).map((c) => (
+                                                    <option key={c.id} value={c.id}>
+                                                        {c.name} ({c.symbol || c.id})
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            <p className="text-[10px] text-slate-500 mt-1">
+                                                Obrigatório para ASICs na Sala dos NFTs. USDT, cbBTC, DAI, GHO e GEMT só minam nesta sala (via ASIC).
+                                            </p>
+                                        </div>
+                                        {isAsicMachineUpgrade({
+                                            id: itemForm.id || '',
+                                            category: itemForm.category || '',
+                                            type: itemForm.type || 'machine'
+                                        }) && (
+                                            <div className="mt-3 space-y-3">
+                                                <label className="text-xs font-bold text-cyan-400 block">
+                                                    Validade da ASIC (aluguer)
+                                                </label>
+                                                <label className="flex items-center gap-2 text-sm text-slate-300">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={
+                                                            !itemForm.asicDurationAmount ||
+                                                            Number(itemForm.asicDurationAmount) <= 0
+                                                        }
+                                                        onChange={(e) => {
+                                                            if (e.target.checked) {
+                                                                setItemForm({
+                                                                    ...itemForm,
+                                                                    asicDurationAmount: 0,
+                                                                    asicDurationUnit: undefined
+                                                                });
+                                                            } else {
+                                                                setItemForm({
+                                                                    ...itemForm,
+                                                                    asicDurationAmount: Math.max(
+                                                                        1,
+                                                                        Math.floor(Number(itemForm.asicDurationAmount) || 7)
+                                                                    ),
+                                                                    asicDurationUnit:
+                                                                        (itemForm.asicDurationUnit as AsicDurationUnit) ||
+                                                                        'day'
+                                                                });
+                                                            }
+                                                        }}
+                                                        className="rounded border-slate-600"
+                                                    />
+                                                    Permanente (sem validade)
+                                                </label>
+                                                {Number(itemForm.asicDurationAmount) > 0 && (
+                                                    <div className="grid grid-cols-2 gap-3">
+                                                        <div>
+                                                            <label className="text-xs font-bold text-slate-500 block mb-1">
+                                                                Quantidade
+                                                            </label>
+                                                            <input
+                                                                type="number"
+                                                                min={1}
+                                                                max={9999}
+                                                                value={itemForm.asicDurationAmount || 1}
+                                                                onChange={(e) =>
+                                                                    setItemForm({
+                                                                        ...itemForm,
+                                                                        asicDurationAmount: Math.max(
+                                                                            1,
+                                                                            Math.floor(Number(e.target.value) || 1)
+                                                                        )
+                                                                    })
+                                                                }
+                                                                className="w-full bg-slate-900 border border-cyan-600/40 rounded p-2 text-white text-sm"
+                                                            />
+                                                        </div>
+                                                        <div>
+                                                            <label className="text-xs font-bold text-slate-500 block mb-1">
+                                                                Unidade
+                                                            </label>
+                                                            <select
+                                                                value={
+                                                                    (itemForm.asicDurationUnit as AsicDurationUnit) ||
+                                                                    'day'
+                                                                }
+                                                                onChange={(e) =>
+                                                                    setItemForm({
+                                                                        ...itemForm,
+                                                                        asicDurationUnit: e.target
+                                                                            .value as AsicDurationUnit
+                                                                    })
+                                                                }
+                                                                className="w-full bg-slate-900 border border-cyan-600/40 rounded p-2 text-white text-sm"
+                                                            >
+                                                                {ASIC_DURATION_UNITS.map((u) => (
+                                                                    <option key={u} value={u}>
+                                                                        {ASIC_DURATION_UNIT_LABELS[u]}
+                                                                    </option>
+                                                                ))}
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                                {Number(itemForm.asicDurationAmount) > 0 &&
+                                                    itemForm.asicDurationUnit && (
+                                                        <p className="text-xs text-cyan-300/90 font-medium">
+                                                            Cada unidade expira em:{' '}
+                                                            {formatAsicDurationPreview(
+                                                                Number(itemForm.asicDurationAmount),
+                                                                itemForm.asicDurationUnit as AsicDurationUnit
+                                                            )}
+                                                        </p>
+                                                    )}
+                                                <p className="text-[10px] text-slate-500">
+                                                    Após expirar, a unidade some do estoque e da rig — o jogador precisa
+                                                    comprar de novo.
+                                                </p>
+                                            </div>
+                                        )}
+                                    </>
                                 )}
 
                                 {itemForm.type === 'battery' && (
@@ -339,7 +624,7 @@ export const AdminEditor: React.FC<AdminEditorProps> = ({ gameUpgrades, onUpdate
                             )}
 
                             <div className="flex gap-4 pt-4 border-t border-slate-700 mt-4">
-                                <button onClick={() => setEditItemMode(false)} className="bg-slate-700 text-white px-4 py-2 rounded font-bold">CANCELAR</button>
+                                <button onClick={() => { setEditItemMode(false); setEditingSourceId(null); }} className="bg-slate-700 text-white px-4 py-2 rounded font-bold">CANCELAR</button>
                                 <button onClick={handleSaveItem} className="bg-amber-600 text-white px-4 py-2 rounded font-bold flex-1">SALVAR ITEM</button>
                             </div>
                         </div>

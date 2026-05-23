@@ -1,5 +1,5 @@
 import type { PlacedRack, StoredBattery, Upgrade } from '../types';
-import { NFT_AUTO_ALLOWED_CHASSIS_ID, isNftAutoArmario1OnlyRoomContext } from '../types';
+import { NFT_AUTO_ALLOWED_CHASSIS_ID, isAsicMachineUpgrade, isNftAutoArmario1OnlyRoomContext } from '../types';
 import { batteryTierScore } from './roomBatteryModel';
 
 /** UUID v4 de instância em `stored_batteries.id` / `placed_racks.battery_id` (alinhado ao servidor). */
@@ -123,20 +123,37 @@ export type RackLayoutSlot = {
   h: number;
 };
 
-/** Garante barra de carga + CMD com ETA; layouts antigos/só máquinas não tinham estes slots. */
+/** Área do monitor no chassis (canto inferior direito na arte do rig). */
+const DEFAULT_PRODUCTION_DISPLAY_SLOT: RackLayoutSlot = {
+  id: 'production_display_auto',
+  type: 'production_display',
+  x: 66,
+  y: 52,
+  w: 28,
+  h: 16
+};
+
+/** Normaliza layout: remove barra de bateria; stat_monitor passa a ecrã de produção. */
 export function mergeBatteryWidgetsIfAbsent(layout: {
   slots?: RackLayoutSlot[];
   canvasWidth?: number;
   canvasHeight?: number;
 }): { slots: RackLayoutSlot[]; canvasWidth: number; canvasHeight: number } {
-  const slots = Array.isArray(layout.slots) ? [...layout.slots] : [];
+  const raw = Array.isArray(layout.slots) ? layout.slots : [];
+  const hadProductionArea = raw.some(
+    (s) => s.type === 'production_display' || s.type === 'stat_monitor'
+  );
+  const slots: RackLayoutSlot[] = raw
+    .filter((s) => s.type !== 'battery_bar')
+    .map((s) =>
+      s.type === 'stat_monitor'
+        ? { ...s, type: 'production_display', id: s.id || 'production_display' }
+        : s
+    );
   const canvasWidth = layout.canvasWidth || 500;
   const canvasHeight = layout.canvasHeight || 600;
-  if (!slots.some((s) => s.type === 'battery_bar')) {
-    slots.push({ id: 'battery_bar_auto', type: 'battery_bar', x: 72, y: 60, w: 28, h: 4 });
-  }
-  if (!slots.some((s) => s.type === 'stat_monitor')) {
-    slots.push({ id: 'stat_monitor_auto', type: 'stat_monitor', x: 2, y: 52, w: 36, h: 28 });
+  if (!hadProductionArea) {
+    slots.push({ ...DEFAULT_PRODUCTION_DISPLAY_SLOT });
   }
   return { slots, canvasWidth, canvasHeight };
 }
@@ -169,6 +186,7 @@ export function getDefaultRackLayout(rackDef: Upgrade): {
   slots.push({ id: 'power', type: 'power', x: 10, y: 85, w: 12, h: 10 });
   slots.push({ id: 'config', type: 'config', x: 25, y: 85, w: 12, h: 10 });
   slots.push({ id: 'coin_selector', type: 'coin_selector', x: 40, y: 85, w: 30, h: 10 });
+  slots.push({ ...DEFAULT_PRODUCTION_DISPLAY_SLOT, id: 'production_display' });
   return { slots, canvasWidth: 500, canvasHeight: 600 };
 }
 
@@ -196,6 +214,12 @@ export function listItemsForSelection(
       if (u.compatibleRacks?.length) return u.compatibleRacks.includes(currentRack.itemId);
       return true;
     });
+  }
+  if (
+    selection.type === 'machine' &&
+    isNftAutoArmario1OnlyRoomContext(selection.roomId, selection.roomName, selection.nftAutoArmario1Only)
+  ) {
+    filtered = filtered.filter((u) => isAsicMachineUpgrade(u) && Boolean(u.nftMiningCoinId));
   }
   return filtered;
 }
@@ -234,5 +258,8 @@ export function listStoredBatteriesForSelection(
 export function formatHashrateDisplay(val: number): string {
   if (val === 0) return '0';
   if (val < 0.0001) return val.toFixed(8);
+  if (val < 1) {
+    return val.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  }
   return Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(val);
 }

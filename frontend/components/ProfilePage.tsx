@@ -14,14 +14,16 @@ import {
   submitPlayerNews,
   getGameState,
   getProfilePageBundle,
-  clearMyPolygonWallet,
+  getProfileWallet,
+  postProfileWalletRemove,
   getProfileState,
   patchProfileIdentity,
   postProfilePasswordChange,
   postProfileWalletChallenge,
   postProfileWalletVerify,
   getSession,
-  type ProfileApiState
+  type ProfileApiState,
+  type ProfileWalletHistoryDto
 } from '@/services/api';
 import { ReferralOverviewPanel } from './ReferralOverviewPanel';
 import { UiNoticeModal, type UiNotice } from './UiNoticeModal';
@@ -31,6 +33,21 @@ function utf8MessageToHex(message: string): string {
   let hex = '';
   for (let i = 0; i < bytes.length; i++) hex += bytes[i]!.toString(16).padStart(2, '0');
   return `0x${hex}`;
+}
+
+function maskWalletAddress(addr: string | null | undefined): string {
+  if (!addr || typeof addr !== 'string') return '—';
+  const a = addr.trim();
+  if (a.length <= 14) return a;
+  return `${a.slice(0, 6)}…${a.slice(-4)}`;
+}
+
+function walletHistoryActionLabel(action: string): string {
+  if (action === 'connected') return 'Conectada';
+  if (action === 'changed') return 'Trocada';
+  if (action === 'removed') return 'Removida';
+  if (action === 'admin_changed') return 'Alterada (admin)';
+  return action;
 }
 
 export type ProfileUpdateOptions = { skipApi?: boolean };
@@ -62,6 +79,9 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onUpdateProfile,
   const [identitySaving, setIdentitySaving] = useState(false);
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [walletBusy, setWalletBusy] = useState(false);
+  const [walletRemoveConfirmOpen, setWalletRemoveConfirmOpen] = useState(false);
+  const [walletRemoveBusy, setWalletRemoveBusy] = useState(false);
+  const [walletHistoryRows, setWalletHistoryRows] = useState<ProfileWalletHistoryDto[]>([]);
   const identityLock = useRef(false);
   const passwordLock = useRef(false);
   const walletLock = useRef(false);
@@ -92,6 +112,13 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onUpdateProfile,
     if (fresh) await onUpdateProfile(fresh, { skipApi: true });
   };
 
+  const refreshWalletHistory = async () => {
+    const pack = await getProfileWallet(100);
+    if (pack?.ok && Array.isArray(pack.history)) {
+      setWalletHistoryRows(pack.history);
+    }
+  };
+
   const reloadProfileState = async () => {
     const st = await getProfileState();
     if (st?.bundle) {
@@ -107,6 +134,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onUpdateProfile,
       setProfileBadges(Array.isArray(st.badges) ? st.badges : []);
       setPolygonWallet(st.wallet.address || '');
     }
+    await refreshWalletHistory();
   };
 
   const handleConnectWallet = async () => {
@@ -183,6 +211,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onUpdateProfile,
       }
       await refreshSessionUser();
       await reloadProfileState();
+      await refreshWalletHistory();
       setMessage({ type: 'success', text: 'Carteira verificada e guardada no perfil.' });
     } catch {
       setMessage({ type: 'error', text: 'Autenticação cancelada ou falhou.' });
@@ -192,32 +221,35 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onUpdateProfile,
     }
   };
 
-  const handleRemoveConnectedWallet = async () => {
+  const handleRemoveConnectedWallet = () => {
     if (!polygonWallet) return;
-    if (
-      !confirm(
-        'Remover o endereço de saque do perfil? Depósitos e levantamentos em cripto ficarão indisponíveis até conectar outra carteira.'
-      )
-    ) {
-      return;
-    }
-    let pwd: string | undefined;
-    let cleared = await clearMyPolygonWallet();
-    if (!cleared.ok && cleared.code === 'PASSWORD_CURRENT_WRONG') {
-      pwd = window.prompt('Introduza a palavra-passe atual para remover a carteira:') || '';
-      cleared = await clearMyPolygonWallet(pwd);
-    }
-    if (!cleared.ok) {
+    setWalletRemoveConfirmOpen(true);
+  };
+
+  const confirmRemoveWallet = async () => {
+    if (!polygonWallet || walletRemoveBusy) return;
+    setWalletRemoveBusy(true);
+    try {
+      const cleared = await postProfileWalletRemove();
+      if (!cleared.ok) {
+        setMessage({
+          type: 'error',
+          text: cleared.error || 'Não foi possível remover a carteira. Tente novamente.'
+        });
+        return;
+      }
+      setPolygonWallet('');
+      setWalletRemoveConfirmOpen(false);
+      await refreshSessionUser();
+      await reloadProfileState();
+      await refreshWalletHistory();
       setMessage({
-        type: 'error',
-        text: cleared.error || 'Não foi possível remover a carteira. Tente novamente.'
+        type: 'success',
+        text: cleared.message || 'Carteira removida com sucesso.'
       });
-      return;
+    } finally {
+      setWalletRemoveBusy(false);
     }
-    setPolygonWallet('');
-    await refreshSessionUser();
-    await reloadProfileState();
-    setMessage({ type: 'success', text: 'Carteira removida do perfil.' });
   };
 
   const handleUpdateBasicInfo = async (e: React.FormEvent) => {
@@ -318,40 +350,41 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onUpdateProfile,
         setReferralInviteUrl(st.referral.inviteUrl || '');
         setProfileBadges(Array.isArray(st.badges) ? st.badges : []);
         setPolygonWallet(st.wallet.address || '');
-        return;
+      } else {
+        const bundle = await getProfilePageBundle();
+        if (bundle) {
+          setSeasonPasses(bundle.seasonPasses);
+          setSeasonPurchases(bundle.seasonPurchases);
+          setAccessLevels(bundle.accessLevels);
+          setInvitedCount(Array.isArray(bundle.referrals) ? bundle.referrals.length : 0);
+          setReferralInviteUrl(
+            user.referralCode ? `${window.location.origin}?ref=${encodeURIComponent(user.referralCode)}` : ''
+          );
+          setProfileBadges([]);
+          setNewsFeeState(bundle.newsFee);
+          setUsdcBal(bundle.profileGame.usdc);
+        } else {
+          const [passes, purchases, levels] = await Promise.all([
+            getSeasonPasses(),
+            getSeasonPurchases(user.email),
+            getAccessLevels()
+          ]);
+          setSeasonPasses(passes);
+          setSeasonPurchases(purchases);
+          setAccessLevels(levels);
+          setInvitedCount(0);
+          setReferralInviteUrl(
+            user.referralCode ? `${window.location.origin}?ref=${encodeURIComponent(user.referralCode)}` : ''
+          );
+          setProfileBadges([]);
+          const fee = await getNewsFee();
+          setNewsFeeState(fee);
+          const gsRes = await getGameState(user.email);
+          const gs = gsRes.data;
+          setUsdcBal(gs?.usdc || 0);
+        }
       }
-      const bundle = await getProfilePageBundle();
-      if (bundle) {
-        setSeasonPasses(bundle.seasonPasses);
-        setSeasonPurchases(bundle.seasonPurchases);
-        setAccessLevels(bundle.accessLevels);
-        setInvitedCount(Array.isArray(bundle.referrals) ? bundle.referrals.length : 0);
-        setReferralInviteUrl(
-          user.referralCode ? `${window.location.origin}?ref=${encodeURIComponent(user.referralCode)}` : ''
-        );
-        setProfileBadges([]);
-        setNewsFeeState(bundle.newsFee);
-        setUsdcBal(bundle.profileGame.usdc);
-        return;
-      }
-      const [passes, purchases, levels] = await Promise.all([
-        getSeasonPasses(),
-        getSeasonPurchases(user.email),
-        getAccessLevels()
-      ]);
-      setSeasonPasses(passes);
-      setSeasonPurchases(purchases);
-      setAccessLevels(levels);
-      setInvitedCount(0);
-      setReferralInviteUrl(
-        user.referralCode ? `${window.location.origin}?ref=${encodeURIComponent(user.referralCode)}` : ''
-      );
-      setProfileBadges([]);
-      const fee = await getNewsFee();
-      setNewsFeeState(fee);
-      const gsRes = await getGameState(user.email);
-      const gs = gsRes.data;
-      setUsdcBal(gs?.usdc || 0);
+      await refreshWalletHistory();
     };
     void load();
   }, [user.email, user.username, user.referralCode]);
@@ -751,10 +784,105 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onUpdateProfile,
                 {polygonWallet || 'Nenhuma carteira conectada'}
               </div>
             </div>
+
+            <div className="mt-6 border-t border-slate-200 dark:border-slate-800 pt-4 relative z-10">
+              <h4 className="text-sm font-bold text-slate-800 dark:text-white mb-3">Histórico de carteiras</h4>
+              {walletHistoryRows.length === 0 ? (
+                <p className="text-xs text-slate-500">Sem eventos registados ainda.</p>
+              ) : (
+                <ul className="space-y-2 max-h-52 overflow-y-auto pr-1">
+                  {walletHistoryRows.map((row) => {
+                    const display =
+                      row.walletAddress || row.newWalletAddress || row.previousWalletAddress || '';
+                    const when = new Date(row.createdAt);
+                    const dateStr = Number.isFinite(when.getTime())
+                      ? when.toLocaleString('pt-PT', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          year: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })
+                      : String(row.createdAt);
+                    return (
+                      <li
+                        key={row.id}
+                        className="flex flex-wrap items-center justify-between gap-2 text-xs bg-slate-50 dark:bg-slate-950/80 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <span className="text-slate-500 dark:text-slate-400">{dateStr}</span>
+                          <span className="mx-1 text-slate-400">—</span>
+                          <span className="font-bold text-amber-700 dark:text-amber-400">
+                            {walletHistoryActionLabel(row.action)}
+                          </span>
+                          <span className="mx-1 text-slate-400">—</span>
+                          <span className="font-mono text-slate-700 dark:text-slate-300">
+                            {maskWalletAddress(display)}
+                          </span>
+                          <span className="mx-1 text-slate-400">·</span>
+                          <span className="text-slate-500 capitalize">{row.network}</span>
+                        </div>
+                        {display && String(display).startsWith('0x') ? (
+                          <button
+                            type="button"
+                            className="shrink-0 text-[10px] font-bold uppercase text-amber-600 dark:text-amber-400 hover:text-amber-500"
+                            onClick={() => void navigator.clipboard.writeText(String(display))}
+                          >
+                            Copiar
+                          </button>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           </div>
         </div>
 
       </div>
+
+      {walletRemoveConfirmOpen ? (
+        <div
+          className="fixed inset-0 z-[170] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="wallet-remove-title"
+          onClick={() => {
+            if (!walletRemoveBusy) setWalletRemoveConfirmOpen(false);
+          }}
+        >
+          <div
+            className="relative w-full max-w-md rounded-2xl border border-slate-600/80 bg-slate-900 p-5 shadow-2xl dark:bg-slate-950"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="wallet-remove-title" className="mb-2 text-base font-bold text-white pr-2">
+              Remover carteira de saque?
+            </h3>
+            <p className="text-sm leading-relaxed text-slate-300">
+              Depósitos e levantamentos em cripto ficarão indisponíveis até conectar outra carteira.
+            </p>
+            <div className="mt-6 flex gap-3">
+              <button
+                type="button"
+                disabled={walletRemoveBusy}
+                onClick={() => setWalletRemoveConfirmOpen(false)}
+                className="flex-1 rounded-xl border border-slate-600 py-2.5 text-xs font-black uppercase tracking-widest text-slate-200 transition hover:bg-slate-800 disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={walletRemoveBusy}
+                onClick={() => void confirmRemoveWallet()}
+                className="flex-1 rounded-xl bg-orange-600 py-2.5 text-xs font-black uppercase tracking-widest text-white transition hover:bg-orange-500 disabled:opacity-50"
+              >
+                {walletRemoveBusy ? 'Removendo…' : 'Remover carteira'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <UiNoticeModal notice={notice} onClose={() => setNotice(null)} overlayZClassName="z-[160]" />
     </div>

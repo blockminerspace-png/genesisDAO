@@ -26,7 +26,8 @@ const ADMIN_UPLOAD_ALLOWED_MIME = new Set([
   'image/gif'
 ]);
 /** Limite generoso para arte de itens (multipart, sem inflar via base64). */
-const ADMIN_UPLOAD_MAX_BYTES = 15 * 1024 * 1024;
+const ADMIN_UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
+const ADMIN_UPLOAD_MAX_MB_LABEL = String(Math.round(ADMIN_UPLOAD_MAX_BYTES / (1024 * 1024)));
 
 export type ImageAssetControllerDeps = {
   isAdmin: RequestHandler;
@@ -222,7 +223,9 @@ export function registerImageAssetRoutes(app: Express, deps: ImageAssetControlle
         const e = err as { code?: string; message?: string };
         if (e?.code === 'LIMIT_FILE_SIZE') {
           console.warn('[AdminImageUpload] payload too large', { uid: uidLog });
-          return res.status(413).json({ ok: false, error: 'Imagem muito grande (máx. 15 MB).' });
+          return res
+            .status(413)
+            .json({ ok: false, error: `Imagem muito grande (máx. ${ADMIN_UPLOAD_MAX_MB_LABEL} MB).` });
         }
         console.warn('[AdminImageUpload] multer error', { uid: uidLog, msg: e?.message });
         return res

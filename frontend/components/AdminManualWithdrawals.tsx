@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { getWithdrawalRequests, updateWithdrawalStatus, getWeb3Settings } from '../services/api';
 import { Web3Settings } from '../types';
+import { findWithdrawTokenCfg } from '../utils/withdrawTokenMatch';
 
 import { Search, Filter, CheckCircle, XCircle, Clock, Wallet, DollarSign, Coins, ExternalLink, RefreshCw } from 'lucide-react';
 
@@ -66,9 +67,10 @@ export const AdminManualWithdrawals: React.FC = () => {
         return matchesSearch && matchesStatus;
     });
 
-    const getNetworkInfo = (symbol: string) => {
+    const getNetworkInfo = (network?: string, symbol?: string) => {
+        const net = String(network || '').trim().toLowerCase();
         const s = symbol?.toUpperCase() || '';
-        if (['BNB', 'DOGE', 'TRX'].includes(s)) {
+        if (net === 'bnb' || ['BNB', 'DOGE', 'TRX'].includes(s)) {
             return {
                 name: 'BNB Smart Chain',
                 id: 56,
@@ -77,7 +79,7 @@ export const AdminManualWithdrawals: React.FC = () => {
                 rpc: 'https://bsc-dataseed.binance.org/'
             };
         }
-        if (['SOL', 'ETH', 'WETH'].includes(s)) {
+        if (net === 'base' || ['SOL', 'ETH', 'WETH'].includes(s)) {
             return {
                 name: 'Base',
                 id: 8453,
@@ -135,13 +137,20 @@ export const AdminManualWithdrawals: React.FC = () => {
             return;
         }
 
-        const tokenConfig = web3Settings?.withdrawTokens?.find(t => t.name === req.coinSymbol && !t.disabled);
+        const tokenConfig = findWithdrawTokenCfg(web3Settings?.withdrawTokens, {
+            id: req.coinId,
+            symbol: req.coinSymbol
+        });
+        if (tokenConfig?.disabled) {
+            alert(`Configuração de saque desativada para ${req.coinSymbol}`);
+            return;
+        }
         if (!tokenConfig) {
             alert(`Configuração de saque não encontrada ou desativada para ${req.coinSymbol}`);
             return;
         }
 
-        const network = getNetworkInfo(req.coinSymbol);
+        const network = getNetworkInfo(tokenConfig.network, req.coinSymbol);
         const isNative = ['POL', 'BNB', 'ETH'].includes(req.coinSymbol?.toUpperCase());
         const contract = tokenConfig.contract;
 
@@ -363,11 +372,11 @@ export const AdminManualWithdrawals: React.FC = () => {
                                                     {req.walletAddress}
                                                 </div>
                                                 <a
-                                                    href={`${getNetworkInfo(req.coinSymbol).explorer}/address/${req.walletAddress}`}
+                                                    href={`${getNetworkInfo(findWithdrawTokenCfg(web3Settings?.withdrawTokens, { id: req.coinId, symbol: req.coinSymbol })?.network, req.coinSymbol).explorer}/address/${req.walletAddress}`}
                                                     target="_blank"
                                                     rel="noopener noreferrer"
                                                     className="text-slate-400 hover:text-amber-500 transition-colors"
-                                                    title={`Ver no ${getNetworkInfo(req.coinSymbol).id === 56 ? 'BscScan' : 'Polygonscan'}`}
+                                                    title="Ver no explorador"
                                                 >
                                                     <ExternalLink size={14} />
                                                 </a>
@@ -376,7 +385,7 @@ export const AdminManualWithdrawals: React.FC = () => {
                                         <td className="px-6 py-4 text-center">
                                             {req.txHash ? (
                                                 <a
-                                                    href={`${getNetworkInfo(req.coinSymbol).explorer}/tx/${req.txHash}`}
+                                                    href={`${getNetworkInfo(findWithdrawTokenCfg(web3Settings?.withdrawTokens, { id: req.coinId, symbol: req.coinSymbol })?.network, req.coinSymbol).explorer}/tx/${req.txHash}`}
                                                     target="_blank"
                                                     rel="noopener noreferrer"
                                                     className="flex items-center justify-center gap-1 text-[10px] font-mono text-amber-600 dark:text-amber-400 hover:underline"

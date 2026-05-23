@@ -8,6 +8,7 @@ type TokenCfg = {
   name: string;
   symbol?: string;
   coinId?: string;
+  network?: 'polygon' | 'bnb' | 'base';
   contract: string;
   payoutWallet: string;
   minAmount?: number;
@@ -51,9 +52,10 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
     setLoadingCoins(false);
   };
 
-  const getNetworkInfo = (symbol: string) => {
+  const getNetworkInfo = (network?: string, symbol?: string) => {
+    const netName = String(network || '').trim().toLowerCase();
     const s = symbol?.toUpperCase();
-    if (['ETH', 'WETH', 'SOL'].includes(s)) {
+    if (netName === 'base' || ['ETH', 'WETH', 'SOL'].includes(s || '')) {
       return {
         chainId: '0x2105',
         chainName: 'Base Mainnet',
@@ -62,7 +64,7 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
         blockExplorerUrls: ['https://basescan.org']
       };
     }
-    if (s === 'BNB') {
+    if (netName === 'bnb' || s === 'BNB') {
       return {
         chainId: '0x38',
         chainName: 'BNB Smart Chain',
@@ -81,7 +83,7 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
     };
   };
 
-  const connectWallet = async (symbol?: string): Promise<string | null> => {
+  const connectWallet = async (network?: string, symbol?: string): Promise<string | null> => {
     try {
       const eth = (window as any).ethereum;
       if (!eth) {
@@ -92,8 +94,8 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
       const addr = accounts && accounts[0];
       if (!addr || !/^0x[a-fA-F0-9]{40}$/.test(addr)) return null;
 
-      if (symbol) {
-        const net = getNetworkInfo(symbol);
+      if (network || symbol) {
+        const net = getNetworkInfo(network, symbol);
         const chainId = await eth.request({ method: 'eth_chainId' });
         if (chainId !== net.chainId) {
           try {
@@ -120,7 +122,7 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
     if (addr) setPayoutWallet(addr);
   };
 
-  const checkBalance = async (coinName: string, wallet: string, contract?: string) => {
+  const checkBalance = async (coinName: string, wallet: string, contract?: string, network?: string) => {
     if (!wallet || !/^0x[a-fA-F0-9]{40}$/.test(wallet)) return;
 
     const eth = (window as any).ethereum;
@@ -128,7 +130,7 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
 
     setCheckingBalance(coinName);
     try {
-      const net = getNetworkInfo(coinName);
+      const net = getNetworkInfo(network, coinName);
       const chainId = await eth.request({ method: 'eth_chainId' });
       if (chainId !== net.chainId) {
         try {
@@ -211,6 +213,7 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
         const newCfg: TokenCfg = {
           name,
           contract: '',
+          network: undefined,
           payoutWallet,
           minAmount: undefined,
           minWithdrawalUsdc: undefined,
@@ -316,7 +319,7 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
                         </span>
                       </div>
                       <button
-                        onClick={() => checkBalance(coin.symbol, cfg.payoutWallet || payoutWallet, cfg.contract)}
+                        onClick={() => checkBalance(coin.symbol, cfg.payoutWallet || payoutWallet, cfg.contract, cfg.network)}
                         disabled={checkingBalance === coin.symbol}
                         className="p-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors"
                       >
@@ -332,7 +335,7 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
                         {!readOnly && (
                           <button
                             onClick={async () => {
-                              const addr = await connectWallet(coin.symbol);
+                              const addr = await connectWallet(cfg.network, coin.symbol);
                               if (addr) updateTokenCfg(coin.symbol, 'payoutWallet', addr);
                             }}
                             className="text-[10px] text-green-400 hover:text-green-300 font-bold flex items-center gap-1 transition-colors"
@@ -349,6 +352,20 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
                         placeholder={payoutWallet || "0x..."}
                         className={`w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs font-mono focus:border-green-500/50 outline-none ${readOnly ? 'opacity-70 cursor-not-allowed' : ''}`}
                       />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-500 font-bold block mb-1 uppercase">Rede</label>
+                      <select
+                        disabled={readOnly}
+                        value={cfg.network || ''}
+                        onChange={(e) => updateTokenCfg(coin.symbol, 'network', e.target.value || undefined)}
+                        className={`w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs ${readOnly ? 'opacity-70 cursor-not-allowed' : ''}`}
+                      >
+                        <option value="">Auto</option>
+                        <option value="polygon">Polygon</option>
+                        <option value="bnb">BNB Chain</option>
+                        <option value="base">Base</option>
+                      </select>
                     </div>
                     <div>
                       <label className="text-[10px] text-slate-500 font-bold block mb-1 uppercase">Contrato (Opcional Token)</label>

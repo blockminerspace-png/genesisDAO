@@ -39,6 +39,8 @@ export const RoletaPage: React.FC<RoletaPageProps> = ({
   const [roletaCode, setRoletaCode] = useState<string | null>(null);
   const [notice, setNotice] = useState<UiNotice | null>(null);
   const [paidTabSpinLabel, setPaidTabSpinLabel] = useState('Giro US$1.00');
+  /** `null` = ainda não carregou estado do servidor; `false` = roleta paga desligada no admin. */
+  const [paidWheelEnabled, setPaidWheelEnabled] = useState<boolean | null>(null);
 
   /** Preço do giro pago vindo do servidor (cabeçalho / separador). */
   useEffect(() => {
@@ -47,11 +49,16 @@ export const RoletaPage: React.FC<RoletaPageProps> = ({
       const s = await getWheelState();
       if (cancelled || !s.ok) return;
       setPaidTabSpinLabel(`Giro US$${s.data.spinPriceUsdc.toFixed(2)}`);
+      setPaidWheelEnabled(s.data.paidWheelEnabled);
     })();
     return () => {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (paidWheelEnabled === false && tab === 'paid') setTab('code');
+  }, [paidWheelEnabled, tab]);
 
   /** Código pendente no servidor (resgatou mas ainda não concluiu o fluxo). */
   useEffect(() => {
@@ -92,7 +99,10 @@ export const RoletaPage: React.FC<RoletaPageProps> = ({
         const st = wrapped.status;
         if (st === 409 || st === 422) {
           const s = await getWheelState();
-          if (s.ok) setPaidTabSpinLabel(`Giro US$${s.data.spinPriceUsdc.toFixed(2)}`);
+          if (s.ok) {
+            setPaidTabSpinLabel(`Giro US$${s.data.spinPriceUsdc.toFixed(2)}`);
+            setPaidWheelEnabled(s.data.paidWheelEnabled);
+          }
         }
         setNotice({ variant: 'error', message: wrapped.error || 'Erro ao resgatar código' });
         return;
@@ -164,16 +174,22 @@ export const RoletaPage: React.FC<RoletaPageProps> = ({
               <Wallet className="h-3 w-3 text-emerald-400" aria-hidden />
               <span className="font-mono text-xs font-bold tabular-nums text-emerald-100">${usdcShort}</span>
             </div>
-            <div className="flex items-center gap-1.5 rounded-full border border-orange-500/40 bg-orange-950/40 px-2.5 py-1 shadow-inner">
-              <Gift className="h-3 w-3 text-orange-400" aria-hidden />
-              <span className="font-mono text-xs font-bold tabular-nums text-orange-100">{paidTabSpinLabel.replace('Giro ', '')}</span>
-            </div>
+            {paidWheelEnabled !== false ? (
+              <div className="flex items-center gap-1.5 rounded-full border border-orange-500/40 bg-orange-950/40 px-2.5 py-1 shadow-inner">
+                <Gift className="h-3 w-3 text-orange-400" aria-hidden />
+                <span className="font-mono text-xs font-bold tabular-nums text-orange-100">
+                  {paidTabSpinLabel.replace('Giro ', '')}
+                </span>
+              </div>
+            ) : null}
           </div>
         </header>
 
-        {/* Tabs pill — visual cleaner, transição mais fluida. */}
+        {/* Tabs pill — o separador «giro pago» só aparece se a roleta paga estiver ativa no servidor. */}
         <div
-          className="flex gap-1 rounded-full border border-slate-700/70 bg-slate-900/50 p-1 backdrop-blur-sm sm:max-w-sm"
+          className={`flex gap-1 rounded-full border border-slate-700/70 bg-slate-900/50 p-1 backdrop-blur-sm ${
+            paidWheelEnabled === false ? 'sm:max-w-[11rem]' : 'sm:max-w-sm'
+          }`}
           role="tablist"
           aria-label="Modo da roleta"
         >
@@ -182,7 +198,9 @@ export const RoletaPage: React.FC<RoletaPageProps> = ({
             role="tab"
             aria-selected={tab === 'code'}
             onClick={() => setTab('code')}
-            className={`flex min-h-[36px] flex-1 items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-bold uppercase tracking-wide transition-all duration-200 sm:text-xs ${
+            className={`flex min-h-[36px] items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-bold uppercase tracking-wide transition-all duration-200 sm:text-xs ${
+              paidWheelEnabled === false ? 'w-full flex-1' : 'flex-1'
+            } ${
               tab === 'code'
                 ? 'bg-gradient-to-r from-orange-600 to-amber-600 text-white shadow-md shadow-orange-900/30'
                 : 'text-slate-400 hover:text-slate-200'
@@ -191,20 +209,22 @@ export const RoletaPage: React.FC<RoletaPageProps> = ({
             <Ticket className="h-3.5 w-3.5 shrink-0" aria-hidden />
             Por código
           </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'paid'}
-            onClick={() => setTab('paid')}
-            className={`flex min-h-[36px] flex-1 items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-bold uppercase tracking-wide transition-all duration-200 sm:text-xs ${
-              tab === 'paid'
-                ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-900/30'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <DollarSign className="h-3.5 w-3.5 shrink-0" aria-hidden />
-            {paidTabSpinLabel}
-          </button>
+          {paidWheelEnabled !== false ? (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'paid'}
+              onClick={() => setTab('paid')}
+              className={`flex min-h-[36px] flex-1 items-center justify-center gap-1.5 rounded-full px-3 text-[11px] font-bold uppercase tracking-wide transition-all duration-200 sm:text-xs ${
+                tab === 'paid'
+                  ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-900/30'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <DollarSign className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              {paidTabSpinLabel}
+            </button>
+          ) : null}
         </div>
 
         {tab === 'code' ? (

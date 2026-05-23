@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Clapperboard,
   Loader2,
@@ -6,7 +6,6 @@ import {
   ChevronDown,
   ChevronUp,
   Calendar,
-  User,
   ThumbsUp,
   Youtube,
   Play
@@ -52,19 +51,83 @@ function statusClass(st: string): string {
   return 'bg-amber-900/40 text-amber-100 border-amber-700/50';
 }
 
-type ShowcaseCreator = {
-  key: string;
-  username: string;
-  channelUrl: string;
-  avatarUrl: string;
-};
+function channelOpenUrl(channelUrl: string, displayName: string): string {
+  const c = String(channelUrl || '').trim();
+  if (c) return c;
+  return `https://www.youtube.com/results?search_query=${encodeURIComponent(`${displayName} channel`)}`;
+}
 
-function PartnerShowcaseAvatar({ name, imageUrl }: { name: string; imageUrl: string }) {
+/** Link directo ao canal com diálogo de subscrição (só URLs youtube.com). */
+function youtubeSubscribeHref(channelUrl: string, displayName: string): string {
+  const base = channelOpenUrl(channelUrl, displayName);
+  if (!/^https?:\/\/(www\.)?youtube\.com\//i.test(base)) return base;
+  return `${base}${base.includes('?') ? '&' : '?'}sub_confirmation=1`;
+}
+
+/** Topo do card: vídeo +, se existir foto na vitrine (admin), preview compacto à direita; play centrado na junção. */
+function PartnerSplitHero({
+  youtubeUrl,
+  videoThumb,
+  vitrineUrl,
+}: {
+  youtubeUrl: string;
+  videoThumb: string;
+  vitrineUrl: string;
+}) {
+  const [vitrineOk, setVitrineOk] = useState(true);
+  const hasVitrine = Boolean(String(vitrineUrl || '').trim()) && vitrineOk;
+  /** Junção visual 11 : 9 — play alinhado ao divisor (não ao centro geométrico). */
+  const splitPlayLeft = 'left-[55%]';
+
+  return (
+    <a
+      href={youtubeUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="relative block aspect-video bg-slate-950 group shrink-0 overflow-hidden"
+    >
+      <div className="absolute inset-0 flex">
+        <div className={`relative min-h-0 overflow-hidden ${hasVitrine ? 'flex-[11] min-w-0' : 'flex-1'}`}>
+          <img
+            src={videoThumb}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover opacity-95 group-hover:opacity-100 group-hover:scale-[1.02] transition-transform duration-300"
+          />
+        </div>
+        {hasVitrine ? (
+          <div className="relative flex-[9] min-w-0 border-l border-slate-700/80 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-950 flex items-center justify-center px-3 py-3 sm:px-4 sm:py-4">
+            <div className="relative h-[min(76%,11.5rem)] w-[min(80%,10.5rem)] sm:h-[min(78%,13rem)] sm:w-[min(80%,11.5rem)] rounded-2xl border border-white/20 bg-slate-900/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_12px_40px_rgba(0,0,0,0.55)] ring-1 ring-black/40 grid place-items-center overflow-hidden">
+              <img
+                src={vitrineUrl}
+                alt=""
+                className="max-h-[90%] max-w-[90%] object-contain rounded-lg"
+                onError={() => setVitrineOk(false)}
+              />
+            </div>
+          </div>
+        ) : null}
+      </div>
+      <div className="absolute inset-0 bg-black/28 pointer-events-none transition-colors group-hover:bg-black/20" />
+      <div
+        className={`absolute top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 pointer-events-none ${hasVitrine ? splitPlayLeft : 'left-1/2'}`}
+      >
+        <div className="rounded-full bg-red-600 text-white p-3 shadow-lg shadow-red-900/60 ring-[5px] ring-slate-950/90 scale-95 group-hover:scale-100 transition-transform">
+          <Play size={24} className="fill-white translate-x-0.5" />
+        </div>
+      </div>
+    </a>
+  );
+}
+
+function PartnerShowcaseAvatar({ name, imageUrl, compact }: { name: string; imageUrl: string; compact?: boolean }) {
   const [broken, setBroken] = useState(false);
   const letter = String(name || '?').trim().slice(0, 1).toUpperCase() || '?';
   const showImg = Boolean(imageUrl) && !broken;
+  const box = compact ? 'h-10 w-10 text-sm' : 'h-14 w-14 text-lg';
   return (
-    <span className="relative flex h-14 w-14 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-slate-700 to-slate-900 border border-slate-600 text-lg font-black text-amber-400">
+    <span
+      className={`relative flex ${box} items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-slate-700 to-slate-900 border border-slate-600 font-black text-amber-400 shrink-0`}
+    >
       {showImg ? (
         <img
           src={imageUrl}
@@ -150,24 +213,6 @@ export const PartnersPage: React.FC = () => {
     void loadAll();
   }, [loadAll]);
 
-  /** Criadores únicos na vitrine (links/fotos definidos pelo admin). */
-  const showcaseCreators = useMemo((): ShowcaseCreator[] => {
-    const m = new Map<string, ShowcaseCreator>();
-    for (const v of videos) {
-      const username = String(v.creator?.displayName || '').trim() || 'Parceiro';
-      const channelUrl = String(v.creator?.channelUrl || '').trim();
-      const key = `${username}|${channelUrl}`;
-      if (m.has(key)) continue;
-      m.set(key, {
-        key,
-        username,
-        channelUrl,
-        avatarUrl: String(v.creator?.avatarUrl || '').trim()
-      });
-    }
-    return [...m.values()].slice(0, 32);
-  }, [videos]);
-
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submitBusyRef.current) return;
@@ -243,7 +288,7 @@ export const PartnersPage: React.FC = () => {
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
                     maxLength={PARTNER_VIDEO_TITLE_MAX}
-                    placeholder="O meu vídeo sobre Mine Station"
+                    placeholder="O meu vídeo sobre Genesis Miner"
                     className="w-full rounded-lg bg-slate-950 border border-slate-600 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/40"
                     required
                     minLength={3}
@@ -324,10 +369,10 @@ export const PartnersPage: React.FC = () => {
         <div className="flex flex-wrap items-end justify-between gap-3 border-b border-slate-800 pb-3">
           <div>
             <h2 className="text-lg sm:text-xl font-black text-white tracking-tight">Últimos vídeos</h2>
-            <p className="text-xs text-slate-500 font-semibold mt-0.5">
+            <p className="text-xs text-slate-500 font-semibold mt-0.5 max-w-2xl">
               {!loading && !err && videos.length > 0
-                ? `${videos.length} mais recentes na vitrine`
-                : '🔥 Os mais recentes em destaque'}
+                ? `${videos.length} na vitrine — com foto definida no admin (Parceiros → Vitrine por utilizador), a imagem aparece ao lado da miniatura do vídeo; sem foto, só o vídeo.`
+                : '🔥 Os mais recentes em destaque — miniatura do vídeo + vitrine lado a lado quando existir foto.'}
             </p>
           </div>
         </div>
@@ -345,39 +390,37 @@ export const PartnersPage: React.FC = () => {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
             {videos.map((v) => {
               const displayName = String(v.creator?.displayName || '').trim() || 'Parceiro';
-              const creatorSearch = `https://www.youtube.com/results?search_query=${encodeURIComponent(`${displayName} channel`)}`;
               const customChannel = String(v.creator?.channelUrl || '').trim();
-              const channelHref = customChannel || creatorSearch;
+              const channelHref = channelOpenUrl(customChannel, displayName);
               const channelLabel = customChannel ? 'Ver canal' : 'Procurar canal';
+              const subHref = youtubeSubscribeHref(customChannel, displayName);
+              const isYoutubeChannel = /^https?:\/\/(www\.)?youtube\.com\//i.test(channelHref);
+              const avatarUrl = String(v.creator?.avatarUrl || '').trim();
               const thumb = v.thumbnailUrl || thumbUrl(v.youtubeVideoId);
               return (
                 <article
                   key={v.publicId}
                   className="rounded-xl border border-slate-600/80 bg-slate-950/60 overflow-hidden flex flex-col shadow-xl shadow-black/30 ring-1 ring-white/5 hover:ring-amber-500/20 transition-all"
                 >
-                  <a
-                    href={v.youtubeUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="relative block aspect-video bg-slate-950 group"
-                  >
-                    <img
-                      src={thumb}
-                      alt=""
-                      className="w-full h-full object-cover opacity-95 group-hover:opacity-100 group-hover:scale-[1.02] transition-transform duration-300"
-                    />
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/40 group-hover:bg-black/30 transition-colors">
-                      <div className="rounded-full bg-red-600 text-white p-3 shadow-lg shadow-red-900/50 scale-95 group-hover:scale-100 transition-transform">
-                        <Play size={24} className="fill-white translate-x-0.5" />
-                      </div>
+                  <PartnerSplitHero youtubeUrl={v.youtubeUrl} videoThumb={thumb} vitrineUrl={avatarUrl} />
+                  <div className="flex items-center gap-2.5 px-3 py-2 bg-slate-950/95 border-t border-slate-800">
+                    <PartnerShowcaseAvatar name={displayName} imageUrl={avatarUrl} compact />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-bold text-sm text-white truncate leading-tight">{displayName}</div>
+                      <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">Parceiro YouTube</div>
                     </div>
-                  </a>
-                  <div className="p-3 flex flex-col gap-2 flex-1">
+                    <a
+                      href={subHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="shrink-0 inline-flex items-center justify-center rounded-md bg-gradient-to-b from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 text-white text-[10px] font-black uppercase px-2.5 py-2 shadow-md shadow-red-900/40 border border-red-500/30 whitespace-nowrap"
+                    >
+                      {isYoutubeChannel ? 'Subscrever' : 'YouTube'}
+                    </a>
+                  </div>
+                  <div className="p-3 flex flex-col gap-2 flex-1 border-t border-slate-800/80">
                     <h3 className="font-bold text-sm text-white leading-snug line-clamp-2 min-h-[2.5rem]">{v.title}</h3>
                     <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <span className="inline-flex items-center gap-1 text-slate-400">
-                        <User size={12} /> {displayName}
-                      </span>
                       <span className="inline-flex items-center gap-1">
                         <Calendar size={12} /> {fmtDate(v.publishedAt)}
                       </span>
@@ -409,37 +452,6 @@ export const PartnersPage: React.FC = () => {
           </div>
         )}
       </section>
-
-      {showcaseCreators.length > 0 && (
-        <section className="rounded-2xl border border-slate-700 bg-slate-900/40 px-4 py-5 space-y-3">
-          <h2 className="text-sm font-black uppercase tracking-widest text-slate-400">Os nossos parceiros</h2>
-          <p className="text-xs text-slate-500">
-            Fotos e links de canal podem ser definidos pelo admin (aba Parceiros → Vitrine por utilizador).
-          </p>
-          <div className="flex flex-wrap gap-3 justify-center sm:justify-start">
-            {showcaseCreators.map((c) => {
-              const fallbackSearch = `https://www.youtube.com/results?search_query=${encodeURIComponent(`${c.username} channel`)}`;
-              const href = c.channelUrl || fallbackSearch;
-              return (
-                <a
-                  key={c.key}
-                  href={href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="group flex flex-col items-center gap-1.5 w-[4.5rem]"
-                >
-                  <span className="transition-transform group-hover:scale-105 group-hover:ring-2 group-hover:ring-amber-500/40 rounded-full">
-                    <PartnerShowcaseAvatar name={c.username} imageUrl={c.avatarUrl} />
-                  </span>
-                  <span className="text-[10px] font-bold text-slate-400 text-center line-clamp-2 leading-tight group-hover:text-amber-200/90">
-                    {c.username}
-                  </span>
-                </a>
-              );
-            })}
-          </div>
-        </section>
-      )}
       </div>
     </div>
   );

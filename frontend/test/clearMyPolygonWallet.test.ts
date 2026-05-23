@@ -17,13 +17,13 @@ describe('clearMyPolygonWallet', () => {
     vi.resetModules();
   });
 
-  it('DELETE /api/me/polygon-wallet com credentials e ok true em 200', async () => {
+  it('POST /api/profile/wallet/remove com credentials e ok true em 200', async () => {
     const { clearMyPolygonWallet } = await import('../services/api');
     const out = await clearMyPolygonWallet();
     expect(out.ok).toBe(true);
     expect(fetch).toHaveBeenCalledWith(
-      '/api/me/polygon-wallet',
-      expect.objectContaining({ method: 'DELETE', credentials: 'include' })
+      '/api/profile/wallet/remove',
+      expect.objectContaining({ method: 'POST', credentials: 'include' })
     );
   });
 

@@ -8,7 +8,9 @@ const COINGECKO_SIMPLE = 'https://api.coingecko.com/api/v3/simple/price';
 /** Símbolo (maiúsculas) → id CoinGecko para moedas comuns. */
 const SYMBOL_TO_COINGECKO = {
   BTC: 'bitcoin',
+  BNB: 'binancecoin',
   ETH: 'ethereum',
+  DAI: 'dai',
   LTC: 'litecoin',
   BCH: 'bitcoin-cash',
   DOGE: 'dogecoin',
@@ -27,7 +29,7 @@ const SYMBOL_TO_COINGECKO = {
   DOT: 'polkadot',
   AVAX: 'avalanche-2',
   MATIC: 'matic-network',
-  POL: 'matic-network',
+  POL: 'polygon-ecosystem-token',
   LINK: 'chainlink',
   ATOM: 'cosmos',
   NEAR: 'near',
@@ -50,7 +52,11 @@ const SYMBOL_TO_COINGECKO = {
   SHIB: 'shiba-inu',
   BONK: 'bonk',
   WIF: 'dogwifcoin',
-  FLOKI: 'floki'
+  FLOKI: 'floki',
+  USDT: 'tether',
+  GHO: 'gho',
+  WBTC: 'wrapped-bitcoin',
+  CBBTC: 'coinbase-wrapped-btc'
 };
 
 let cache = { at: 0, byMiningId: /** @type {Record<string, number | null>} */ ({}) };

@@ -1,12 +1,15 @@
 import { normalizePlacedRackRoomId } from '../modules/batteries/batteries.validation.js';
+import { listSlotMiningCredits, type UpgradeMiningRow } from './nftRoomMining.js';
 
 /** Subconjunto de `upgrades` necessário para a calculadora de mineração. */
 export type CalculatorUpgradeLite = {
   id: string;
   type: string;
+  category?: string;
   baseProduction: number;
   multiplier: number | null;
   powerCapacity: number | null;
+  nftMiningCoinId?: string | null;
 };
 
 export type CalculatorRackForProjection = {
@@ -45,27 +48,46 @@ export function computeUserHashByCoinId(
       if (rNorm !== scopeNorm) continue;
     }
 
-    const cid = rack.selectedCoinId != null ? String(rack.selectedCoinId).trim() : '';
-    if (!cid) continue;
-
-    // Baterias são instâncias UUID infinitas: rig opera se montada e ligada.
     const isOperational = rack.isOn && Boolean(rack.wiringId) && Boolean(rack.batteryId);
     if (!isOperational) continue;
 
-    let rackBase = 0;
+    const upgradesMap = new Map<string, UpgradeMiningRow>();
     for (const sid of rack.slots) {
       if (!sid) continue;
       const machine = upgradesById.get(String(sid));
-      if (machine) rackBase += machine.baseProduction;
+      if (!machine) continue;
+      upgradesMap.set(String(sid), {
+        id: machine.id,
+        type: machine.type,
+        category: machine.category,
+        base_production: machine.baseProduction,
+        multiplier: machine.multiplier,
+        nft_mining_coin_id: machine.nftMiningCoinId
+      });
     }
-    let mult = 1;
     for (const sid of rack.multiplierSlots || []) {
       if (!sid) continue;
       const modifier = upgradesById.get(String(sid));
-      if (modifier != null && modifier.multiplier != null) mult += modifier.multiplier;
+      if (!modifier) continue;
+      upgradesMap.set(String(sid), {
+        id: modifier.id,
+        type: modifier.type,
+        base_production: 0,
+        multiplier: modifier.multiplier,
+        nft_mining_coin_id: null
+      });
     }
-    const totalRackHash = rackBase * mult;
-    out[cid] = (out[cid] || 0) + totalRackHash;
+
+    const slotCredits = listSlotMiningCredits(
+      rack.roomId,
+      rack.slots.filter((s): s is string => Boolean(s)),
+      (rack.multiplierSlots || []).filter((s): s is string => Boolean(s)),
+      upgradesMap,
+      rack.selectedCoinId != null ? String(rack.selectedCoinId).trim() : ''
+    );
+    for (const sc of slotCredits) {
+      out[sc.coinId] = (out[sc.coinId] || 0) + sc.effectiveBaseProd;
+    }
   }
   return out;
 }

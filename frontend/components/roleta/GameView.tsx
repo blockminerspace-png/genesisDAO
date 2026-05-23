@@ -121,6 +121,11 @@ const GameView: React.FC<GameViewProps & { redeemCode?: string; onRedeemComplete
         return;
       }
       setSpinPriceUsdc(st.data.spinPriceUsdc > 0 ? st.data.spinPriceUsdc : 1);
+      if (st.data.paidWheelEnabled === false) {
+        setConfigError('A roleta paga está desativada.');
+        setConfigLoading(false);
+        return;
+      }
       const list = st.data.prizes;
       if (Array.isArray(list) && list.length > 0) {
         setItems(list);

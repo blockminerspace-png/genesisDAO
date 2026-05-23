@@ -92,7 +92,7 @@ describe('GPU duplication invariants — unequip / equip cycles', () => {
       storedBatteries: [],
       placedRacks: [makeRackWithGpu(0)]
     };
-    const unequipped = applyRackMinerUnequip(prev, 'rack_unequip_test', 0);
+    const unequipped = applyRackMinerUnequip(prev, 'rack_unequip_test', 0, machineUpgrades);
     expect(unequipped.ok).toBe(true);
     if (!unequipped.ok) return;
     const equipped = applyRackMinerEquip(
@@ -118,7 +118,7 @@ describe('GPU duplication invariants — unequip / equip cycles', () => {
       storedBatteries: [],
       placedRacks: [makeRackWithGpu(2)]
     };
-    const out = applyRackMinerUnequip(prev, 'rack_unequip_test', 2);
+    const out = applyRackMinerUnequip(prev, 'rack_unequip_test', 2, machineUpgrades);
     expect(out.ok).toBe(true);
     if (!out.ok) return;
     const rack = out.placedRacks[0];

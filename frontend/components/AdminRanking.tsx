@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { getAdminRanking, getPublicRanking } from '../services/api';
+import { isNftRoomExclusiveMiningCoin } from '../types';
 
 interface Coin {
     id: string;
@@ -52,10 +53,15 @@ export const AdminRanking: React.FC<AdminRankingProps> = ({ isPublic }) => {
         const activeCoin = selectedCoin;
 
         if (activeCoin === 'ALL') {
-            // Global: Sempre por Poder (Soma de todos os poderes)
+            // Global: rigs normais — não somar moedas exclusivas da Sala NFT (ASIC)
             const filtered = data.ranking
                 .map(u => {
-                    const totalPower = Object.values(u.coins).reduce((acc, curr) => acc + curr, 0);
+                    const totalPower = Object.entries(u.coins).reduce((acc, [coinId, curr]) => {
+                        const meta = data.coins.find((c) => c.id === coinId);
+                        if (meta && isNftRoomExclusiveMiningCoin(meta)) return acc;
+                        if (isNftRoomExclusiveMiningCoin(coinId)) return acc;
+                        return acc + curr;
+                    }, 0);
                     return { ...u, power: totalPower };
                 })
                 .filter(u => u.power > 0)
@@ -171,7 +177,10 @@ export const AdminRanking: React.FC<AdminRankingProps> = ({ isPublic }) => {
                         <h1 className="text-3xl font-bold bg-gradient-to-r from-amber-400 to-orange-700 bg-clip-text text-transparent">
                             {isGlobal ? 'Ranking Global de Mineradores' : `Ranking ${activeCoinInfo?.name} (${activeCoinInfo?.symbol})`}
                         </h1>
-                        <p className="text-gray-400 text-sm">Organizado por {rankingMode === 'POWER' ? 'Poder de Mineração' : 'Saldo Acumulado'}</p>
+                        <p className="text-gray-400 text-sm">
+                            Organizado por {rankingMode === 'POWER' ? 'Poder de Mineração' : 'Saldo Acumulado'}
+                            {isGlobal && ' — global exclui H/s das ASICs (Sala NFT); use o filtro por moeda para USDT, DAI, GEMT, etc.'}
+                        </p>
                     </div>
 
                     {!isPublic && !isGlobal && (

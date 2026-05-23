@@ -9,8 +9,7 @@ describe('userModel errors', () => {
   });
 
   it('IpLimitError', () => {
-    const accs = [{ username: 'u', email: 'e@e.com' }];
-    const e = new IpLimitError('limite', accs);
-    expect(e.existingAccounts).toEqual(accs);
+    const e = new IpLimitError('limite');
+    expect(e.message).toBe('limite');
   });
 });

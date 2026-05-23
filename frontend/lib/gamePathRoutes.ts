@@ -15,6 +15,7 @@ export type GamePathView =
   | 'lucky_store'
   | 'roleta'
   | 'wallet'
+  | 'withdrawal_history'
   | 'ranking'
   | 'upgrade'
   | 'transparency'
@@ -34,6 +35,7 @@ export const GAME_PATH_VIEWS: readonly GamePathView[] = [
   'lucky_store',
   'roleta',
   'wallet',
+  'withdrawal_history',
   'ranking',
   'upgrade',
   'transparency',
@@ -59,6 +61,7 @@ export const ENGLISH_PATH_TO_VIEW: Record<string, GamePathView> = {
   'lucky-boxes': 'lucky_store',
   wheel: 'roleta',
   wallet: 'wallet',
+  'withdrawal-history': 'withdrawal_history',
   ranking: 'ranking',
   upgrades: 'upgrade',
   transparency: 'transparency',
@@ -79,6 +82,7 @@ const VIEW_TO_ENGLISH_PATH: Record<GamePathView, string> = {
   lucky_store: '/lucky-boxes',
   roleta: '/wheel',
   wallet: '/wallet',
+  withdrawal_history: '/withdrawal-history',
   ranking: '/ranking',
   upgrade: '/upgrades',
   transparency: '/transparency',

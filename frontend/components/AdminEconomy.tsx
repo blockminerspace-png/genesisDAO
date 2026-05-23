@@ -1,6 +1,6 @@
 
 import React, { useEffect, useState } from 'react';
-import { getEconomyStats, getMiningRuntimeSummary, type MiningRuntimeSummary, updateEconomySettings } from '../services/api';
+import { getEconomyStats, getMiningRuntimeSummary, syncMiningCoinLivePricesNow, type MiningRuntimeSummary, updateEconomySettings } from '../services/api';
 import { RefreshCw, Save, DollarSign, Activity, Cpu } from 'lucide-react';
 
 /** Alinhado ao backend / simulador (tempo de bloco fixo). */
@@ -25,6 +25,7 @@ export const AdminEconomy: React.FC = () => {
     const [coins, setCoins] = useState<EconomyCoin[]>([]);
     const [runtime, setRuntime] = useState<MiningRuntimeSummary | null>(null);
     const [loading, setLoading] = useState(true);
+    const [syncingPrices, setSyncingPrices] = useState(false);
     const [targets, setTargets] = useState<Record<string, number>>({});
     const [simulated, setSimulated] = useState<Record<string, { reward: number, hashrate: number }>>({});
 
@@ -97,6 +98,23 @@ export const AdminEconomy: React.FC = () => {
         }
     };
 
+    const handleSyncLivePrices = async () => {
+        setSyncingPrices(true);
+        try {
+            const res = await syncMiningCoinLivePricesNow();
+            if (res.ok) {
+                await loadData();
+                alert(`Preços sincronizados com sucesso. Moedas atualizadas: ${res.updated || 0}`);
+            } else {
+                alert(res.error || 'Falha ao sincronizar preços ao vivo.');
+            }
+        } catch (e) {
+            alert('Erro de rede ao sincronizar preços.');
+        } finally {
+            setSyncingPrices(false);
+        }
+    };
+
     if (loading) return <div className="p-8 text-white">Carregando economia...</div>;
 
     return (
@@ -108,9 +126,19 @@ export const AdminEconomy: React.FC = () => {
                     </h2>
                     <p className="text-slate-400 text-sm">Controle a emissão de tokens baseado em metas de Dólar (USD).</p>
                 </div>
-                <button onClick={loadData} className="p-2 bg-slate-800 text-slate-300 rounded hover:bg-slate-700">
-                    <RefreshCw size={18} />
-                </button>
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={handleSyncLivePrices}
+                        disabled={syncingPrices}
+                        className="flex items-center gap-2 rounded bg-emerald-700 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                        <RefreshCw size={16} className={syncingPrices ? 'animate-spin' : ''} />
+                        {syncingPrices ? 'Sincronizando...' : 'Atualizar preços agora'}
+                    </button>
+                    <button onClick={loadData} className="p-2 bg-slate-800 text-slate-300 rounded hover:bg-slate-700">
+                        <RefreshCw size={18} />
+                    </button>
+                </div>
             </div>
 
             <div className="rounded-lg border border-slate-700 bg-slate-900/80 px-4 py-3 text-sm text-slate-300">

@@ -18,7 +18,11 @@
 BEGIN;
 
 -- 1) Re-inserir loot_box_items (PK 'id' bigint serial - ON CONFLICT preserva edits).
-INSERT INTO loot_box_items (id, box_id, item_type, item_id, min_qty, max_qty, probability) VALUES
+--    Alguns ambientes podem já não ter todas as loot_boxes históricas; nesses casos
+--    ignoramos apenas os items órfãos e seguimos com a restauração parcial.
+INSERT INTO loot_box_items (id, box_id, item_type, item_id, min_qty, max_qty, probability)
+SELECT src.id, src.box_id, src.item_type, src.item_id, src.min_qty, src.max_qty, src.probability
+FROM (VALUES
   (88755, 'bbf5e003-097b-421d-bfd0-a90ba6188445', 'item', 'cpu_v2', 1, 1, 100),
   (88756, 'dd157119-a84c-4fba-b9cd-c28f2c741462', 'item', 'battery_ups', 2, 2, 100),
   (88757, 'b5d4b0f0-0e5f-4071-8ea8-5312b0a29757', 'item', 'battery_diesel', 1, 1, 100),
@@ -293,6 +297,9 @@ INSERT INTO loot_box_items (id, box_id, item_type, item_id, min_qty, max_qty, pr
   (89026, '7e383f89-bc6d-4af7-88f3-3e1008f3f704', 'item', 'battery_ups', 1, 1, 100),
   (89027, '7e383f89-bc6d-4af7-88f3-3e1008f3f704', 'item', 'rack_a63', 1, 1, 100),
   (89028, 'af321ccb-302f-4366-82c9-5d19ce76ed8a', 'item', 'battery_diesel', 2, 2, 100)
+) AS src(id, box_id, item_type, item_id, min_qty, max_qty, probability)
+INNER JOIN loot_boxes existing_boxes
+  ON existing_boxes.id = src.box_id
 ON CONFLICT (id) DO NOTHING;
 
 -- 2) Sincronizar a sequence dos ids para evitar collisions futuras.

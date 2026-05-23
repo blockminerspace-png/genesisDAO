@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { Banknote, PlayCircle, Monitor, Save, Info, ShoppingCart, Ticket, RefreshCw, Trash2, Plus, Users, Gift } from 'lucide-react';
-import { getAdminMonetizationSettings, setMonetizationSettings, getEconomySettings, setEconomySettings as apiSetEconomySettings, getLootBoxes, getUpgrades, getAdminUpgrades } from '../services/api';
+import { getAdminMonetizationSettings, setMonetizationSettings, getEconomySettings, setEconomySettings as apiSetEconomySettings, getLootBoxes, getUpgrades, getAdminUpgrades, syncMiningCoinLivePricesNow } from '../services/api';
 import { MonetizationSettings, EconomySettings, PromoCode, LootBox, Upgrade, AdminUpgrade } from '../types';
 import { ApplixirConfig } from './monetization/ApplixirConfig';
 import { EzoicConfig } from './monetization/EzoicConfig';
@@ -29,6 +29,7 @@ export const AdminMonetization: React.FC = () => {
     });
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [syncingLivePrices, setSyncingLivePrices] = useState(false);
     const [promoCodes, setPromoCodes] = useState<PromoCode[]>([]);
     const [lootBoxes, setLootBoxes] = useState<LootBox[]>([]);
     const [upgrades, setUpgrades] = useState<Upgrade[]>([]);
@@ -89,6 +90,22 @@ export const AdminMonetization: React.FC = () => {
             alert(e instanceof Error ? e.message : 'Erro ao salvar.');
         } finally {
             setSaving(false);
+        }
+    };
+
+    const handleSyncLivePrices = async () => {
+        setSyncingLivePrices(true);
+        try {
+            const res = await syncMiningCoinLivePricesNow();
+            if (res.ok) {
+                alert(`Preços sincronizados com sucesso. Moedas atualizadas: ${res.updated || 0}`);
+            } else {
+                alert(res.error || 'Erro ao sincronizar preços ao vivo.');
+            }
+        } catch (e) {
+            alert('Erro de rede ao sincronizar preços.');
+        } finally {
+            setSyncingLivePrices(false);
         }
     };
 
@@ -219,6 +236,21 @@ export const AdminMonetization: React.FC = () => {
                         </div>
 
                         <div className="bg-slate-900/50 border border-slate-700 p-6 rounded-xl space-y-6">
+                            <div className="flex justify-end">
+                                <button
+                                    type="button"
+                                    onClick={handleSyncLivePrices}
+                                    disabled={syncingLivePrices}
+                                    className={`rounded-lg px-4 py-2 text-xs font-bold uppercase tracking-widest transition-all ${
+                                        syncingLivePrices
+                                            ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                                            : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20'
+                                    }`}
+                                >
+                                    {syncingLivePrices ? 'Sincronizando preços...' : 'Atualizar preços agora'}
+                                </button>
+                            </div>
+
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <label className="flex items-start gap-3 p-4 rounded-xl border border-slate-800 bg-slate-950/60 cursor-pointer">
                                     <input
@@ -247,16 +279,39 @@ export const AdminMonetization: React.FC = () => {
                                 </label>
                             </div>
 
-                            <div className="max-w-xs">
-                                <label className="block text-[10px] text-slate-500 uppercase font-bold mb-1">Taxa de Mercado (%)</label>
-                                <input
-                                    type="number"
-                                    min="0"
-                                    step="0.01"
-                                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs text-white"
-                                    value={economy.marketTaxPercent ?? 0}
-                                    onChange={(e) => setEconomy({ ...economy, marketTaxPercent: Number(e.target.value) || 0 })}
-                                />
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="max-w-xs">
+                                    <label className="block text-[10px] text-slate-500 uppercase font-bold mb-1">Taxa de Mercado (%)</label>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        step="0.01"
+                                        className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs text-white"
+                                        value={economy.marketTaxPercent ?? 0}
+                                        onChange={(e) => setEconomy({ ...economy, marketTaxPercent: Number(e.target.value) || 0 })}
+                                    />
+                                </div>
+
+                                <div className="max-w-xs">
+                                    <label className="block text-[10px] text-slate-500 uppercase font-bold mb-1">Banda de Preço P2P (%)</label>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        max="200"
+                                        step="1"
+                                        className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs text-white"
+                                        value={economy.blackMarketPriceBandPercent ?? 20}
+                                        onChange={(e) =>
+                                            setEconomy({
+                                                ...economy,
+                                                blackMarketPriceBandPercent: Math.min(200, Math.max(0, Number(e.target.value) || 0))
+                                            })
+                                        }
+                                    />
+                                    <p className="mt-1 text-[10px] text-slate-500">
+                                        Ex.: `20` permite anunciar entre `80%` e `120%` do preço de referência da Lojinha Miner.
+                                    </p>
+                                </div>
                             </div>
 
                             <div className="pt-4 border-t border-slate-800">

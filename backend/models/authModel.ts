@@ -1,5 +1,6 @@
 import type { users as UsersRow } from '@prisma/client';
 import { prisma } from '../config/prisma.js';
+import { resolveRegistrationIp } from '../utils/clientIp.js';
 import { generateReferralCode } from './signupPolicy.js';
 
 export type DbUserRow = Record<string, unknown>;
@@ -50,14 +51,16 @@ export async function updateUserPasswordHash(userId: string | number, hash: stri
 
 export async function recordLoginIp(userId: string | number, currentIp: string): Promise<void> {
   const uid = Number(userId);
+  const ip = resolveRegistrationIp(currentIp);
+  if (!ip) return;
   const now = BigInt(Date.now());
   await prisma.users.updateMany({
     where: { id: uid, registration_ip: null },
-    data: { registration_ip: currentIp }
+    data: { registration_ip: ip }
   });
   await prisma.user_history_ips.upsert({
-    where: { user_id_ip: { user_id: uid, ip: currentIp } },
-    create: { user_id: uid, ip: currentIp, last_used_at: now },
+    where: { user_id_ip: { user_id: uid, ip } },
+    create: { user_id: uid, ip, last_used_at: now },
     update: { last_used_at: now }
   });
 }

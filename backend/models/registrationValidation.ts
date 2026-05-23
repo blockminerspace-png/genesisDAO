@@ -1,6 +1,7 @@
 import { prisma } from '../config/prisma.js';
 import { HttpControlledError } from '../utils/apiErrorResponse.js';
 import { mapPrismaClientError } from '../utils/prismaHttpResponse.js';
+import { validatePasswordStrengthPolicy } from './profilePasswordPolicy.js';
 
 /** Cadastro público: apenas estes domínios (login continua permitindo qualquer e-mail já registado). */
 export const SIGNUP_ALLOWED_DOMAINS = new Set([
@@ -154,6 +155,10 @@ export function validateSignupPassword(raw: unknown, required: boolean): Passwor
       ok: false,
       error: `Palavra-passe demasiado longa (máximo ${PASSWORD_MAX} caracteres).`
     };
+  }
+  const strength = validatePasswordStrengthPolicy(raw);
+  if (!strength.ok) {
+    return { ok: false, error: strength.error };
   }
   return { ok: true };
 }

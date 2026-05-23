@@ -11,6 +11,8 @@ export const UI_DISPLAY_LABEL_KEYS = [
   'nav.arcade',
   'nav.lucky_store',
   'nav.roleta',
+  /** `1`/vazio = mostrar separador Roleta no menu; `0`/`false`/`off`/`hide` = ocultar só o separador (a página continua acessível por URL / fluxos internos). */
+  'nav.roleta_tab_visible',
   'nav.wallet',
   'nav.ranking',
   'nav.upgrade',

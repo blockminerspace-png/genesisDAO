@@ -14,6 +14,7 @@ import {
 import { maybeSyncLiveUsdToMiningCoinsPostgres } from '../lib/miningLivePrices.js';
 import type { MiningUsdDbSyncResult } from '../lib/miningLivePrices.js';
 import { miningTenMinuteGridEnabled, lastCompletedTenMinuteUtcGrid } from './miningWallClockGrid.js';
+import { listSlotMiningCredits, type UpgradeMiningRow } from '../lib/nftRoomMining.js';
 
 const LOG_PREFIX = '[MiningYieldCron]';
 
@@ -53,10 +54,11 @@ function safeRollback(client: PoolClient): void {
 }
 
 type RackRow = {
-  selected_coin_id: string;
+  selected_coin_id: string | null;
   id: string;
   user_id: number;
   battery_id: string;
+  room_id: string | null;
   username: unknown;
 };
 
@@ -107,21 +109,24 @@ export async function updateMiningYields(pool: Pool): Promise<void> {
     await hydrateYieldHistoryBoundaryFromDb(client);
 
     const activeRes = await client.query(`
-      SELECT pr.selected_coin_id, pr.id, pr.user_id, pr.battery_id, u.username
+      SELECT pr.selected_coin_id, pr.id, pr.user_id, pr.battery_id, pr.room_id, u.username
       FROM placed_racks pr
       JOIN users u ON pr.user_id = u.id
-      JOIN mining_coins mc ON pr.selected_coin_id = mc.id
       WHERE pr.is_on = 1
-      AND mc.is_active = 1
       AND pr.wiring_id IS NOT NULL
       AND pr.battery_id IS NOT NULL
       AND u.is_blocked = 0
       AND u.ranking_excluded = 0
     `);
 
-    const upsRes = await client.query('SELECT id, base_production, multiplier FROM upgrades');
-    const upsMap = new Map<string, { base_production?: unknown; multiplier?: unknown }>();
-    upsRes.rows.forEach((u) => upsMap.set(String(u.id), u));
+    const upsRes = await client.query(
+      'SELECT id, type, category, base_production, multiplier, nft_mining_coin_id FROM upgrades'
+    );
+    const upsMap = new Map<string, UpgradeMiningRow>();
+    upsRes.rows.forEach((u) => upsMap.set(String(u.id), u as UpgradeMiningRow));
+
+    const activeCoinsRes = await client.query('SELECT id FROM mining_coins WHERE is_active = 1');
+    const activeCoinIds = new Set(activeCoinsRes.rows.map((r) => String(r.id)));
 
     const slotRes = await client.query('SELECT rack_id, machine_item_id FROM rack_slots');
     const slotsMap: Record<string, string[]> = {};
@@ -151,41 +156,38 @@ export async function updateMiningYields(pool: Pool): Promise<void> {
       const batch = racks.slice(i, i + BATCH_SIZE);
 
       for (const rack of batch) {
-        const cid = String(rack.selected_coin_id);
-        if (!cid) continue;
+        const roomId = rack.room_id != null ? String(rack.room_id) : null;
+        const slotCredits = listSlotMiningCredits(
+          roomId,
+          slotsMap[rack.id] || [],
+          multiMap[rack.id] || [],
+          upsMap,
+          rack.selected_coin_id ? String(rack.selected_coin_id) : ''
+        );
+        if (slotCredits.length === 0) continue;
 
-        // Baterias são instâncias UUID infinitas: rig opera se já passou os filtros do SELECT.
-        let base = 0;
-        (slotsMap[rack.id] || []).forEach((mid) => {
-          const u = upsMap.get(String(mid));
-          if (u) base += parseFiniteNumberLenient(u.base_production, 'slot.base_production');
-        });
-        if (base === 0) continue;
+        for (const sc of slotCredits) {
+          const cid = sc.coinId;
+          if (!activeCoinIds.has(cid)) continue;
+          const power = sc.effectiveBaseProd;
+          if (!Number.isFinite(power) || power <= 0) continue;
 
-        let mult = 1;
-        (multiMap[rack.id] || []).forEach((mid) => {
-          const u = upsMap.get(String(mid));
-          if (u) mult += parseFiniteNumberLenient(u.multiplier, 'slot.multiplier');
-        });
+          realNetworkHashratesMap.set(cid, (realNetworkHashratesMap.get(cid) || 0) + power);
 
-        const power = base * mult;
-        if (!Number.isFinite(power) || power <= 0) continue;
+          activeUsersSet.add(rack.user_id);
+          if (!activeUsersByCoinVar.has(cid)) activeUsersByCoinVar.set(cid, new Set());
+          activeUsersByCoinVar.get(cid)!.add(rack.user_id);
 
-        realNetworkHashratesMap.set(cid, (realNetworkHashratesMap.get(cid) || 0) + power);
-
-        activeUsersSet.add(rack.user_id);
-        if (!activeUsersByCoinVar.has(cid)) activeUsersByCoinVar.set(cid, new Set());
-        activeUsersByCoinVar.get(cid)!.add(rack.user_id);
-
-        if (!userStats.has(rack.user_id)) {
-          userStats.set(rack.user_id, {
-            user_id: rack.user_id,
-            username: rack.username,
-            coins: {},
-          });
+          if (!userStats.has(rack.user_id)) {
+            userStats.set(rack.user_id, {
+              user_id: rack.user_id,
+              username: rack.username,
+              coins: {}
+            });
+          }
+          const uStat = userStats.get(rack.user_id)!;
+          uStat.coins[cid] = (uStat.coins[cid] || 0) + power;
         }
-        const uStat = userStats.get(rack.user_id)!;
-        uStat.coins[cid] = (uStat.coins[cid] || 0) + power;
       }
 
       if (i + BATCH_SIZE < racks.length) {

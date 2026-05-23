@@ -10,7 +10,8 @@ const prismaMock = vi.hoisted(() => ({
   upgrades: { findMany: vi.fn() },
   placed_racks: { findMany: vi.fn() },
   rack_slots: { findMany: vi.fn() },
-  rack_multiplier_slots: { findMany: vi.fn() }
+  rack_multiplier_slots: { findMany: vi.fn() },
+  rig_rooms: { findMany: vi.fn() }
 }));
 
 vi.mock('../config/prisma.js', () => ({
@@ -64,6 +65,9 @@ describe('computePlayerGameHeaderSnapshot', () => {
     prismaMock.rack_slots.findMany.mockResolvedValue([] as never);
     prismaMock.rack_multiplier_slots.findMany.mockResolvedValue([] as never);
     prismaMock.upgrades.findMany.mockResolvedValue([] as never);
+    prismaMock.rig_rooms.findMany.mockResolvedValue([
+      { id: 'room_1775484506874', name: 'NFTs AUTO' }
+    ] as never);
     prismaMock.game_states.findUnique.mockResolvedValue(null);
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2020-01-01T00:00:00.000Z'));
@@ -204,6 +208,45 @@ describe('computePlayerGameHeaderSnapshot', () => {
     vi.advanceTimersByTime(60_001);
     await computePlayerGameHeaderSnapshot(1);
     expect(getUpgradeQueryCount()).toBe(2);
+  });
+
+  it('sala NFT soma hashrate na moeda admin (DAI) sem selected_coin_id na rig', async () => {
+    attachPrismaMocks({
+      gameState: { rowCount: 1, rows: [{ usdc: 0, server_updated_at: '1' }] },
+      balances: { rows: [] },
+      upgrades: {
+        rows: [
+          {
+            id: 'asic_1',
+            type: 'machine',
+            category: 'ASIC',
+            base_production: 1,
+            multiplier: 0,
+            power_capacity: null,
+            nft_mining_coin_id: 'dai'
+          },
+          { id: 'wir', type: 'machine', base_production: 0, multiplier: 0, power_capacity: null, nft_mining_coin_id: null },
+          { id: 'bat', type: 'machine', base_production: 0, multiplier: 0, power_capacity: '-1', nft_mining_coin_id: null }
+        ]
+      },
+      racks: {
+        rows: [
+          {
+            id: 'rx',
+            room_id: 'room_1775484506874',
+            is_on: 1,
+            wiring_id: 'wir',
+            battery_id: 'bat',
+            selected_coin_id: null
+          }
+        ]
+      },
+      slots: { rows: [{ rack_id: 'rx', slot_index: 0, machine_item_id: 'asic_1' }] },
+      mults: { rows: [] }
+    });
+    const out = await computePlayerGameHeaderSnapshot(1);
+    expect(out.hashByCoinId.dai).toBeCloseTo(1);
+    expect(out.totalHash).toBeCloseTo(1);
   });
 
   it('aplica multiplicadores de rack_multiplier_slots', async () => {

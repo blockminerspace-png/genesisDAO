@@ -1,6 +1,7 @@
 import type { Express, Request, RequestHandler, Response } from 'express';
 import pool from '../../config/db.js';
 import { getSettingsRecord } from '../../lib/settingsPrisma.js';
+import { resolveMiningCoinUsdRate } from '../../lib/nftRoomMining.js';
 import { parseIdempotencyKey, RoletaAppError } from '../../validation/roletaValidation.js';
 import { sendInternalErrorSafeMessageOrPrisma } from '../../utils/apiErrorResponse.js';
 import { runExchangeLiquidation, walletExchangeLiquidateRequestFingerprint } from './walletExchangeLiquidation.js';
@@ -50,10 +51,11 @@ export async function buildWalletStatePayload(userId: number): Promise<Record<st
       name: string;
       symbol: string;
       usdc_rate: string;
+      price_usd: string;
       sx: number;
       amount: string | null;
     }>(
-      `SELECT c.id, c.name, c.symbol, c.usdc_rate::text,
+      `SELECT c.id, c.name, c.symbol, c.usdc_rate::text, c.price_usd::text,
               COALESCE(c.show_in_exchange, 1) AS sx,
               b.amount::text AS amount
        FROM mining_coins c
@@ -78,7 +80,12 @@ export async function buildWalletStatePayload(userId: number): Promise<Record<st
 
     const minedBalances = coins.rows.map((r) => {
       const bal = Number(r.amount || 0) || 0;
-      const rate = Number(r.usdc_rate) || 0;
+      const rate = resolveMiningCoinUsdRate({
+        id: r.id,
+        symbol: r.symbol,
+        usdc_rate: r.usdc_rate,
+        price_usd: r.price_usd
+      });
       const gross = bal * rate;
       const fee = gross * (feePercent / 100);
       const net = gross - fee;

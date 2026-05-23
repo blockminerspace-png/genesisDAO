@@ -65,6 +65,11 @@ Thumbs.db
 *.log
 npm-debug.log*
 
+# Uploaded images / binary assets (gerados em runtime — não versionar)
+backend/img/uploads/
+backend/img/miner/
+backend/img/moedas/
+
 # Temp scripts
 tmp_*.js
 backend/tmp_*.js

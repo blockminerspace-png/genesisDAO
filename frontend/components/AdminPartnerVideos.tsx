@@ -10,7 +10,9 @@ import {
   Users,
   Clapperboard,
   UserPlus,
-  Search
+  Search,
+  MonitorPlay,
+  AlertTriangle
 } from 'lucide-react';
 import {
   getAdminPartnerYoutubeSubmissions,
@@ -24,8 +26,12 @@ import {
   getAdminUserMap,
   postAdminPartnerYoutubeAllowlist,
   deleteAdminPartnerYoutubeAllowlist,
+  postAdminDeactivatePartnerNftRoom,
+  getAdminStreamerRoomUsers,
+  postAdminDeactivateStreamerRoom,
   type AdminPartnerYoutubeRow,
   type AdminPartnerYoutubePartnerRow,
+  type AdminStreamerRoomUser,
 } from '../services/api';
 import {
   PARTNER_AVATAR_URL_MAX,
@@ -48,8 +54,18 @@ function fmtDate(ms: number): string {
   }
 }
 
+function fmtDateShort(ms: number | null | undefined): string {
+  const n = Number(ms) || 0;
+  if (!n) return '—';
+  try {
+    return new Date(n).toLocaleDateString('pt-PT');
+  } catch {
+    return '—';
+  }
+}
+
 export const AdminPartnerVideos: React.FC = () => {
-  const [sectionTab, setSectionTab] = useState<'envios' | 'parceiros'>('envios');
+  const [sectionTab, setSectionTab] = useState<'envios' | 'parceiros' | 'streamers'>('envios');
   const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('pending');
   const [rows, setRows] = useState<AdminPartnerYoutubeRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -80,6 +96,12 @@ export const AdminPartnerVideos: React.FC = () => {
   const [allowlistByTextBusy, setAllowlistByTextBusy] = useState(false);
   const [addErr, setAddErr] = useState<string | null>(null);
   const [removeAllowlistBusyId, setRemoveAllowlistBusyId] = useState<number | null>(null);
+  const [deactivateNftRoomBusyId, setDeactivateNftRoomBusyId] = useState<number | null>(null);
+
+  const [streamers, setStreamers] = useState<AdminStreamerRoomUser[]>([]);
+  const [streamersLoading, setStreamersLoading] = useState(false);
+  const [streamersErr, setStreamersErr] = useState<string | null>(null);
+  const [deactivateStreamerBusyId, setDeactivateStreamerBusyId] = useState<number | null>(null);
 
   const addFiltered = useMemo(() => {
     const q = addSearch.trim().toLowerCase();
@@ -195,6 +217,25 @@ export const AdminPartnerVideos: React.FC = () => {
   useEffect(() => {
     if (sectionTab === 'parceiros') void loadPartners();
   }, [sectionTab, loadPartners]);
+
+  const loadStreamers = useCallback(async () => {
+    setStreamersLoading(true);
+    setStreamersErr(null);
+    try {
+      const { users, error } = await getAdminStreamerRoomUsers();
+      if (error) setStreamersErr(error);
+      setStreamers(users);
+    } catch (e) {
+      setStreamersErr(e instanceof Error ? e.message : 'Erro ao carregar streamers.');
+      setStreamers([]);
+    } finally {
+      setStreamersLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (sectionTab === 'streamers') void loadStreamers();
+  }, [sectionTab, loadStreamers]);
 
   const approve = async (id: string) => {
     setBusyId(id);
@@ -338,6 +379,17 @@ export const AdminPartnerVideos: React.FC = () => {
         >
           <Users size={16} /> Parceiros (vitrine)
         </button>
+        <button
+          type="button"
+          onClick={() => setSectionTab('streamers')}
+          className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-black uppercase border transition-colors ${
+            sectionTab === 'streamers'
+              ? 'bg-violet-600/20 text-white border-violet-600/60'
+              : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'
+          }`}
+        >
+          <MonitorPlay size={16} /> Streamers
+        </button>
       </div>
 
       {sectionTab === 'envios' && (
@@ -460,8 +512,7 @@ export const AdminPartnerVideos: React.FC = () => {
               <UserPlus size={14} /> Adicionar parceiro
             </button>
             <span className="text-[11px] text-slate-500">
-              Inclui quem tem vídeo aprovado ou foi adicionado aqui. «Remover da lista» tira só a entrada manual; quem só
-              entrou por vídeo aprovado continua na vitrine até gerires os envios.
+              Esta lista mostra todos os usuários com sala STREAMER ativa (níveis tester/creator). «Remover da lista» tira só a entrada manual.
             </span>
           </div>
           {partnersErr && <div className="text-sm text-red-400">{partnersErr}</div>}
@@ -498,6 +549,10 @@ export const AdminPartnerVideos: React.FC = () => {
                     <div className="text-[11px] text-slate-500">
                       #{p.userId} · {p.email} · {p.approvedCount} vídeo(s) aprovado(s)
                     </div>
+                    <div className="text-[11px] text-slate-400">
+                      Últimos 12 meses: {p.nftRoom?.approvedLast365d ?? p.approvedLast365d ?? 0}/6 · Último aprovado:{' '}
+                      {fmtDateShort(p.nftRoom?.lastApprovedAt ?? p.lastApprovedAt)}
+                    </div>
                     <div className="flex flex-wrap gap-1.5 pt-1">
                       {p.allowlisted && (p.approvedCount ?? 0) === 0 ? (
                         <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded border border-amber-800/60 bg-amber-950/50 text-amber-200">
@@ -522,9 +577,70 @@ export const AdminPartnerVideos: React.FC = () => {
                           Sem foto
                         </span>
                       )}
+                      {p.nftRoom?.active ? (
+                        <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded border border-violet-800/60 bg-violet-950/40 text-violet-200">
+                          Sala NFT ativa
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded border border-slate-600 text-slate-500">
+                          Sem sala NFT ativa
+                        </span>
+                      )}
+                      {p.nftRoom?.active && p.nftRoom?.overdue ? (
+                        <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded border border-red-800/70 bg-red-950/50 text-red-200">
+                          Sala NFT em falta
+                        </span>
+                      ) : p.nftRoom?.active ? (
+                        <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded border border-emerald-800/60 bg-emerald-950/40 text-emerald-300">
+                          Sala NFT em dia
+                        </span>
+                      ) : null}
                     </div>
+                    {p.nftRoom?.active && p.nftRoom?.overdue ? (
+                      <div className="rounded-lg border border-red-900/60 bg-red-950/20 px-3 py-2 text-[11px] text-red-200">
+                        Este parceiro está sem vídeo aprovado dentro da janela de 60 dias. O mínimo definido é 1 vídeo aprovado a
+                        cada 2 meses e 6 por ano para manter a sala NFT.
+                      </div>
+                    ) : null}
                   </div>
                   <div className="flex flex-wrap gap-2 shrink-0 justify-end w-full sm:w-auto">
+                    {p.nftRoom?.active && p.nftRoom?.overdue ? (
+                      <button
+                        type="button"
+                        disabled={deactivateNftRoomBusyId === p.userId}
+                        onClick={() => {
+                          if (
+                            !window.confirm(
+                              `Desativar a sala NFT de «${p.username}»?\n\nIsto remove a sala NFT do utilizador e desmonta as rigs dessa sala em segurança, devolvendo os itens ao inventário/armazenamento.`
+                            )
+                          ) {
+                            return;
+                          }
+                          void (async () => {
+                            setDeactivateNftRoomBusyId(p.userId);
+                            try {
+                              const r = await postAdminDeactivatePartnerNftRoom(p.userId);
+                              if (!r.ok) {
+                                alert(r.error || 'Falha ao desativar a sala NFT.');
+                                return;
+                              }
+                              alert(`Sala NFT desativada com sucesso. Rigs removidas da sala: ${r.removedRackCount ?? 0}.`);
+                              void loadPartners();
+                            } finally {
+                              setDeactivateNftRoomBusyId(null);
+                            }
+                          })();
+                        }}
+                        className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-lg border border-red-900/70 bg-red-950/40 hover:bg-red-900/45 text-red-100 text-xs font-bold disabled:opacity-40"
+                      >
+                        {deactivateNftRoomBusyId === p.userId ? (
+                          <Loader2 className="animate-spin" size={14} />
+                        ) : (
+                          <X size={14} />
+                        )}
+                        Desativar sala NFT
+                      </button>
+                    ) : null}
                     {p.allowlisted ? (
                       <button
                         type="button"
@@ -745,6 +861,115 @@ export const AdminPartnerVideos: React.FC = () => {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {sectionTab === 'streamers' && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void loadStreamers()}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold border border-slate-600 text-slate-300 hover:bg-slate-800"
+            >
+              <RefreshCw size={14} /> Atualizar
+            </button>
+            <span className="text-[11px] text-slate-500">
+              Usuários com Sala STREAMER. Requisito: 1 vídeo aprovado a cada 60 dias.
+              <span className="ml-2 text-red-400 font-bold">EM ATRASO</span> = sem vídeo aprovado nos últimos 60 dias.
+            </span>
+          </div>
+
+          {streamersErr && <div className="text-sm text-red-400">{streamersErr}</div>}
+
+          {streamersLoading ? (
+            <div className="flex justify-center py-16 text-violet-400">
+              <Loader2 className="animate-spin" size={32} />
+            </div>
+          ) : streamers.length === 0 ? (
+            <div className="text-slate-500 text-sm border border-slate-800 rounded-xl p-8 text-center">
+              Nenhum usuário com Sala STREAMER encontrado.
+            </div>
+          ) : (
+            <>
+              {streamers.some((s) => s.overdue) && (
+                <div className="flex items-center gap-2 px-4 py-2 rounded-lg border border-red-900/60 bg-red-950/20 text-red-300 text-xs font-bold">
+                  <AlertTriangle size={14} />
+                  {streamers.filter((s) => s.overdue).length} streamer(s) EM ATRASO — sem vídeo aprovado nos últimos 60 dias.
+                </div>
+              )}
+              <ul className="space-y-2">
+                {streamers.map((s) => (
+                  <li
+                    key={s.userId}
+                    className={`rounded-xl border p-4 flex flex-col sm:flex-row gap-3 items-start sm:items-center ${
+                      s.overdue
+                        ? 'border-red-900/60 bg-red-950/10'
+                        : 'border-slate-700 bg-slate-900/40'
+                    }`}
+                  >
+                    <div className="h-10 w-10 rounded-full bg-slate-800 border border-slate-600 flex items-center justify-center text-base font-black text-violet-400 shrink-0">
+                      {String(s.username || '?').slice(0, 1).toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <div className="font-bold text-white text-sm">{s.username}</div>
+                      <div className="text-[11px] text-slate-400">#{s.userId} · {s.email}</div>
+                      <div className="flex flex-wrap gap-1.5 pt-0.5">
+                        {s.overdue ? (
+                          <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded border border-red-800/70 bg-red-950/50 text-red-200 flex items-center gap-1">
+                            <AlertTriangle size={10} /> EM ATRASO
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded border border-emerald-800/60 bg-emerald-950/40 text-emerald-300">
+                            EM DIA
+                          </span>
+                        )}
+                        <span className="text-[10px] px-2 py-0.5 rounded border border-slate-700 text-slate-400">
+                          {s.approvedLast60d} vídeo(s) aprovado(s) nos últimos 60 dias
+                        </span>
+                        <span className="text-[10px] px-2 py-0.5 rounded border border-slate-700 text-slate-400">
+                          Último aprovado: {s.lastApprovedAt ? new Date(s.lastApprovedAt).toLocaleDateString('pt-BR') : 'Nunca'}
+                        </span>
+                      </div>
+                    </div>
+                    {s.overdue && (
+                      <button
+                        type="button"
+                        disabled={deactivateStreamerBusyId === s.userId}
+                        onClick={() => {
+                          if (!window.confirm(
+                            `Desativar a Sala STREAMER de «${s.username}»?\n\nTODOS os itens dessa sala (GPUs, racks, baterias, etc.) serão devolvidos ao inventário e o acesso à sala será removido.`
+                          )) return;
+                          void (async () => {
+                            setDeactivateStreamerBusyId(s.userId);
+                            try {
+                              const r = await postAdminDeactivateStreamerRoom(s.userId);
+                              if (!r.ok) {
+                                alert(r.error || 'Falha ao desativar.');
+                                return;
+                              }
+                              alert(`Sala STREAMER desativada. Itens devolvidos: ${r.removedRackCount ?? 0} rack(s).`);
+                              void loadStreamers();
+                            } finally {
+                              setDeactivateStreamerBusyId(null);
+                            }
+                          })();
+                        }}
+                        className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-red-900/70 bg-red-950/40 hover:bg-red-900/50 text-red-100 text-xs font-bold disabled:opacity-40 shrink-0"
+                      >
+                        {deactivateStreamerBusyId === s.userId ? (
+                          <Loader2 className="animate-spin" size={14} />
+                        ) : (
+                          <X size={14} />
+                        )}
+                        Desativar Sala
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </div>
       )}
 

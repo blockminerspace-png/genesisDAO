@@ -21,11 +21,14 @@ import { getGlobalNetworkStats } from './dist/cron/miningGlobalStatsStore.js';
 import { initGenesisStackServices, getGenesisMongo } from './dist/lib/genesisStack/init.js';
 import { miningRuntimeStats } from './dist/cron/miningRuntimeStats.js';
 import { fetchLiveUsdByMiningCoinRowIds, MINING_ECONOMY_PUBLIC_META } from './lib/miningLivePrices.js';
-import { normalizePublicAssetUrl } from './dist/lib/publicAssetUrl.js';
+import { isNftRoomExclusiveMiningCoinRef, NFT_ROOM_EXCLUSIVE_COIN_ERROR_PT } from './lib/nftRoomMining.js';
+import { mapUpgradeRowToApi, resolveAsicDurationUpsertFields } from './lib/upgradeCatalogShape.js';
+import { mapWithdrawalRequestRow } from './lib/withdrawalHistoryShape.js';
 import { recoverOrphanRackBatteryStorageRows } from './dist/modules/batteries/batteries.recovery.js';
 import { ensureStoredBatteriesIntegrity } from './dist/modules/batteries/batteries.integrity.js';
 import { normalizeKnown1000WhBatteryCatalogId } from './dist/modules/batteries/batteries.catalog.js';
 import { orphanRackBatteryAutoRecoverEnabled } from './dist/lib/orphanRackBatteryRecoveryGate.js';
+import { fetchSuspiciousEmailsReport, buildSuspiciousEmailsCsv } from './dist/modules/admin/suspiciousEmails/suspiciousEmailsAdmin.service.js';
 /** Tempo de bloco fixo na economia do simulador (10 minutos) — alinhado ao admin / frontend. */
 const MINING_BLOCK_TIME_SECONDS_FIXED = 600;
 function roundMiningEconomyField8Decimals(n) {
@@ -88,6 +91,7 @@ import { registerServersModuleRoutes } from './dist/modules/servers/servers.cont
 import { loadUserPlacedRacksWithSlots, persistStockStoredBatteriesPlacedRacks } from './dist/lib/serverRoomPersistence.js';
 import { buildRackBatteryPersistSnapshot, collectMountedBatteryInstanceIdsFromPlacedRacks, fetchBatteryUpgradeRowsByIds, isRackBatteryInstanceUuid, loadStoredBatteryRowsForIds } from './dist/modules/batteries/batteries.repository.js';
 import { mergeSaveGameSlicePayload } from './dist/lib/gameSaveSliceMerge.js';
+import { expireUserAsicLeases, listAsicLeaseSummary, listUserAsicLeaseDetails, reconcileTimedAsicStockLeases, repairEquippedAsicLeasesWithoutSlotLease } from './dist/lib/asicLease.js';
 import { applyLegacySaveGameFullBarrier, legacyCriticalKeysInChanges, neutralizeLegacySaveGameSlicePayload } from './dist/lib/legacySaveGamePlayerPolicy.js';
 import { registerServersRackAuxIntentRoutes } from './dist/modules/servers/servers.rackAuxIntent.controller.js';
 import * as backupModel from './dist/models/backupModel.js';
@@ -101,6 +105,9 @@ import { registerPartnerYoutubeRoutes } from './dist/controllers/partnerYoutubeC
 import { registerPartnersPlayerRoutes } from './dist/modules/partners/partnersPlayer.controller.js';
 import { registerDashboardModuleRoutes } from './dist/modules/dashboard/dashboard.controller.js';
 import { registerCheckinModuleRoutes } from './dist/modules/checkin/checkin.controller.js';
+import { registerEmailVerificationModuleRoutes } from './dist/modules/email-verification/emailVerification.controller.js';
+import { registerAuthLoginModuleRoutes } from './dist/modules/auth-login/index.js';
+import { registerAuthRegisterModuleRoutes } from './dist/modules/auth-register/index.js';
 import { registerInventoryRoutes } from './dist/controllers/inventoryController.js';
 import { registerInventoryModuleRoutes } from './dist/modules/inventory/inventory.controller.js';
 import { registerShopModuleRoutes } from './dist/modules/shop/shop.controller.js';
@@ -108,7 +115,7 @@ import { parseHardwareCartOrError, runHardwareCheckoutTransaction } from './dist
 import { registerPlayerCalculatorRoutes } from './dist/controllers/playerCalculatorController.js';
 import { ensurePartnerYoutubeSchema } from './dist/models/partnerYoutubeModel.js';
 import { sendInternalErrorOrPrisma, sendInternalErrorSafeMessageOrPrisma, sendInternalErrorShapeOrPrisma, HttpControlledError, respondIfHttpControlledError } from './dist/utils/apiErrorResponse.js';
-import { appendGameActivityLogMongo, listGameActivityLogsMongo } from './dist/lib/mongoLogs.js';
+import { appendGameActivityLogMongo, listAdminUserActivityLogsMongo } from './dist/lib/mongoLogs.js';
 import { getSettingValue, getSettingsRecord, upsertSettingsEntries } from './dist/lib/settingsPrisma.js';
 import { getAdminMiningRankingPayload, getPublicMiningRankingPayload } from './dist/lib/miningRankingPrisma.js';
 import { computePlayerGameHeaderSnapshot } from './dist/lib/playerGameHeaderSnapshot.js';
@@ -116,14 +123,14 @@ import { ActivityThrottleMaps, resolveActivityThrottleConfig } from './dist/lib/
 import { mountImageStaticMiddleware, registerImageAssetRoutes, runImageRootStartupOrganizeIfEnabled } from './dist/controllers/imageAssetController.js';
 import { SAVE_GAME_ITEM_ID_RE, validateStockForSave, validateUnopenedBoxesForSave, validateDailyActionsForSave, validateStoredBatteriesForSave, sanitizeStoredBatteriesForSavePayload, validateStoredBatteryWarehouseRemovalAllowed, StoredBatterySaveGuardError } from './dist/lib/saveGameEconomyValidate.js';
 import { deleteWarehouseStoredBatteriesExceptKeepIds } from './dist/lib/storedBatteriesWarehouseDelete.js';
-import { validateLoginEmail, validateLoginFieldsPresent, validateLoginPassword, validateSignupPassword, validateSignupUsername, validateOptionalPolygonWallet, validateOptionalAccessLevelId, validateOptionalReferralCodeInput, validateAccessLevelIdsArray, getConflictingUserIdByUsername, EMAIL_ADDRESS_MAX_LENGTH, SIGNUP_EMAIL_MAX_TOTAL } from './dist/models/registrationValidation.js';
-import { isReservedProfileUsername } from './dist/models/profileUsernameReserved.js';
+import { validateLoginEmail, validateSignupPassword, validateOptionalPolygonWallet, EMAIL_ADDRESS_MAX_LENGTH } from './dist/models/registrationValidation.js';
 import { registerProfilePlayerRoutes } from './dist/modules/profile/profilePlayer.controller.js';
 import { bindProfileReferralCode } from './dist/modules/profile/profileReferralBind.service.js';
 import { removeProfileWallet } from './dist/modules/profile/profileWallet.service.js';
-import { getUserIdByEmail, EmailPolicyError, IpLimitError } from './dist/models/userModel.js';
-import { findUserByEmail, insertSession, recordLoginIp, ensureUserReferralCode, updateUserPasswordHash, listUserAccessLevelIds, findUserById, findSessionRow, findActiveSessionUserId, findSessionUserIdIgnoringExpiry, deleteSessionBySessionId, updateUserPolygonAndAccess } from './dist/models/authModel.js';
-import { executeUserPutCoreTransaction } from './dist/models/userPutCoreTransaction.js';
+import { getUserIdByEmail } from './dist/models/userModel.js';
+import { listUserAccessLevelIds, findUserById, findSessionRow, findActiveSessionUserId, findSessionUserIdIgnoringExpiry, deleteSessionBySessionId, updateUserPolygonAndAccess } from './dist/models/authModel.js';
+import { fetchAdminWalletHistoryReport } from './dist/modules/profile/profileWalletHistory.service.js';
+import { getEmailVerificationFlags } from './dist/modules/email-verification/emailVerification.service.js';
 // Global Error Handlers to prevent silent crashes
 process.on('unhandledRejection', (reason, promise) => {
     console.error('[Fatal] Unhandled Rejection at:', promise, 'reason:', reason);
@@ -843,35 +850,60 @@ catch (e) {
         process.exit(1);
     }
 }
-/**
- * IP do cliente: por defeito **não** confia em CF-Connecting-IP / True-Client-IP (spoofing se o Node
- * estiver exposto sem proxy que os remova). Com `TRUST_CF_CONNECTING_IP=1` (ex.: atrás da Cloudflare
- * com origem só acessível via proxy), esses cabeçalhos passam a ter prioridade.
- */
+import { getClientIpFromRequest, isUsablePublicClientIp } from './dist/utils/clientIp.js';
 const TRUST_CF_CONNECTING_IP = String(process.env.TRUST_CF_CONNECTING_IP || '').trim() === '1';
-const getClientIp = (req) => {
-    if (TRUST_CF_CONNECTING_IP) {
-        const cf = req.headers['cf-connecting-ip'];
-        if (cf && typeof cf === 'string')
-            return cf.split(',')[0].trim();
-        const tci = req.headers['true-client-ip'];
-        if (tci && typeof tci === 'string')
-            return tci.split(',')[0].trim();
+const getClientIp = (req) => getClientIpFromRequest(req);
+function parseIpv4PartsForSecurity(ip) {
+    const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+    if (!m)
+        return null;
+    const parts = m.slice(1, 5).map((p) => Number(p));
+    if (parts.some((p) => !Number.isFinite(p) || p < 0 || p > 255))
+        return null;
+    return parts;
+}
+function isIpv4InCidrForSecurity(ip, base, prefix) {
+    const parts = parseIpv4PartsForSecurity(ip);
+    if (!parts)
+        return false;
+    let ipNum = 0;
+    let baseNum = 0;
+    for (let i = 0; i < 4; i += 1) {
+        ipNum = (ipNum << 8) | parts[i];
+        baseNum = (baseNum << 8) | base[i];
     }
-    // Preferir req.ip: com trust proxy definido, o Express aplica a cadeia correta de XFF
-    // (evita primeiro hop spoofado e alinha com o mesmo IP usado em req.ip em setups com proxy).
-    if (req.ip) {
-        const ip = String(req.ip).trim();
-        if (ip && ip !== '::1' && ip !== '127.0.0.1' && ip !== '::ffff:127.0.0.1')
-            return ip;
-    }
-    const forwarded = req.headers['x-forwarded-for'];
-    if (forwarded)
-        return String(forwarded).split(',')[0].trim();
-    return req.socket.remoteAddress || 'unknown';
-};
+    const shift = 32 - prefix;
+    const mask = shift <= 0 ? 0xffffffff : (0xffffffff << shift) >>> 0;
+    return (ipNum & mask) === (baseNum & mask);
+}
+function isKnownProxyEdgeIpForSecurity(ip) {
+    const n = String(ip || '').trim();
+    if (!n)
+        return false;
+    const cidrs = [
+        [[173, 245, 48, 0], 20],
+        [[103, 21, 244, 0], 22],
+        [[103, 22, 200, 0], 22],
+        [[103, 31, 4, 0], 22],
+        [[141, 101, 64, 0], 18],
+        [[108, 162, 192, 0], 18],
+        [[190, 93, 240, 0], 20],
+        [[188, 114, 96, 0], 20],
+        [[197, 234, 240, 0], 22],
+        [[198, 41, 128, 0], 17],
+        [[162, 158, 0, 0], 15],
+        [[104, 16, 0, 0], 13],
+        [[104, 24, 0, 0], 14],
+        [[172, 64, 0, 0], 13],
+        [[131, 0, 72, 0], 22]
+    ];
+    return cidrs.some(([base, prefix]) => isIpv4InCidrForSecurity(n, base, prefix));
+}
+function isUsefulSecurityScanIp(ip) {
+    return isUsablePublicClientIp(ip) && !isKnownProxyEdgeIpForSecurity(ip);
+}
 if (String(process.env.NODE_ENV || '').toLowerCase() === 'production' && !TRUST_CF_CONNECTING_IP) {
-    console.log('[Security] TRUST_CF_CONNECTING_IP não está a 1 — cabeçalhos CF-Connecting-IP / True-Client-IP ignorados. Defina TRUST_CF_CONNECTING_IP=1 quando o origin estiver só atrás da Cloudflare (ou proxy equivalente).');
+    console.log('[Security] TRUST_CF_CONNECTING_IP não está a 1 — CF-Connecting-IP só é usado quando o pedido traz cf-ray (Cloudflare). Para forçar sempre: TRUST_CF_CONNECTING_IP=1. Ajuste TRUST_PROXY_HOPS se o limite por IP parecer errado.');
 }
 const isIpFromUser = async (ip) => {
     try {
@@ -1351,7 +1383,7 @@ app.get('/api/me/profile-bundle', authenticateToken, async (req, res) => {
         sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e);
     }
 });
-/** @deprecated Preferir `DELETE /api/profile/wallet` (mesma regra de palavra-passe). */
+/** @deprecated Preferir `POST /api/profile/wallet/remove` ou `DELETE /api/profile/wallet` (sessão autenticada; sem palavra-passe). */
 app.delete('/api/me/polygon-wallet', authenticateToken, async (req, res) => {
     if (!req.userId)
         return res.status(401).json({ error: 'Não autenticado' });
@@ -1360,14 +1392,15 @@ app.delete('/api/me/polygon-wallet', authenticateToken, async (req, res) => {
         return res.status(400).json({ error: 'Sessão inválida.' });
     }
     try {
-        const body = req.body && typeof req.body === 'object' ? req.body : {};
-        await removeProfileWallet({
+        const ua = req.headers['user-agent'];
+        const out = await removeProfileWallet({
             userId: uid,
-            currentPassword: body.currentPassword,
             requestId: null,
-            route: 'DELETE /api/me/polygon-wallet'
+            route: 'DELETE /api/me/polygon-wallet',
+            clientIp: getClientIp(req),
+            userAgent: typeof ua === 'string' ? ua : null
         });
-        res.json({ ok: true });
+        res.json({ ok: true, wallet: null, removed: out.removed, message: out.message });
     }
     catch (e) {
         if (respondIfHttpControlledError(res, e))
@@ -1502,6 +1535,10 @@ registerPartnersPlayerRoutes(app, {
 });
 registerDashboardModuleRoutes(app, { authenticateToken });
 registerCheckinModuleRoutes(app, { authenticateToken });
+registerEmailVerificationModuleRoutes(app, {
+    emailRequestLimiter: passwordResetRequestLimiter,
+    emailAddressMaxLength: EMAIL_ADDRESS_MAX_LENGTH
+});
 registerProfilePlayerRoutes(app, {
     authenticateToken,
     getClientIp,
@@ -2367,47 +2404,29 @@ app.get('/api/upgrades', async (req, res) => {
             acc[r.upgrade_id].push(r.rack_id);
             return acc;
         }, {});
-        const upgrades = rows.map(r => ({
-            id: r.id,
-            name: r.name,
-            category: r.category,
-            type: r.type,
-            baseCost: r.base_cost,
-            baseProduction: r.base_production,
-            powerConsumption: r.power_consumption ?? undefined,
-            powerCapacity: r.power_capacity ?? undefined,
-            multiplier: r.multiplier ?? undefined,
-            slotsCapacity: r.slots_capacity ?? undefined,
-            aiSlotsCapacity: r.ai_slots_capacity ?? undefined,
-            description: r.description,
-            icon: r.icon,
-            status: r.status,
-            isNft: !!r.is_nft,
-            nftContract: r.nft_contract ?? undefined,
-            nftTokenId: r.nft_token_id ?? undefined,
-            maxGlobalStock: r.max_global_stock ?? undefined,
-            totalSold: Number(r.total_sold) || 0,
-            image: normalizePublicAssetUrl(r.image != null ? String(r.image) : undefined) ?? undefined,
-            layout: r.layout ? (() => { try {
-                return JSON.parse(r.layout);
-            }
-            catch {
-                return undefined;
-            } })() : undefined,
-            compatibleRacks: compatMap[r.id] || [],
-            rewardWh: r.reward_wh ?? 0,
-            sellInHardwareMarket: r.sell_in_hardware_market !== 0,
-            sellInBlackMarket: r.sell_in_black_market !== 0,
-            isActive: r.is_active !== 0
-        }));
+        const upgrades = rows.map((r) => mapUpgradeRowToApi(r, compatMap[r.id] || []));
         res.json(upgrades);
     }
     catch (e) {
         sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e);
     }
 });
+const SHOP_PRODUCT_ID_RE = /^[a-zA-Z0-9_.-]{1,160}$/;
 app.post('/api/upgrades', isAdmin, async (req, res) => {
     const upgrades = req.body;
+    if (!Array.isArray(upgrades)) {
+        return res.status(400).json({ error: 'Payload inválido.' });
+    }
+    for (const raw of upgrades) {
+        const id = typeof raw?.id === 'string' ? raw.id.trim() : '';
+        const name = typeof raw?.name === 'string' ? raw.name.trim() : '';
+        if (!SHOP_PRODUCT_ID_RE.test(id)) {
+            return res.status(400).json({ error: `ID de item inválido: ${id || '(vazio)'}. Use apenas letras, números, ".", "_" ou "-".` });
+        }
+        if (!name) {
+            return res.status(400).json({ error: `Nome em falta para o item ${id}.` });
+        }
+    }
     const client = await db.connect();
     try {
         await client.query('BEGIN');
@@ -2415,15 +2434,22 @@ app.post('/api/upgrades', isAdmin, async (req, res) => {
         const currentRes = await client.query('SELECT id FROM upgrades');
         const existingIds = new Set(currentRes.rows.map(r => r.id));
         const incomingIds = new Set(upgrades.map(u => u.id));
+        const durRes = await client.query('SELECT id, asic_duration_amount, asic_duration_unit FROM upgrades');
+        const durById = Object.fromEntries(durRes.rows.map((r) => [
+            r.id,
+            r
+        ]));
         // 2. UPSERT incoming items
         for (const u of upgrades) {
+            const asicDur = resolveAsicDurationUpsertFields(u, durById[u.id]);
             await client.query(`
         INSERT INTO upgrades (
           id,name,category,type,base_cost,base_production,power_consumption,power_capacity,
           multiplier,slots_capacity,ai_slots_capacity,description,icon,status,is_nft,
           nft_contract,nft_token_id,max_global_stock,image,layout,reward_wh,
-          sell_in_hardware_market,sell_in_black_market,is_active
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+          sell_in_hardware_market,sell_in_black_market,is_active,nft_mining_coin_id,asic_duration_kind,
+          asic_duration_amount,asic_duration_unit
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
         ON CONFLICT (id) DO UPDATE SET
           name=EXCLUDED.name, category=EXCLUDED.category, type=EXCLUDED.type,
           base_cost=EXCLUDED.base_cost, base_production=EXCLUDED.base_production,
@@ -2436,7 +2462,11 @@ app.post('/api/upgrades', isAdmin, async (req, res) => {
           layout=EXCLUDED.layout, reward_wh=EXCLUDED.reward_wh,
           sell_in_hardware_market=EXCLUDED.sell_in_hardware_market,
           sell_in_black_market=EXCLUDED.sell_in_black_market,
-          is_active=EXCLUDED.is_active
+          is_active=EXCLUDED.is_active,
+          nft_mining_coin_id=EXCLUDED.nft_mining_coin_id,
+          asic_duration_kind=EXCLUDED.asic_duration_kind,
+          asic_duration_amount=EXCLUDED.asic_duration_amount,
+          asic_duration_unit=EXCLUDED.asic_duration_unit
       `, [
                 u.id, u.name, u.category, u.type, u.baseCost, u.baseProduction,
                 u.powerConsumption ?? null, u.powerCapacity ?? null, u.multiplier ?? null,
@@ -2444,7 +2474,11 @@ app.post('/api/upgrades', isAdmin, async (req, res) => {
                 (u.icon || '📦'), u.status, u.isNft ? 1 : 0, u.nftContract ?? null,
                 u.nftTokenId ?? null, u.maxGlobalStock ?? null, u.image ?? null,
                 u.layout ? JSON.stringify(u.layout) : null, u.rewardWh ?? 0,
-                u.sellInHardwareMarket !== false ? 1 : 0, u.sellInBlackMarket !== false ? 1 : 0, u.isActive !== false ? 1 : 0
+                u.sellInHardwareMarket !== false ? 1 : 0, u.sellInBlackMarket !== false ? 1 : 0, u.isActive !== false ? 1 : 0,
+                typeof u.nftMiningCoinId === 'string' && u.nftMiningCoinId.trim() ? u.nftMiningCoinId.trim() : null,
+                'none',
+                asicDur.amount,
+                asicDur.unit
             ]);
             // Update compatibility (delete all for this item, then re-insert)
             await client.query('DELETE FROM upgrade_compat_racks WHERE upgrade_id = $1', [u.id]);
@@ -3107,6 +3141,13 @@ app.post('/api/deposit/verify', async (req, res) => {
     if (String(email).trim().toLowerCase() !== who.rows[0].em) {
         return res.status(403).json({ error: 'O email não corresponde à sessão autenticada.' });
     }
+    const wPol = await db.query('SELECT polygon_wallet FROM users WHERE id = $1', [uid]);
+    const pwStr = wPol.rows[0]?.polygon_wallet != null ? String(wPol.rows[0].polygon_wallet).trim() : '';
+    if (!pwStr || ['0x', 'null'].includes(pwStr.toLowerCase())) {
+        return res.status(400).json({
+            error: 'Conecte uma carteira antes de usar depósitos ou saques em cripto.'
+        });
+    }
     console.log('[DepositVerify] userId=%s network=%s tx=%s', uid, network, txNorm.slice(0, 14) + '…');
     const checkTx = await db.query('SELECT user_id FROM daily_actions WHERE action_key = $1', [`tx_${txNorm}`]);
     if (checkTx.rowCount > 0) {
@@ -3644,6 +3685,12 @@ app.post('/api/server-room/room-coins', async (req, res) => {
     const roomNorm = normalizePlacedRackRoomId(body.roomId);
     if (!isValidRoomId(roomNorm))
         return res.status(400).json({ error: 'Sala inválida.' });
+    if (roomNorm === 'room_1775484506874') {
+        return res.status(400).json({
+            error: 'Na Sala NFT cada ASIC usa a moeda definida no painel admin (por modelo). Não é possível alterar a moeda em massa aqui.',
+            code: 'NFT_ROOM_COIN_LOCKED'
+        });
+    }
     const rawCoin = body.coinId;
     let selectedCoinId = null;
     if (rawCoin != null && String(rawCoin).trim() !== '') {
@@ -3657,7 +3704,9 @@ app.post('/api/server-room/room-coins', async (req, res) => {
         await client.query("SET statement_timeout = '20s'");
         await client.query('SELECT 1 FROM game_states WHERE user_id = $1 FOR UPDATE', [uid]);
         if (selectedCoinId) {
-            const cRes = await client.query('SELECT id, is_active FROM mining_coins WHERE id = $1', [selectedCoinId]);
+            const cRes = await client.query('SELECT id, symbol, is_active FROM mining_coins WHERE id = $1', [
+                selectedCoinId
+            ]);
             if (!cRes.rows[0]) {
                 await client.query('ROLLBACK');
                 return res.status(400).json({ error: 'Moeda desconhecida.' });
@@ -3665,6 +3714,13 @@ app.post('/api/server-room/room-coins', async (req, res) => {
             if (!Number(cRes.rows[0].is_active)) {
                 await client.query('ROLLBACK');
                 return res.status(400).json({ error: 'Esta moeda está desativada.' });
+            }
+            if (isNftRoomExclusiveMiningCoinRef({ id: selectedCoinId, symbol: cRes.rows[0].symbol })) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({
+                    error: NFT_ROOM_EXCLUSIVE_COIN_ERROR_PT,
+                    code: 'NFT_EXCLUSIVE_COIN'
+                });
             }
         }
         const roomSqlExpr = `COALESCE(NULLIF(BTRIM(room_id::text), ''), 'room_initial')`;
@@ -4544,7 +4600,7 @@ app.post('/api/season-pass/grant', isAdmin, async (req, res) => {
     if (!email || !passId)
         return res.status(400).json({ error: 'Missing fields' });
     try {
-        const uid = await getUserIdByEmail(email, req.ip, { allowAnyDomain: true });
+        const uid = await getUserIdByEmail(email, getClientIp(req), { allowAnyDomain: true });
         await prisma.$transaction(async (tx) => {
             const pass = await tx.season_passes.findUnique({ where: { id: passId } });
             if (!pass)
@@ -4844,6 +4900,62 @@ app.get('/api/admin/users/map', isAdmin, async (req, res) => {
       FROM users u
     `);
         res.json(resRows.rows);
+    }
+    catch (e) {
+        sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e);
+    }
+});
+app.get('/api/admin/users/suspicious-emails', isAdmin, async (req, res) => {
+    try {
+        const report = await fetchSuspiciousEmailsReport(db, {
+            q: req.query.q,
+            reason: req.query.reason,
+            status: req.query.status,
+            domain: req.query.domain,
+            activity: req.query.activity,
+            page: req.query.page,
+            limit: req.query.limit,
+            sort: req.query.sort,
+        });
+        res.json(report);
+    }
+    catch (e) {
+        sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e);
+    }
+});
+app.get('/api/admin/users/suspicious-emails/export.csv', isAdmin, async (req, res) => {
+    try {
+        const report = await fetchSuspiciousEmailsReport(db, {
+            q: req.query.q,
+            reason: req.query.reason,
+            status: req.query.status,
+            domain: req.query.domain,
+            activity: req.query.activity,
+            page: 1,
+            limit: 5000,
+            sort: req.query.sort,
+        }, { exportMode: true });
+        const csv = buildSuspiciousEmailsCsv(report.users);
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', 'attachment; filename="suspicious-emails.csv"');
+        res.send(csv);
+    }
+    catch (e) {
+        sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e);
+    }
+});
+app.get('/api/admin/users/:userId/wallet-history', isAdmin, async (req, res) => {
+    const userId = parseInt(String(req.params.userId), 10);
+    if (!Number.isFinite(userId) || userId <= 0) {
+        return res.status(400).json({ error: 'userId inválido.' });
+    }
+    try {
+        const exists = await prisma.users.findUnique({ where: { id: userId }, select: { id: true } });
+        if (!exists) {
+            return res.status(404).json({ error: 'Utilizador não encontrado.' });
+        }
+        const report = await fetchAdminWalletHistoryReport(userId);
+        res.json(report);
     }
     catch (e) {
         sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e);
@@ -5301,7 +5413,8 @@ app.post('/api/mining-coins', isAdmin, async (req, res) => {
             const netRaw = parseFloat(c.networkHashrate);
             const netHash = Math.max(1000000, roundMiningEconomyField8Decimals(Math.max(0, Number.isFinite(netRaw) ? netRaw : 0)));
             const blockRew = roundMiningEconomyField8Decimals(Math.max(0, parseFloat(c.blockReward) || 0));
-            const blockTime = MINING_BLOCK_TIME_SECONDS_FIXED;
+            const blockTimeParsed = parseFloat(c.blockTime);
+            const blockTime = Math.min(86400, Math.max(1, roundMiningEconomyField8Decimals(Number.isFinite(blockTimeParsed) && blockTimeParsed > 0 ? blockTimeParsed : MINING_BLOCK_TIME_SECONDS_FIXED)));
             const price = roundMiningEconomyField8Decimals(Math.max(0, parseFloat(c.priceUSD) || 0));
             const diff = roundMiningEconomyField8Decimals(Math.max(1, parseFloat(c.difficulty) || 1));
             const mult = roundMiningEconomyField8Decimals(Math.max(1, parseFloat(c.multiplier) || 1));
@@ -5383,107 +5496,40 @@ app.post('/api/mining-coins', isAdmin, async (req, res) => {
         client.release();
     }
 });
-app.post('/api/login', async (req, res) => {
-    const { email, password } = req.body || {};
-    const emailStr = typeof email === 'string' ? email : '';
-    const passwordStr = typeof password === 'string' ? password : '';
-    const present = validateLoginFieldsPresent(email, password);
-    if (!present.ok)
-        return res.status(400).json({ error: present.error });
-    const emailCheck = validateLoginEmail(emailStr);
-    if (!emailCheck.ok)
-        return res.status(400).json({ error: emailCheck.error });
-    const passwordCheck = validateLoginPassword(passwordStr);
-    if (!passwordCheck.ok)
-        return res.status(400).json({ error: passwordCheck.error });
+app.post('/api/admin/mining-coins/sync-live-prices', isAdmin, async (req, res) => {
+    const client = await db.connect();
     try {
-        const normalizedEmail = emailStr.trim().toLowerCase();
-        let u = await findUserByEmail(normalizedEmail);
-        if (!u) {
-            await bcrypt.compare(passwordStr, '$2b$10$abcdefghijklmnopqrstuvwxyz123456');
-            return res.status(401).json({ error: 'E-mail ou palavra-passe incorretos.' });
+        const resDb = await client.query('SELECT id, symbol FROM mining_coins WHERE is_active = 1 ORDER BY id');
+        const rows = resDb.rows;
+        if (!rows.length) {
+            return res.json({ ok: true, updated: 0 });
         }
-        if (u.is_blocked)
-            return res.status(403).json({ error: 'Este usuário está bloqueado.' });
-        if (!u.password) {
-            const hashedPassword = await bcrypt.hash(passwordStr, 10);
-            await updateUserPasswordHash(u.id, hashedPassword);
-            u = { ...u, password: hashedPassword };
+        const liveById = await fetchLiveUsdByMiningCoinRowIds(rows, { ttlMs: 0 });
+        let updated = 0;
+        await client.query('BEGIN');
+        for (const row of rows) {
+            const id = String(row.id ?? '').trim();
+            if (!id)
+                continue;
+            const live = liveById[id];
+            if (typeof live !== 'number' || !Number.isFinite(live) || live < 0)
+                continue;
+            const rounded = Math.round(live * 1e8) / 1e8;
+            await client.query('UPDATE mining_coins SET price_usd = $1, usdc_rate = $1 WHERE id = $2', [rounded, id]);
+            updated++;
         }
-        let isMatch = false;
-        const pwd = String(u.password ?? '');
-        if (pwd && (pwd.startsWith('$2a$') || pwd.startsWith('$2b$'))) {
-            try {
-                isMatch = await bcrypt.compare(passwordStr, pwd);
-            }
-            catch (bcError) {
-                console.error('[Login] bcrypt:', bcError.message || bcError);
-            }
-        }
-        else if (pwd === passwordStr) {
-            isMatch = true;
-            const hashedPassword = await bcrypt.hash(passwordStr, 10);
-            await updateUserPasswordHash(u.id, hashedPassword);
-            u = { ...u, password: hashedPassword };
-        }
-        if (!isMatch) {
-            return res.status(401).json({ error: 'E-mail ou palavra-passe incorretos.' });
-        }
-        const currentIp = getClientIp(req);
-        try {
-            await recordLoginIp(u.id, currentIp);
-            u = { ...u, registration_ip: u.registration_ip ?? currentIp };
-        }
-        catch (ipErr) {
-            console.error('[Login] Erro ao registrar histórico de IP:', ipErr.message);
-        }
-        const referralCode = await ensureUserReferralCode(u.id, String(u.username ?? ''), u.referral_code);
-        u = { ...u, referral_code: referralCode };
-        const sid = crypto.randomUUID();
-        const expiresAt = Date.now() + 30 * 24 * 3600 * 1000;
-        await insertSession(sid, u.id, Date.now(), expiresAt);
-        const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
-        res.append('Set-Cookie', `sid=${sid}; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=${30 * 24 * 3600}`);
-        try {
-            await issueJwtAuthCookies(res, u.id, req);
-        }
-        catch (jwtErr) {
-            console.error('[Login] JWT cookies:', jwtErr);
-        }
-        let adminPerms = null;
-        try {
-            if (u.admin_permissions)
-                adminPerms = JSON.parse(String(u.admin_permissions));
-        }
-        catch (pe) {
-            console.error('[Login] Failed to parse admin_permissions:', pe);
-        }
-        adminPerms = normalizeAdminPermissionsForApi(!!u.is_admin, adminPerms);
-        const userLvlIds = await listUserAccessLevelIds(u.id, u.access_level_id);
-        res.json({
-            id: String(u.id),
-            email: u.email,
-            username: u.username,
-            isAdmin: !!u.is_admin,
-            isSuperAdmin: resolveIsSuperAdminFromUserRow({
-                is_super_admin: u.is_super_admin,
-                is_admin: u.is_admin,
-                email: u.email
-            }),
-            isBlocked: !!u.is_blocked,
-            adminPermissions: adminPerms,
-            polygonWallet: u.polygon_wallet,
-            accessLevelId: u.access_level_id,
-            accessLevelIds: userLvlIds,
-            referralCode: u.referral_code,
-            referredBy: u.referred_by
-        });
+        await client.query('COMMIT');
+        res.json({ ok: true, updated });
     }
     catch (e) {
-        console.error('[Login]', e);
+        await client.query('ROLLBACK').catch(() => { });
         sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e);
     }
+    finally {
+        client.release();
+    }
 });
+registerAuthLoginModuleRoutes(app, { bcrypt, getClientIp });
 app.get('/api/session', async (req, res) => {
     const cookies = parseCookies(req);
     const sid = cookies.sid;
@@ -5555,6 +5601,7 @@ app.get('/api/session', async (req, res) => {
             accessLevelIds: userLvlIds,
             referralCode: u.referral_code,
             referredBy: u.referred_by,
+            ...getEmailVerificationFlags(u),
             isImpersonating
         });
     }
@@ -5612,6 +5659,14 @@ app.get('/api/load-game', async (req, res) => {
         return res.status(401).json({ error: 'Sessão inválida' });
     try {
         const uid = req.userId;
+        const guardUser = await prisma.users.findUnique({
+            where: { id: uid },
+            select: { id: true, is_blocked: true }
+        });
+        if (!guardUser)
+            return res.status(404).json({ error: 'Utilizador não encontrado' });
+        if (guardUser.is_blocked)
+            return res.status(403).json({ error: 'Conta bloqueada.', code: 'FORBIDDEN' });
         await computeProgressForUser(db, uid, Date.now());
         const [gsRow, stockRows, boxRows, batRows, rackRows, coinRows, dailyRows, claimedRows, u] = await Promise.all([
             prisma.game_states.findUnique({ where: { user_id: uid } }),
@@ -5755,254 +5810,7 @@ app.put('/api/users/block', isAdmin, async (req, res) => {
         sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e);
     }
 });
-app.put('/api/user', async (req, res) => {
-    const u = req.body;
-    const normalizedEmail = String(u.email || '')
-        .toLowerCase()
-        .trim();
-    console.log(`[UserUpdate] Payload received for email: ${normalizedEmail}, userId: ${req.userId}`);
-    try {
-        let uid;
-        if (req.userId) {
-            // Check if admin
-            const actor = await prisma.users.findUnique({
-                where: { id: req.userId },
-                select: { is_admin: true }
-            });
-            const isAdmin = actor?.is_admin;
-            if (isAdmin) {
-                let resolvedAdminTarget = false;
-                if (u.id != null && String(u.id).trim() !== '') {
-                    const idNum = parseInt(String(u.id).trim(), 10);
-                    if (Number.isFinite(idNum) && idNum > 0) {
-                        const idRow = await prisma.users.findUnique({ where: { id: idNum }, select: { id: true } });
-                        if (idRow) {
-                            uid = idNum;
-                            resolvedAdminTarget = true;
-                        }
-                    }
-                }
-                if (!resolvedAdminTarget) {
-                    if (!normalizedEmail) {
-                        return res.status(400).json({ error: 'ID ou email do utilizador a editar é obrigatório.' });
-                    }
-                    const byEmail = await prisma.users.findFirst({
-                        where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
-                        select: { id: true }
-                    });
-                    if (!byEmail) {
-                        return res.status(404).json({ error: 'Utilizador não encontrado para este email. Não foi criada conta nova (evita erros de digitação).' });
-                    }
-                    uid = byEmail.id;
-                }
-            }
-            else {
-                uid = req.userId;
-            }
-        }
-        else {
-            // Se não estiver logado, permitimos apenas se for uma "finalização de cadastro"
-            // ou seja, o usuário existe no DB (pré-criado) mas não tem senha ainda.
-            if (!u.email) {
-                return res.status(400).json({ error: 'Email é obrigatório para o registro.' });
-            }
-            const existingRes = await db.query('SELECT password FROM users WHERE email = $1', [normalizedEmail]);
-            const existing = existingRes.rows[0];
-            if (existing && existing.password) {
-                return res.status(403).json({ error: 'Este email já está cadastrado. Por favor, faça login.' });
-            }
-            if (!existing) {
-                const ev = assertPublicSignupEmailAllowed(normalizedEmail);
-                if (!ev.ok) {
-                    return res.status(400).json({ ok: false, error: ev.error });
-                }
-            }
-            if (!normalizedEmail.includes('@') || normalizedEmail.length > SIGNUP_EMAIL_MAX_TOTAL) {
-                return res.status(400).json({ error: 'E-mail inválido.' });
-            }
-            uid = await getUserIdByEmail(normalizedEmail, getClientIp(req));
-        }
-        const editingSelf = req.userId != null && Number(uid) === Number(req.userId);
-        const hasPassword = typeof u.password === 'string' && u.password.trim().length > 0;
-        if (editingSelf && hasPassword) {
-            return res.status(422).json({
-                error: 'Utilize POST /api/profile/password/change para alterar a palavra-passe.',
-                code: 'PASSWORD_USE_PROFILE'
-            });
-        }
-        if (req.userId) {
-            const actRes = await db.query('SELECT COALESCE(is_admin,0) AS is_admin, COALESCE(is_super_admin,0) AS is_super_admin, email FROM users WHERE id = $1', [req.userId]);
-            const actorIsAdmin = !!actRes.rows[0]?.is_admin;
-            const actorIsSuper = actRes.rows[0]
-                ? resolveIsSuperAdminFromUserRow(actRes.rows[0])
-                : false;
-            if (actorIsAdmin) {
-                const tgtRes = await db.query('SELECT COALESCE(is_admin,0) AS is_admin, COALESCE(is_super_admin,0) AS is_super_admin, LOWER(TRIM(COALESCE(email, \'\'))) AS cur_email FROM users WHERE id = $1', [uid]);
-                const targetIsAdmin = !!tgtRes.rows[0]?.is_admin;
-                const targetIsSuperAdmin = tgtRes.rows[0]
-                    ? resolveIsSuperAdminFromUserRow(tgtRes.rows[0])
-                    : false;
-                const curEmail = String(tgtRes.rows[0]?.cur_email || '');
-                const nextEmail = String(normalizedEmail || '').trim().toLowerCase();
-                const emailChanging = nextEmail !== curEmail;
-                const editingOther = Number(req.userId) !== Number(uid);
-                if (targetIsAdmin && editingOther && !actorIsSuper && emailChanging) {
-                    return res.status(403).json({
-                        error: 'Apenas super administradores podem alterar o email de outras contas administrador.'
-                    });
-                }
-                if (hasPassword && editingOther && targetIsSuperAdmin && !actorIsSuper) {
-                    return res.status(403).json({
-                        error: 'Apenas super administradores podem alterar a senha de contas super administrador.'
-                    });
-                }
-            }
-        }
-        let allowAccessLevelFromBody = !req.userId;
-        if (req.userId) {
-            const gateRes = await db.query('SELECT COALESCE(is_admin,0) AS a FROM users WHERE id = $1', [req.userId]);
-            allowAccessLevelFromBody = !!gateRes.rows[0]?.a;
-        }
-        let accessLevelIdForUpdate = u.accessLevelId ?? null;
-        if (!allowAccessLevelFromBody) {
-            const curLv = await db.query('SELECT access_level_id FROM users WHERE id = $1', [uid]);
-            accessLevelIdForUpdate = curLv.rows[0]?.access_level_id ?? null;
-        }
-        else if (u.accessLevelId != null && String(u.accessLevelId).trim() !== '') {
-            const al = validateOptionalAccessLevelId(u.accessLevelId);
-            if (al && typeof al === 'object' && 'error' in al) {
-                return res.status(400).json({ error: al.error });
-            }
-            if (typeof al === 'string') {
-                accessLevelIdForUpdate = al;
-            }
-        }
-        let usernameForUpdate = u.username;
-        if (!req.userId) {
-            const userVu = validateSignupUsername(u.username);
-            if (!userVu.ok) {
-                return res.status(400).json({ error: userVu.error });
-            }
-            usernameForUpdate = userVu.username;
-        }
-        else if (typeof u.username === 'string' && u.username.trim() !== '') {
-            const userVu = validateSignupUsername(u.username);
-            if (!userVu.ok) {
-                return res.status(400).json({ error: userVu.error });
-            }
-            usernameForUpdate = userVu.username;
-            const clash = await getConflictingUserIdByUsername(userVu.username, uid);
-            if (clash != null) {
-                return res.status(409).json({
-                    error: 'Este nome de utilizador já está em uso.',
-                    code: 'DUPLICATE'
-                });
-            }
-            if (editingSelf && isReservedProfileUsername(userVu.username)) {
-                return res.status(422).json({
-                    error: 'Este nome de utilizador é reservado ou não é permitido.',
-                    code: 'USERNAME_RESERVED'
-                });
-            }
-        }
-        if (hasPassword) {
-            const pv = validateSignupPassword(u.password, true);
-            if (!pv.ok) {
-                return res.status(400).json({ error: pv.error });
-            }
-        }
-        const polygonWalletInBody = u && typeof u === 'object' && Object.prototype.hasOwnProperty.call(u, 'polygonWallet');
-        if (editingSelf && polygonWalletInBody) {
-            return res.status(422).json({
-                error: 'Utilize o fluxo seguro do perfil (desafio + assinatura) para ligar a carteira Polygon: POST /api/profile/wallet/connect/challenge e /verify.',
-                code: 'POLYGON_USE_PROFILE'
-            });
-        }
-        let polygonForUpdate = undefined;
-        if (polygonWalletInBody) {
-            const pwc = validateOptionalPolygonWallet(u.polygonWallet);
-            if (pwc && typeof pwc === 'object' && 'error' in pwc) {
-                return res.status(400).json({ error: pwc.error });
-            }
-            polygonForUpdate = typeof pwc === 'string' ? pwc : null;
-        }
-        const refVal = validateOptionalReferralCodeInput(u.referredBy);
-        if (!refVal.ok) {
-            return res.status(400).json({ error: refVal.error });
-        }
-        let referredByForUpdate = refVal.code;
-        if (editingSelf && referredByForUpdate) {
-            return res.status(422).json({
-                error: 'Utilize POST /api/profile/referral/bind para vincular o código de indicação.',
-                code: 'REFERRAL_USE_PROFILE'
-            });
-        }
-        let accessLevelIdsValidated = null;
-        if (allowAccessLevelFromBody && Array.isArray(u.accessLevelIds)) {
-            const av = validateAccessLevelIdsArray(u.accessLevelIds);
-            if (!av.ok) {
-                return res.status(400).json({ error: av.error });
-            }
-            accessLevelIdsValidated = av.ids;
-        }
-        const passwordHash = hasPassword ? await bcrypt.hash(u.password, 10) : null;
-        const clientIpReferral = getClientIp(req);
-        await prisma.$transaction(async (tx) => {
-            await executeUserPutCoreTransaction(tx, {
-                uid: Number(uid),
-                usernameForUpdate: String(usernameForUpdate ?? ''),
-                normalizedEmail,
-                passwordHash,
-                polygonForUpdate: polygonForUpdate === undefined
-                    ? undefined
-                    : polygonForUpdate == null || polygonForUpdate === ''
-                        ? null
-                        : String(polygonForUpdate),
-                accessLevelIdForUpdate: accessLevelIdForUpdate == null || accessLevelIdForUpdate === ''
-                    ? null
-                    : String(accessLevelIdForUpdate),
-                referredByForUpdate: referredByForUpdate == null || referredByForUpdate === ''
-                    ? null
-                    : String(referredByForUpdate),
-                allowAccessLevelFromBody,
-                accessLevelIdsValidated,
-                clientIpReferral
-            });
-        });
-        console.log(`[UserUpdate] Success for uid: ${uid}`);
-        res.json({ ok: true });
-    }
-    catch (e) {
-        console.error('[UserUpdate] Error:', e);
-        if (e instanceof IpLimitError) {
-            return res.status(403).json({
-                error: e.message,
-                code: 'IP_LIMIT_REACHED',
-                accounts: e.existingAccounts
-            });
-        }
-        if (e instanceof EmailPolicyError) {
-            return res.status(400).json({ ok: false, error: e.message });
-        }
-        if (e.existingAccounts) {
-            return res.status(403).json({
-                error: e.message,
-                code: 'IP_LIMIT_REACHED',
-                accounts: e.existingAccounts
-            });
-        }
-        if (e.code === 'EMAIL_POLICY') {
-            return res.status(400).json({ ok: false, error: e.message });
-        }
-        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-            return res.status(409).json({
-                error: 'Este e-mail ou nome de utilizador já está em uso.',
-                code: 'DUPLICATE'
-            });
-        }
-        sendInternalErrorSafeMessageOrPrisma(res, '[UserUpdate]', e, 'Erro interno no servidor durante o registro.');
-    }
-});
+registerAuthRegisterModuleRoutes(app, { bcrypt, getClientIp });
 async function deleteUserByEmail(email, client) {
     const dbClient = client || await db.connect();
     const wasOwner = !client;
@@ -6166,7 +5974,16 @@ app.post('/api/admin/bulk-gift', isAdmin, async (req, res) => {
                 await processReferralCommission(client, uid, amount, 'deposit');
             }
             else if (type === 'item') {
-                await client.query('INSERT INTO stock (user_id, item_id, qty) VALUES ($1, $2, $3) ON CONFLICT (user_id, item_id) DO UPDATE SET qty = stock.qty + $3', [uid, String(id), Math.max(1, parseInt(String(amount), 10))]);
+                const itemId = String(id).trim();
+                const giftQty = Math.max(1, parseInt(String(amount), 10));
+                const nowMs = Date.now();
+                const stockRes = await client.query('SELECT qty FROM stock WHERE user_id = $1 AND item_id = $2', [uid, itemId]);
+                const prevQty = Math.max(0, Math.floor(Number(stockRes.rows[0]?.qty) || 0));
+                const targetQty = prevQty + giftQty;
+                const reconciled = await reconcileTimedAsicStockLeases(client, uid, itemId, targetQty, nowMs);
+                if (!reconciled) {
+                    await client.query('INSERT INTO stock (user_id, item_id, qty) VALUES ($1, $2, $3) ON CONFLICT (user_id, item_id) DO UPDATE SET qty = stock.qty + $3', [uid, itemId, giftQty]);
+                }
             }
             else if (type === 'box') {
                 await client.query('INSERT INTO unopened_boxes (user_id, box_id, qty) VALUES ($1, $2, $3) ON CONFLICT (user_id, box_id) DO UPDATE SET qty = unopened_boxes.qty + $3', [uid, String(id), Math.max(1, parseInt(String(amount), 10))]);
@@ -6234,7 +6051,7 @@ app.get('/api/game-state/:email', async (req, res) => {
             uid = req.userId; // Força o próprio UID se não for admin
         }
         else {
-            uid = await getUserIdByEmail(email, req.ip, { allowAnyDomain: true });
+            uid = await getUserIdByEmail(email, getClientIp(req), { allowAnyDomain: true });
         }
     }
     const isAdminEdit = req.headers['x-admin-edit'] === '1';
@@ -6242,6 +6059,8 @@ app.get('/api/game-state/:email', async (req, res) => {
         const u = await prisma.users.findUnique({ where: { id: uid } });
         if (!u)
             return res.status(404).json({ error: 'User not found' });
+        if (u.is_blocked)
+            return res.status(403).json({ error: 'Conta bloqueada.', code: 'FORBIDDEN' });
         const now = Date.now();
         console.log(`[GameState] Start for ${uid} at ${now}`);
         const t0 = performance.now();
@@ -6258,6 +6077,30 @@ app.get('/api/game-state/:email', async (req, res) => {
         }
         else {
             offlineMined = progressRes.offlineMined || {};
+        }
+        if (!isAdminEdit) {
+            const leaseClient = await db.connect();
+            try {
+                await leaseClient.query('BEGIN');
+                await expireUserAsicLeases(leaseClient, uid, now);
+                const repaired = await repairEquippedAsicLeasesWithoutSlotLease(leaseClient, uid, now);
+                if (repaired > 0) {
+                    console.log(`[GameState] repairEquippedAsicLeases uid=${uid} repaired=${repaired}`);
+                }
+                await leaseClient.query('COMMIT');
+            }
+            catch (eLease) {
+                try {
+                    await leaseClient.query('ROLLBACK');
+                }
+                catch {
+                    /* ignore */
+                }
+                console.warn(`[GameState] expireUserAsicLeases failed uid=${uid}:`, eLease instanceof Error ? eLease.message : String(eLease));
+            }
+            finally {
+                leaseClient.release();
+            }
         }
         console.log(`[GameState] Starting parallel Prisma reads...`);
         const [gsRow, stockRows, unopenedRows, storedBatRows, rackRows, coinBalRows, dailyRows, listingRows, claimedRows] = await Promise.all([
@@ -6290,6 +6133,39 @@ app.get('/api/game-state/:email', async (req, res) => {
             const itemId = normalizeKnown1000WhBatteryCatalogId(r.item_id);
             stock[itemId] = (stock[itemId] || 0) + (Number(r.qty) || 0);
         });
+        if (!isAdminEdit && Object.keys(stock).length > 0) {
+            const stockLeaseClient = await db.connect();
+            try {
+                await stockLeaseClient.query('BEGIN');
+                for (const [itemId, qty] of Object.entries(stock)) {
+                    if (qty > 0) {
+                        await reconcileTimedAsicStockLeases(stockLeaseClient, uid, itemId, qty, now);
+                    }
+                }
+                await stockLeaseClient.query('COMMIT');
+                const stockRefresh = await prisma.stock.findMany({ where: { user_id: uid } });
+                for (const k of Object.keys(stock))
+                    delete stock[k];
+                stockRefresh.forEach((r) => {
+                    if (!isValidSaveGameItemId(r.item_id))
+                        return;
+                    const itemId = normalizeKnown1000WhBatteryCatalogId(r.item_id);
+                    stock[itemId] = (stock[itemId] || 0) + (Number(r.qty) || 0);
+                });
+            }
+            catch (eStockLease) {
+                try {
+                    await stockLeaseClient.query('ROLLBACK');
+                }
+                catch {
+                    /* ignore */
+                }
+                console.warn(`[GameState] reconcileTimedAsicStockLeases uid=${uid}:`, eStockLease instanceof Error ? eStockLease.message : String(eStockLease));
+            }
+            finally {
+                stockLeaseClient.release();
+            }
+        }
         const unopenedBoxes = {};
         unopenedRows.forEach((r) => {
             unopenedBoxes[r.box_id] = r.qty;
@@ -6339,11 +6215,17 @@ app.get('/api/game-state/:email', async (req, res) => {
                 })
             ]);
             const slotsMap = new Map();
+            const slotLeaseMap = new Map();
             const multipliersMap = new Map();
             slotsList.forEach((s) => {
-                if (!slotsMap.has(s.rack_id))
+                if (!slotsMap.has(s.rack_id)) {
                     slotsMap.set(s.rack_id, []);
+                    slotLeaseMap.set(s.rack_id, []);
+                }
                 slotsMap.get(s.rack_id)[s.slot_index] = s.machine_item_id;
+                const leaseRaw = s.machine_lease_id;
+                slotLeaseMap.get(s.rack_id)[s.slot_index] =
+                    leaseRaw != null && String(leaseRaw).trim() ? String(leaseRaw).trim() : null;
             });
             multipliersList.forEach((m) => {
                 if (!multipliersMap.has(m.rack_id))
@@ -6355,6 +6237,7 @@ app.get('/api/game-state/:email', async (req, res) => {
                     id: r.id,
                     itemId: r.item_id,
                     slots: slotsMap.get(r.id) || [],
+                    slotLeaseIds: slotLeaseMap.get(r.id) || [],
                     multiplierSlots: multipliersMap.get(r.id) || [],
                     wiringId: r.wiring_id,
                     batteryId: r.battery_id,
@@ -6467,6 +6350,24 @@ app.get('/api/game-state/:email', async (req, res) => {
         }
         // Prisma devolve BigInt em campos schema BigInt — nunca passar BigInt cru a `res.json()` (falha de serialização).
         const serverUpdatedAtNum = Number(gs.server_updated_at ?? 0);
+        let asicLeases = [];
+        let asicLeaseDetails = [];
+        if (!isAdminEdit) {
+            try {
+                const leaseClient = await db.connect();
+                try {
+                    asicLeases = await listAsicLeaseSummary(leaseClient, uid, now);
+                    asicLeaseDetails = await listUserAsicLeaseDetails(leaseClient, uid, now);
+                }
+                finally {
+                    leaseClient.release();
+                }
+            }
+            catch {
+                asicLeases = [];
+                asicLeaseDetails = [];
+            }
+        }
         sendJsonBigIntSafe(res, {
             usdc: gs.usdc,
             startTime: Number(gs.start_time),
@@ -6483,7 +6384,10 @@ app.get('/api/game-state/:email', async (req, res) => {
             playerListings,
             claimedBoxes,
             serverUpdatedAt: Number.isFinite(serverUpdatedAtNum) ? serverUpdatedAtNum : 0,
-            offlineMined
+            offlineMined,
+            nftAsicMinedUsdTotal: Number(gs.nft_asic_mined_usd_total ?? 0) || 0,
+            asicLeases,
+            asicLeaseDetails
         });
         const t3 = performance.now();
         console.log(`[GameState] Total processing took ${(t3 - t0).toFixed(2)}ms`);
@@ -6753,9 +6657,24 @@ async function validatePlacedRacksForSave(dbq, racks, userId) {
     }
     if (coinIds.size > 0) {
         const cids = [...coinIds];
-        const cres = await prisma.mining_coins.findMany({ where: { id: { in: cids } }, select: { id: true } });
+        const cres = await prisma.mining_coins.findMany({
+            where: { id: { in: cids } },
+            select: { id: true, symbol: true }
+        });
         if (cres.length !== coinIds.size) {
             return { ok: false, error: 'Moeda inválida numa rig.' };
+        }
+        const symById = new Map(cres.map((c) => [c.id, c.symbol]));
+        for (const r of racks) {
+            if (!r?.selectedCoinId)
+                continue;
+            const roomNft = normalizePlacedRackRoomId(r.roomId);
+            if (nftRoomIds.has(roomNft))
+                continue;
+            const cid = String(r.selectedCoinId);
+            if (isNftRoomExclusiveMiningCoinRef({ id: cid, symbol: symById.get(cid) })) {
+                return { ok: false, error: NFT_ROOM_EXCLUSIVE_COIN_ERROR_PT };
+            }
         }
     }
     return { ok: true };
@@ -7561,7 +7480,7 @@ app.post('/api/admin/impersonate', isAdmin, async (req, res) => {
         const sRes = await db.query('SELECT user_id FROM sessions WHERE session_id = $1', [sid]);
         if (!sRes.rows[0])
             return res.status(400).json({ error: 'Sessão inválida' });
-        const targetId = await getUserIdByEmail(targetEmail, req.ip, { allowAnyDomain: true });
+        const targetId = await getUserIdByEmail(targetEmail, getClientIp(req), { allowAnyDomain: true });
         if (!targetId || targetId === adminId)
             return res.status(400).json({ error: 'Invalid target' });
         await db.query('UPDATE sessions SET user_id = $1, original_user_id = $2 WHERE session_id = $3', [targetId, adminId, sid]);
@@ -7615,8 +7534,21 @@ app.get('/api/stats/top-withdrawals', async (req, res) => {
 app.get('/api/admin/security/stats', isAdmin, async (req, res) => {
     const client = await db.connect();
     try {
+        const sectionRaw = typeof req.query.section === 'string' ? req.query.section.trim() : '';
+        const loadAll = sectionRaw.length === 0 || sectionRaw === 'all';
+        const wants = (name) => loadAll || sectionRaw === name;
+        let multiAccountsRows = [];
+        let historyMultiAccountsRows = [];
+        let sharedRegistrationIpsRows = [];
+        let sharedDeviceIpsRows = [];
+        let sharedFingerprintsRows = [];
+        let suspectedAutoRefsRows = [];
+        let accessLogsRows = [];
+        let blacklistOut = [];
+        let blockedUsersOut = [];
         // 1. Multi-accounts by registration_ip
-        const multiAccountsRes = await client.query(`
+        if (wants('multiAccounts')) {
+            const multiAccountsRes = await client.query(`
       SELECT registration_ip, COUNT(*) as account_count, 
              array_agg(username) as usernames, 
              array_agg(email) as emails,
@@ -7627,8 +7559,11 @@ app.get('/api/admin/security/stats', isAdmin, async (req, res) => {
       HAVING COUNT(*) > 1
       ORDER BY account_count DESC
     `);
+            multiAccountsRows = multiAccountsRes.rows.filter((row) => isUsefulSecurityScanIp(String(row.registration_ip ?? '')));
+        }
         // 2. Multi-accounts by user_history_ips (more robust)
-        const historyMultiAccountsRes = await client.query(`
+        if (wants('historyMultiAccounts')) {
+            const historyMultiAccountsRes = await client.query(`
       SELECT ip, COUNT(DISTINCT user_id) as user_count,
              array_agg(DISTINCT u.username) as usernames,
              array_agg(DISTINCT u.email) as emails
@@ -7638,8 +7573,101 @@ app.get('/api/admin/security/stats', isAdmin, async (req, res) => {
       HAVING COUNT(DISTINCT user_id) > 1
       ORDER BY user_count DESC
     `);
+            historyMultiAccountsRows = historyMultiAccountsRes.rows.filter((row) => isUsefulSecurityScanIp(String(row.ip ?? '')));
+        }
+        if (wants('sharedRegistrationIps')) {
+            const sharedRegistrationIpsRes = await client.query(`
+      SELECT
+        registration_ip AS ip,
+        COUNT(*)::int AS user_count,
+        json_agg(
+          json_build_object(
+            'id', id,
+            'username', username,
+            'email', email,
+            'registrationIp', registration_ip,
+            'lastUsedAt', NULL,
+            'isBlocked', COALESCE(is_blocked, 0) <> 0
+          )
+          ORDER BY id
+        ) AS users
+      FROM users
+      WHERE registration_ip IS NOT NULL
+        AND length(trim(registration_ip)) > 0
+      GROUP BY registration_ip
+      HAVING COUNT(*) > 1
+      ORDER BY user_count DESC, registration_ip ASC
+    `);
+            sharedRegistrationIpsRows = sharedRegistrationIpsRes.rows.map((row) => ({
+                ip: String(row.ip || ''),
+                userCount: Number(row.user_count) || 0,
+                users: Array.isArray(row.users) ? row.users : []
+            })).filter((row) => isUsefulSecurityScanIp(row.ip));
+        }
+        if (wants('sharedDeviceIps')) {
+            const sharedDeviceIpsRes = await client.query(`
+      SELECT
+        h.ip,
+        COUNT(DISTINCT h.user_id)::int AS user_count,
+        MAX(h.last_used_at) AS last_seen_at,
+        json_agg(
+          DISTINCT jsonb_build_object(
+            'id', u.id,
+            'username', u.username,
+            'email', u.email,
+            'registrationIp', u.registration_ip,
+            'lastUsedAt', h.last_used_at,
+            'isBlocked', COALESCE(u.is_blocked, 0) <> 0
+          )
+        ) AS users
+      FROM user_history_ips h
+      JOIN users u ON u.id = h.user_id
+      WHERE h.ip IS NOT NULL
+        AND length(trim(h.ip)) > 0
+      GROUP BY h.ip
+      HAVING COUNT(DISTINCT h.user_id) > 1
+      ORDER BY user_count DESC, MAX(h.last_used_at) DESC NULLS LAST, h.ip ASC
+    `);
+            sharedDeviceIpsRows = sharedDeviceIpsRes.rows.map((row) => ({
+                ip: String(row.ip || ''),
+                userCount: Number(row.user_count) || 0,
+                lastSeenAt: row.last_seen_at != null ? Number(row.last_seen_at) : null,
+                users: Array.isArray(row.users) ? row.users : []
+            })).filter((row) => isUsefulSecurityScanIp(row.ip));
+        }
+        if (wants('sharedFingerprints')) {
+            const sharedFingerprintsRes = await client.query(`
+      SELECT
+        d.fingerprint_hash,
+        COUNT(DISTINCT d.user_id)::int AS user_count,
+        MAX(d.created_at) AS last_seen_at,
+        json_agg(
+          DISTINCT jsonb_build_object(
+            'id', u.id,
+            'username', u.username,
+            'email', u.email,
+            'lastIp', d.ip,
+            'lastSeenAt', d.created_at
+          )
+        ) AS users
+      FROM device_fingerprint_logs d
+      JOIN users u ON u.id = d.user_id
+      WHERE d.fingerprint_hash IS NOT NULL
+        AND length(trim(d.fingerprint_hash)) > 0
+      GROUP BY d.fingerprint_hash
+      HAVING COUNT(DISTINCT d.user_id) > 1
+      ORDER BY user_count DESC, MAX(d.created_at) DESC NULLS LAST
+    `);
+            sharedFingerprintsRows = sharedFingerprintsRes.rows.map((row) => ({
+                fingerprintHash: String(row.fingerprint_hash || ''),
+                userCount: Number(row.user_count) || 0,
+                lastSeenAt: row.last_seen_at != null ? Number(row.last_seen_at) : null,
+                users: Array.isArray(row.users) ? row.users : []
+            }));
+        }
         // 3. Suspected Auto-Referrals (Same IP between referrer and referred)
-        const suspectedAutoRefsRes = await client.query(`
+        if (wants('suspectedAutoReferrals')) {
+            const suspectedAutoRefsRes = await client.query(`
       SELECT 
         u1.id as referrer_id, u1.username as referrer_username, u1.registration_ip as referrer_ip,
         u2.id as referred_id, u2.username as referred_username, u2.registration_ip as referred_ip
@@ -7653,73 +7681,102 @@ app.get('/api/admin/security/stats', isAdmin, async (req, res) => {
         WHERE h1.user_id = u1.id AND h2.user_id = u2.id
       )
     `);
+            suspectedAutoRefsRows = suspectedAutoRefsRes.rows;
+        }
         // 4. Admin Access Logs (Unauthorized attempts)
-        const accessLogsRes = await client.query(`
+        if (wants('accessLogs')) {
+            const accessLogsRes = await client.query(`
       SELECT * FROM admin_access_logs 
       ORDER BY created_at DESC 
       LIMIT 100
     `);
-        // 5. IP Blacklist (+ utilizadores com mesmo IP em registo ou histórico de login)
-        const blPrisma = await prisma.ip_blacklist.findMany({ orderBy: { added_at: 'desc' } });
-        const blRows = blPrisma.map((r) => ({
-            ip: r.ip,
-            reason: r.reason,
-            added_at: Number(r.added_at)
-        }));
-        const ipKeys = [
-            ...new Set(blRows
-                .map((r) => String(r.ip ?? '').trim())
-                .filter((x) => x.length > 0))
-        ];
-        const linkedByIpNorm = new Map();
-        if (ipKeys.length > 0) {
-            const linkRes = await client.query(`WITH ips AS (SELECT DISTINCT unnest($1::text[]) AS raw_ip)
-         SELECT lower(trim(ips.raw_ip::text)) AS ip_norm, u.id, u.username::text AS username, u.email::text AS email, 'registro'::text AS via
-         FROM ips
-         INNER JOIN users u ON u.registration_ip IS NOT NULL
-           AND lower(trim(u.registration_ip::text)) = lower(trim(ips.raw_ip::text))
-         UNION ALL
-         SELECT lower(trim(ips.raw_ip::text)), u.id, u.username::text, u.email::text, 'hist_login'::text
-         FROM ips
-         INNER JOIN user_history_ips h ON lower(trim(h.ip::text)) = lower(trim(ips.raw_ip::text))
-         INNER JOIN users u ON u.id = h.user_id`, [ipKeys]);
-            for (const row of linkRes.rows) {
-                const k = String(row.ip_norm || '').trim().toLowerCase();
-                if (!k)
-                    continue;
-                if (!linkedByIpNorm.has(k))
-                    linkedByIpNorm.set(k, []);
-                const arr = linkedByIpNorm.get(k);
-                const idNum = Number(row.id);
-                let ex = arr.find((x) => x.id === idNum);
-                if (!ex) {
-                    ex = {
-                        id: idNum,
-                        username: String(row.username || ''),
-                        email: String(row.email || ''),
-                        vias: []
-                    };
-                    arr.push(ex);
-                }
-                const via = String(row.via || '');
-                if (via && !ex.vias.includes(via))
-                    ex.vias.push(via);
-            }
+            accessLogsRows = accessLogsRes.rows;
         }
-        const blacklistOut = blRows.map((row) => {
-            const ipStr = String(row.ip ?? '').trim();
-            const norm = ipStr.trim().toLowerCase();
-            return {
-                ...row,
-                linkedUsers: linkedByIpNorm.get(norm) || []
-            };
-        });
+        // 5. IP Blacklist (+ utilizadores com mesmo IP em registo ou histórico de login)
+        if (wants('blacklist')) {
+            const blockedUsersRes = await client.query(`
+      SELECT
+        u.id,
+        u.username,
+        u.email,
+        u.registration_ip AS "registrationIp",
+        NULL::bigint AS "blockedAt"
+      FROM users u
+      WHERE COALESCE(u.is_blocked, 0) <> 0
+      ORDER BY u.id DESC
+    `);
+            blockedUsersOut = blockedUsersRes.rows.map((row) => ({
+                id: Number(row.id) || 0,
+                username: String(row.username || ''),
+                email: String(row.email || ''),
+                registrationIp: row.registrationIp != null ? String(row.registrationIp) : null,
+                blockedAt: row.blockedAt != null ? Number(row.blockedAt) : null
+            }));
+            const blPrisma = await prisma.ip_blacklist.findMany({ orderBy: { added_at: 'desc' } });
+            const blRows = blPrisma.map((r) => ({
+                ip: r.ip,
+                reason: r.reason,
+                added_at: Number(r.added_at)
+            }));
+            const ipKeys = [
+                ...new Set(blRows
+                    .map((r) => String(r.ip ?? '').trim())
+                    .filter((x) => x.length > 0))
+            ];
+            const linkedByIpNorm = new Map();
+            if (ipKeys.length > 0) {
+                const linkRes = await client.query(`WITH ips AS (SELECT DISTINCT unnest($1::text[]) AS raw_ip)
+           SELECT lower(trim(ips.raw_ip::text)) AS ip_norm, u.id, u.username::text AS username, u.email::text AS email, 'registro'::text AS via
+           FROM ips
+           INNER JOIN users u ON u.registration_ip IS NOT NULL
+             AND lower(trim(u.registration_ip::text)) = lower(trim(ips.raw_ip::text))
+           UNION ALL
+           SELECT lower(trim(ips.raw_ip::text)), u.id, u.username::text, u.email::text, 'hist_login'::text
+           FROM ips
+           INNER JOIN user_history_ips h ON lower(trim(h.ip::text)) = lower(trim(ips.raw_ip::text))
+           INNER JOIN users u ON u.id = h.user_id`, [ipKeys]);
+                for (const row of linkRes.rows) {
+                    const k = String(row.ip_norm || '').trim().toLowerCase();
+                    if (!k)
+                        continue;
+                    if (!linkedByIpNorm.has(k))
+                        linkedByIpNorm.set(k, []);
+                    const arr = linkedByIpNorm.get(k);
+                    const idNum = Number(row.id);
+                    let ex = arr.find((x) => x.id === idNum);
+                    if (!ex) {
+                        ex = {
+                            id: idNum,
+                            username: String(row.username || ''),
+                            email: String(row.email || ''),
+                            vias: []
+                        };
+                        arr.push(ex);
+                    }
+                    const via = String(row.via || '');
+                    if (via && !ex.vias.includes(via))
+                        ex.vias.push(via);
+                }
+            }
+            blacklistOut = blRows.map((row) => {
+                const ipStr = String(row.ip ?? '').trim();
+                const norm = ipStr.trim().toLowerCase();
+                return {
+                    ...row,
+                    linkedUsers: linkedByIpNorm.get(norm) || []
+                };
+            });
+        }
         res.json({
-            multiAccounts: multiAccountsRes.rows,
-            historyMultiAccounts: historyMultiAccountsRes.rows,
-            suspectedAutoReferrals: suspectedAutoRefsRes.rows,
-            accessLogs: accessLogsRes.rows,
-            blacklist: blacklistOut
+            multiAccounts: multiAccountsRows,
+            historyMultiAccounts: historyMultiAccountsRows,
+            sharedRegistrationIps: sharedRegistrationIpsRows,
+            sharedDeviceIps: sharedDeviceIpsRows,
+            sharedFingerprints: sharedFingerprintsRows,
+            suspectedAutoReferrals: suspectedAutoRefsRows,
+            accessLogs: accessLogsRows,
+            blacklist: blacklistOut,
+            blockedUsers: blockedUsersOut
         });
     }
     catch (e) {
@@ -7781,7 +7838,23 @@ app.get('/api/admin/user-activity', isAdmin, async (req, res) => {
         else {
             return res.status(400).json({ error: 'Indique email, username ou userId válido' });
         }
-        const logs = await listGameActivityLogsMongo(Number(uid), limit);
+        let accountCreatedAtMs = null;
+        try {
+            const gs = await prisma.game_states.findUnique({
+                where: { user_id: Number(uid) },
+                select: { start_time: true }
+            });
+            const raw = gs?.start_time;
+            if (raw != null) {
+                const n = typeof raw === 'bigint' ? Number(raw) : Number(raw);
+                if (Number.isFinite(n) && n > 0)
+                    accountCreatedAtMs = n;
+            }
+        }
+        catch {
+            /* ignore */
+        }
+        const logs = await listAdminUserActivityLogsMongo(Number(uid), limit, { accountCreatedAtMs });
         const mongoOk = !!getGenesisMongo();
         res.json({
             logs: logs.map((r) => ({
@@ -7790,6 +7863,7 @@ app.get('/api/admin/user-activity', isAdmin, async (req, res) => {
                 meta: r.meta,
                 createdAt: r.createdAt
             })),
+            accountCreatedAtMs,
             ...(mongoOk
                 ? {}
                 : {
@@ -7985,7 +8059,7 @@ app.post('/api/admin/ranking-exclusion', isAdmin, async (req, res) => {
     if (!email)
         return res.status(400).json({ error: 'Email inválido' });
     try {
-        const uid = await getUserIdByEmail(email, req.ip, { allowAnyDomain: true });
+        const uid = await getUserIdByEmail(email, getClientIp(req), { allowAnyDomain: true });
         await db.query('UPDATE users SET ranking_excluded = $1 WHERE id = $2', [excluded ? 1 : 0, uid]);
         dashboardStatsCache = null;
         lastDashboardFetch = 0;
@@ -8137,7 +8211,8 @@ app.post('/api/mining/coins', isAdmin, async (req, res) => {
         const id = c.id || crypto.randomUUID();
         const networkHashrate = Math.max(0, parseMiningNumeric(c.networkHashrate, 1000000)) || 1000000;
         const blockReward = roundMiningEconomyField8Decimals(Math.max(0, parseMiningNumeric(c.blockReward, 0)));
-        const blockTime = MINING_BLOCK_TIME_SECONDS_FIXED;
+        const blockTimeRaw = parseMiningNumeric(c.blockTime, NaN);
+        const blockTime = Math.min(86400, Math.max(1, roundMiningEconomyField8Decimals(Number.isFinite(blockTimeRaw) && blockTimeRaw > 0 ? blockTimeRaw : MINING_BLOCK_TIME_SECONDS_FIXED)));
         const priceUSD = roundMiningEconomyField8Decimals((() => {
             const p = parseMiningNumeric(c.priceUSD, NaN);
             return Number.isFinite(p) && p >= 0 ? p : 1;
@@ -8556,6 +8631,29 @@ async function handleWithdrawRequest(req, res) {
 app.post('/api/withdraw', handleWithdrawRequest);
 /** Alias canónico no namespace `wallet` (frontend novo pode chamar este; o antigo continua a funcionar). */
 app.post('/api/wallet/withdraw', handleWithdrawRequest);
+/** Histórico de saques da conta autenticada — só leitura. */
+app.get('/api/withdrawals/history', authenticateToken, async (req, res) => {
+    try {
+        const uid = Number(req.userId);
+        if (!Number.isFinite(uid) || uid <= 0) {
+            return res.status(401).json({ error: 'Não autenticado.' });
+        }
+        const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit ?? '300'), 10) || 300));
+        const result = await db.query(`
+      SELECT w.*, u.username, u.email, c.symbol AS coin_symbol
+      FROM withdrawal_requests w
+      JOIN users u ON w.user_id = u.id
+      JOIN mining_coins c ON w.coin_id = c.id
+      WHERE w.user_id = $1
+      ORDER BY w.created_at DESC
+      LIMIT $2
+    `, [uid, limit]);
+        res.json(result.rows.map((r) => mapWithdrawalRequestRow(r)));
+    }
+    catch (e) {
+        sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e);
+    }
+});
 app.get('/api/admin/withdrawals', isAdmin, async (req, res) => {
     try {
         const query = `
@@ -8566,23 +8664,7 @@ app.get('/api/admin/withdrawals', isAdmin, async (req, res) => {
       ORDER BY w.created_at DESC
     `;
         const result = await db.query(query);
-        res.json(result.rows.map(r => ({
-            id: r.id,
-            userId: r.user_id,
-            username: r.username,
-            email: r.email,
-            coinId: r.coin_id,
-            coinSymbol: r.coin_symbol,
-            amountCrypto: Number(r.amount_crypto),
-            amountUsdc: Number(r.amount_usdc),
-            feeAmount: Number(r.fee_amount || 0),
-            netAmount: Number(r.net_amount) > 0 ? Number(r.net_amount) : (Number(r.amount_crypto) - Number(r.fee_amount || 0)),
-            walletAddress: r.wallet_address,
-            status: r.status,
-            txHash: r.tx_hash,
-            createdAt: Number(r.created_at),
-            processedAt: r.processed_at ? Number(r.processed_at) : null
-        })));
+        res.json(result.rows.map((r) => mapWithdrawalRequestRow(r)));
     }
     catch (e) {
         sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e);

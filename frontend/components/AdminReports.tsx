@@ -1,8 +1,42 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { RefreshCw, ExternalLink, Eye, Copy, ArrowRight, Filter, ChevronLeft, ChevronRight, Calendar, User, Mail, Pencil, Download, Search, X as CloseIcon, Calculator, LayoutList, Wallet, Plus, Trash2, Save, Settings, Sparkles } from 'lucide-react';
+import {
+    RefreshCw,
+    ExternalLink,
+    Eye,
+    Copy,
+    ArrowRight,
+    Filter,
+    ChevronLeft,
+    ChevronRight,
+    Calendar,
+    User,
+    Mail,
+    Pencil,
+    Download,
+    Search,
+    X as CloseIcon,
+    Calculator,
+    LayoutList,
+    Wallet,
+    Plus,
+    Trash2,
+    Save,
+    Sparkles,
+    Loader2,
+    Power
+} from 'lucide-react';
 import { PlayerCalculator } from './PlayerCalculator';
-import { User as UserType, MiningCoin, Upgrade } from '../types';
-import { getWalletLabels, saveWalletLabel, getMiningCoins, getUpgrades, saveMiningCoin, deleteMiningCoin, getAdminTreasuryTokenTxs, getWeb3Settings } from '../services/api';
+import { User as UserType, MiningCoin } from '../types';
+import {
+    getWalletLabels,
+    saveWalletLabel,
+    getMiningCoins,
+    syncMiningCoinLivePricesNow,
+    saveMiningCoin,
+    deleteMiningCoin,
+    getAdminTreasuryTokenTxs,
+    getWeb3Settings
+} from '../services/api';
 
 import { AdminManualWithdrawals } from './AdminManualWithdrawals';
 import { AdminReferral } from './AdminReferral';
@@ -106,20 +140,76 @@ export const AdminReports: React.FC<AdminReportsProps> = ({ users = [], currentU
               : registeredTreasury;
 
     const [miningCoins, setMiningCoins] = useState<MiningCoin[]>([]);
-    const [upgrades, setUpgrades] = useState<Upgrade[]>([]);
 
-    // Coin Management States
-    const [showCoinManager, setShowCoinManager] = useState(false);
+    type MiningCalcTabMode = 'coins' | 'live';
+    const [miningCalcTabMode, setMiningCalcTabMode] = useState<MiningCalcTabMode>(() => {
+        const s = localStorage.getItem('adminReportsMiningCalcTabMode');
+        return s === 'live' ? 'live' : 'coins';
+    });
     const [editingCoin, setEditingCoin] = useState<Partial<MiningCoin> | null>(null);
     const [isSavingCoin, setIsSavingCoin] = useState(false);
+    const [calcDataLoading, setCalcDataLoading] = useState(false);
+    const [syncingMiningPrices, setSyncingMiningPrices] = useState(false);
+    const [coinNotice, setCoinNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+
+    useEffect(() => {
+        if (!coinNotice) return;
+        const id = window.setTimeout(() => setCoinNotice(null), 4500);
+        return () => window.clearTimeout(id);
+    }, [coinNotice]);
+
+    const defaultNewCoinForm = (): Partial<MiningCoin> => ({
+        name: '',
+        symbol: '',
+        description: '',
+        networkHashrate: 1_000_000,
+        blockReward: 0,
+        blockTime: 600,
+        priceUSD: 0,
+        algorithm: 'SHA-256',
+        difficulty: 1,
+        multiplier: 1,
+        color: '#f59e0b',
+        minProportion: 0,
+        usdcRate: 0,
+        isActive: true,
+        showInExchange: true,
+        targetDailyUSD: 0
+    });
 
     const loadCalcData = async () => {
+        setCalcDataLoading(true);
         try {
-            const [mc, up] = await Promise.all([getMiningCoins(), getUpgrades()]);
+            const [mc] = await Promise.all([getMiningCoins()]);
             setMiningCoins(Array.isArray(mc) ? mc : []);
-            setUpgrades(Array.isArray(up) ? up : []);
         } catch (e) {
-            console.error("Failed to load calc data", e);
+            console.error('Failed to load calc data', e);
+            setCoinNotice({ kind: 'error', message: 'Não foi possível carregar as moedas.' });
+        } finally {
+            setCalcDataLoading(false);
+        }
+    };
+
+    const handleSyncMiningPrices = async () => {
+        setSyncingMiningPrices(true);
+        try {
+            const res = await syncMiningCoinLivePricesNow();
+            if (res.ok) {
+                await loadCalcData();
+                setCoinNotice({
+                    kind: 'success',
+                    message: `Preços sincronizados com sucesso. Moedas atualizadas: ${res.updated || 0}.`
+                });
+            } else {
+                setCoinNotice({
+                    kind: 'error',
+                    message: res.error || 'Não foi possível sincronizar os preços agora.'
+                });
+            }
+        } catch (e) {
+            setCoinNotice({ kind: 'error', message: 'Erro de rede ao sincronizar os preços.' });
+        } finally {
+            setSyncingMiningPrices(false);
         }
     };
 
@@ -174,14 +264,20 @@ export const AdminReports: React.FC<AdminReportsProps> = ({ users = [], currentU
         try {
             const res = await saveMiningCoin(editingCoin);
             if (res.ok) {
+                setCoinNotice({
+                    kind: 'success',
+                    message: editingCoin.id ? 'Moeda atualizada com sucesso.' : 'Moeda criada com sucesso.'
+                });
                 await loadCalcData();
                 setEditingCoin(null);
-                setShowCoinManager(true);
             } else {
-                alert("Erro ao salvar: " + (res.error || "Desconhecido"));
+                setCoinNotice({ kind: 'error', message: res.error || 'Erro ao salvar.' });
             }
-        } catch (err: any) {
-            alert("Erro de rede: " + err.message);
+        } catch (err: unknown) {
+            setCoinNotice({
+                kind: 'error',
+                message: err instanceof Error ? err.message : 'Erro de rede ao salvar.'
+            });
         } finally {
             setIsSavingCoin(false);
         }
@@ -189,16 +285,43 @@ export const AdminReports: React.FC<AdminReportsProps> = ({ users = [], currentU
 
     const handleDeleteCoin = async (id: string) => {
         if (reportsOperatorRestricted) return;
-        if (!window.confirm("Tem certeza que deseja excluir esta moeda? Esta ação não pode ser desfeita.")) return;
+        if (!window.confirm('Tem certeza que deseja excluir esta moeda? Esta ação não pode ser desfeita.')) return;
         try {
             const res = await deleteMiningCoin(id);
             if (res.ok) {
+                setCoinNotice({ kind: 'success', message: 'Moeda removida.' });
+                await loadCalcData();
+                setEditingCoin((cur) => (cur?.id === id ? null : cur));
+            } else {
+                setCoinNotice({ kind: 'error', message: res.error || 'Erro ao excluir.' });
+            }
+        } catch (err: unknown) {
+            setCoinNotice({
+                kind: 'error',
+                message: err instanceof Error ? err.message : 'Erro de rede ao excluir.'
+            });
+        }
+    };
+
+    const handleToggleCoinActive = async (coin: MiningCoin) => {
+        if (reportsOperatorRestricted) return;
+        const next = { ...coin, isActive: !coin.isActive };
+        try {
+            const res = await saveMiningCoin(next);
+            if (res.ok) {
+                setCoinNotice({
+                    kind: 'success',
+                    message: next.isActive ? 'Moeda ativada.' : 'Moeda desativada.'
+                });
                 await loadCalcData();
             } else {
-                alert("Erro ao excluir: " + (res.error || "Desconhecido"));
+                setCoinNotice({ kind: 'error', message: res.error || 'Não foi possível alterar o estado.' });
             }
-        } catch (err: any) {
-            alert("Erro de rede: " + err.message);
+        } catch (err: unknown) {
+            setCoinNotice({
+                kind: 'error',
+                message: err instanceof Error ? err.message : 'Erro de rede.'
+            });
         }
     };
 
@@ -481,278 +604,447 @@ export const AdminReports: React.FC<AdminReportsProps> = ({ users = [], currentU
 
             {subtab === 'calculator' && !reportsOperatorRestricted && (
                 <div className="flex-1 overflow-auto custom-scrollbar flex flex-col gap-6">
-                    <div className="flex items-center justify-between px-6 py-2 bg-slate-800/30 rounded-lg border border-slate-700/50">
-                        <div className="flex items-center gap-2">
-                            <Calculator size={20} className="text-amber-400" />
-                            <h3 className="font-bold text-white">Gestão da Calculadora</h3>
-                        </div>
-                        <button
-                            onClick={() => {
-                                setShowCoinManager(!showCoinManager);
-                                setEditingCoin(null);
-                            }}
-                            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold text-xs transition-all ${showCoinManager ? 'bg-amber-600 text-white shadow-lg shadow-amber-600/20' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                    {coinNotice && (
+                        <div
+                            role="status"
+                            className={`rounded-lg border px-4 py-3 text-sm font-medium ${
+                                coinNotice.kind === 'success'
+                                    ? 'border-emerald-700/60 bg-emerald-950/50 text-emerald-200'
+                                    : 'border-red-800/60 bg-red-950/40 text-red-200'
+                            }`}
                         >
-                            <Settings size={14} />
-                            {showCoinManager ? 'Ver Calculadora' : 'Configurar Moedas'}
-                        </button>
-                    </div>
+                            {coinNotice.message}
+                        </div>
+                    )}
 
-                    {showCoinManager ? (
-                        <div className="flex flex-col gap-6 animate-in fade-in slide-in-from-top-4 duration-300">
-                            {/* Coin List & Form */}
-                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                                {/* Form */}
-                                <div className="lg:col-span-1 bg-slate-900 rounded-xl border border-slate-800 p-6">
-                                    <h4 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
-                                        {editingCoin?.id ? <Pencil size={14} /> : <Plus size={14} />}
-                                        {editingCoin?.id ? 'Editar Moeda' : 'Nova Moeda'}
-                                    </h4>
-                                    <form onSubmit={handleSaveCoin} className="space-y-4">
-                                        <div className="grid grid-cols-2 gap-3">
-                                            <div className="space-y-1">
-                                                <label className="text-[10px] uppercase font-bold text-slate-500">Nome</label>
-                                                <input
-                                                    type="text"
-                                                    required
-                                                    value={editingCoin?.name || ''}
-                                                    onChange={e => setEditingCoin(prev => ({ ...prev, name: e.target.value }))}
-                                                    className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:border-amber-500 outline-none"
-                                                    placeholder="Bitcoin"
-                                                />
-                                            </div>
-                                            <div className="space-y-1">
-                                                <label className="text-[10px] uppercase font-bold text-slate-500">Símbolo</label>
-                                                <input
-                                                    type="text"
-                                                    required
-                                                    value={editingCoin?.symbol || ''}
-                                                    onChange={e => setEditingCoin(prev => ({ ...prev, symbol: e.target.value }))}
-                                                    className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:border-amber-500 outline-none"
-                                                    placeholder="BTC"
-                                                />
-                                            </div>
-                                        </div>
-
-                                        <div className="space-y-1">
-                                            <label className="text-[10px] uppercase font-bold text-slate-500">Descrição</label>
-                                            <input
-                                                type="text"
-                                                value={editingCoin?.description || ''}
-                                                onChange={e => setEditingCoin(prev => ({ ...prev, description: e.target.value }))}
-                                                className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:border-amber-500 outline-none"
-                                                placeholder="Moeda principal..."
-                                            />
-                                        </div>
-
-                                        <div className="space-y-1">
-                                            <label className="text-[10px] uppercase font-bold text-slate-500">Preço USD</label>
-                                            <input
-                                                type="number"
-                                                step="0.00000001"
-                                                value={editingCoin?.priceUSD || 0}
-                                                onChange={e => setEditingCoin(prev => ({ ...prev, priceUSD: parseFloat(e.target.value) }))}
-                                                className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:border-amber-500 outline-none font-mono"
-                                            />
-                                        </div>
-
-                                        <div className="grid grid-cols-2 gap-3">
-                                            <div className="space-y-1">
-                                                <label className="text-[10px] uppercase font-bold text-slate-500">Recompensa Bloco</label>
-                                                <input
-                                                    type="number"
-                                                    step="0.00000001"
-                                                    value={editingCoin?.blockReward || 0}
-                                                    onChange={e => setEditingCoin(prev => ({ ...prev, blockReward: parseFloat(e.target.value) }))}
-                                                    className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:border-amber-500 outline-none font-mono"
-                                                />
-                                            </div>
-                                            <div className="space-y-1">
-                                                <label className="text-[10px] uppercase font-bold text-slate-500">Tempo de bloco</label>
-                                                <div className="w-full rounded border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm font-mono text-slate-300">
-                                                    600 s (10 min) — fixo na economia
-                                                </div>
-                                                <p className="text-[10px] text-slate-500 leading-snug mt-1">
-                                                    Com 10 min por bloco: <span className="text-amber-500/90 font-mono">144</span> blocos/dia e{' '}
-                                                    <span className="text-amber-500/90 font-mono">4464</span> blocos/mês (31 dias). Mudar só preço USD não altera yield por hash nem deve duplicar entradas no histórico.
-                                                </p>
-                                            </div>
-                                        </div>
-
-                                        <div className="space-y-1">
-                                            <label className="text-[10px] uppercase font-bold text-slate-500">Hashrate Rede (H/s)</label>
-                                            <input
-                                                type="number"
-                                                value={editingCoin?.networkHashrate || 0}
-                                                onChange={e => setEditingCoin(prev => ({ ...prev, networkHashrate: parseFloat(e.target.value) }))}
-                                                className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:border-amber-500 outline-none font-mono"
-                                            />
-                                        </div>
-
-                                        <div className="grid grid-cols-2 gap-3">
-                                            <div className="space-y-1">
-                                                <label className="text-[10px] uppercase font-bold text-slate-500">Algoritmo</label>
-                                                <input
-                                                    type="text"
-                                                    value={editingCoin?.algorithm || ''}
-                                                    onChange={e => setEditingCoin(prev => ({ ...prev, algorithm: e.target.value }))}
-                                                    className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:border-amber-500 outline-none"
-                                                    placeholder="SHA-256"
-                                                />
-                                            </div>
-                                            <div className="space-y-1">
-                                                <label className="text-[10px] uppercase font-bold text-slate-500">Dificuldade</label>
-                                                <input
-                                                    type="number"
-                                                    value={editingCoin?.difficulty || 1}
-                                                    onChange={e => setEditingCoin(prev => ({ ...prev, difficulty: parseFloat(e.target.value) }))}
-                                                    className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:border-amber-500 outline-none font-mono"
-                                                />
-                                            </div>
-                                        </div>
-
-                                        <div className="grid grid-cols-2 gap-3">
-                                            <div className="space-y-1">
-                                                <label className="text-[10px] uppercase font-bold text-slate-500">Multiplicador</label>
-                                                <input
-                                                    type="number"
-                                                    step="0.1"
-                                                    value={editingCoin?.multiplier || 1}
-                                                    onChange={e => setEditingCoin(prev => ({ ...prev, multiplier: parseFloat(e.target.value) }))}
-                                                    className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:border-amber-500 outline-none font-mono"
-                                                />
-                                            </div>
-                                            <div className="space-y-1">
-                                                <label className="text-[10px] uppercase font-bold text-slate-500">Prop. Mínima</label>
-                                                <input
-                                                    type="number"
-                                                    step="0.000000000001"
-                                                    value={editingCoin?.minProportion || 0}
-                                                    onChange={e => setEditingCoin(prev => ({ ...prev, minProportion: parseFloat(e.target.value) }))}
-                                                    className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:border-amber-500 outline-none font-mono"
-                                                />
-                                            </div>
-                                        </div>
-
-                                        <div className="space-y-1">
-                                            <label className="text-[10px] uppercase font-bold text-slate-500">Meta Diária USD (Auto-Ajuste)</label>
-                                            <input
-                                                type="number"
-                                                value={editingCoin?.targetDailyUSD || 0}
-                                                onChange={e => setEditingCoin(prev => ({ ...prev, targetDailyUSD: parseFloat(e.target.value) }))}
-                                                className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:border-amber-500 outline-none font-mono"
-                                            />
-                                        </div>
-
-                                        <div className="grid grid-cols-3 gap-3">
-                                            <label className="col-span-1 flex items-center gap-2 cursor-pointer">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={editingCoin?.isActive !== false}
-                                                    onChange={e => setEditingCoin(prev => ({ ...prev, isActive: e.target.checked }))}
-                                                    className="w-4 h-4 rounded border-slate-700 bg-slate-800"
-                                                />
-                                                <span className="text-xs text-white">Ativa</span>
-                                            </label>
-                                            <label className="col-span-2 flex items-center gap-2 cursor-pointer">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={editingCoin?.showInExchange !== false}
-                                                    onChange={e => setEditingCoin(prev => ({ ...prev, showInExchange: e.target.checked }))}
-                                                    className="w-4 h-4 rounded border-slate-700 bg-slate-800"
-                                                />
-                                                <span className="text-xs text-white">Mostrar Exchange</span>
-                                            </label>
-                                        </div>
-
-                                        <div className="flex gap-2 pt-2">
-                                            <button
-                                                type="submit"
-                                                disabled={isSavingCoin}
-                                                className="flex-1 bg-green-600 hover:bg-green-500 disabled:bg-slate-700 py-2 rounded-lg font-bold text-sm text-white flex items-center justify-center gap-2 transition-colors"
-                                            >
-                                                <Save size={16} />
-                                                {isSavingCoin ? 'Salvando...' : 'Salvar Moeda'}
-                                            </button>
-                                            {editingCoin && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setEditingCoin(null)}
-                                                    className="px-4 py-2 bg-slate-800 border border-slate-700 text-slate-400 hover:text-white rounded-lg text-sm font-bold"
-                                                >
-                                                    Limpar
-                                                </button>
-                                            )}
-                                        </div>
-                                    </form>
+                    {miningCalcTabMode === 'live' ? (
+                        <PlayerCalculator
+                            onBack={() => {
+                                setMiningCalcTabMode('coins');
+                                localStorage.setItem('adminReportsMiningCalcTabMode', 'coins');
+                            }}
+                        />
+                    ) : (
+                        <>
+                            <div className="flex flex-col gap-3 border-b border-slate-700/80 pb-4 sm:flex-row sm:items-start sm:justify-between">
+                                <div>
+                                    <h2 className="text-xl font-bold text-white tracking-tight">Configuração de Moedas</h2>
+                                    <p className="mt-1 max-w-xl text-sm text-slate-400">
+                                        Configure moedas mineráveis, preço, recompensa e tempo de bloco.
+                                    </p>
                                 </div>
-
-                                {/* List */}
-                                <div className="lg:col-span-2 bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
-                                    <table className="w-full text-left text-xs">
-                                        <thead className="bg-slate-800/50 text-slate-500 font-bold uppercase tracking-wider">
-                                            <tr>
-                                                <th className="px-4 py-3 border-b border-slate-800">Moeda</th>
-                                                <th className="px-4 py-3 border-b border-slate-800">Preço</th>
-                                                <th className="px-4 py-3 border-b border-slate-800">Reward</th>
-                                                <th className="px-4 py-3 border-b border-slate-800 text-center">Status</th>
-                                                <th className="px-4 py-3 border-b border-slate-800 text-right">Ações</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-slate-800/50">
-                                            {miningCoins.map(coin => (
-                                                <tr key={coin.id} className="hover:bg-slate-800/40 transition-colors group">
-                                                    <td className="px-4 py-4">
-                                                        <div className="flex items-center gap-3">
-                                                            <div className="w-8 h-8 rounded-full border border-slate-700 flex items-center justify-center text-xs font-bold" style={{ backgroundColor: coin.color + '22', color: coin.color }}>
-                                                                {coin.symbol[0]}
-                                                            </div>
-                                                            <div>
-                                                                <div className="font-bold text-white">{coin.name}</div>
-                                                                <div className="text-slate-500 font-mono text-[10px]">{coin.symbol}</div>
-                                                            </div>
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-4 py-4 font-mono text-white">
-                                                        ${formatAdminDecimalMax8(resolveMiningCoinDisplayPrice(coin))}
-                                                    </td>
-                                                    <td className="px-4 py-4 font-mono text-slate-400">
-                                                        {formatAdminDecimalMax8(coin.blockReward)} {coin.symbol}
-                                                    </td>
-                                                    <td className="px-4 py-4 text-center">
-                                                        {coin.isActive ? (
-                                                            <span className="px-2 py-0.5 rounded-full bg-green-500/10 text-green-500 text-[10px] font-bold border border-green-500/20">ATIVA</span>
-                                                        ) : (
-                                                            <span className="px-2 py-0.5 rounded-full bg-slate-500/10 text-slate-500 text-[10px] font-bold border border-slate-500/20">INATIVA</span>
-                                                        )}
-                                                    </td>
-                                                    <td className="px-4 py-4 text-right">
-                                                        <div className="flex justify-end gap-2">
-                                                            <button
-                                                                onClick={() => setEditingCoin(coin)}
-                                                                className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700 rounded transition-colors"
-                                                                title="Editar"
-                                                            >
-                                                                <Pencil size={14} />
-                                                            </button>
-                                                            <button
-                                                                onClick={() => handleDeleteCoin(coin.id)}
-                                                                className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors"
-                                                                title="Excluir"
-                                                            >
-                                                                <Trash2 size={14} />
-                                                            </button>
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
+                                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                                    <button
+                                        type="button"
+                                        onClick={() => setEditingCoin(defaultNewCoinForm())}
+                                        className="inline-flex items-center gap-2 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-xs font-bold text-white hover:bg-slate-700"
+                                    >
+                                        <Plus size={14} /> Nova moeda
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => void loadCalcData()}
+                                        disabled={calcDataLoading}
+                                        className="inline-flex items-center gap-2 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+                                    >
+                                        <RefreshCw size={14} className={calcDataLoading ? 'animate-spin' : ''} />
+                                        Atualizar lista
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => void handleSyncMiningPrices()}
+                                        disabled={syncingMiningPrices}
+                                        className="inline-flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-600/20 px-3 py-2 text-xs font-bold text-emerald-100 hover:bg-emerald-600/30 disabled:opacity-50"
+                                    >
+                                        <RefreshCw size={14} className={syncingMiningPrices ? 'animate-spin' : ''} />
+                                        Atualizar preços
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setMiningCalcTabMode('live');
+                                            localStorage.setItem('adminReportsMiningCalcTabMode', 'live');
+                                        }}
+                                        className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-3 py-2 text-xs font-bold text-white shadow-lg shadow-amber-600/20 hover:bg-amber-500"
+                                    >
+                                        <Eye size={14} /> Ver calculadora
+                                    </button>
                                 </div>
                             </div>
-                        </div>
-                    ) : (
-                        <PlayerCalculator onBack={() => setSubtab('transactions')} isAdmin={true} />
+
+                            <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+                                <div className="lg:col-span-4">
+                                    <div className="flex h-full min-h-[320px] flex-col rounded-xl border border-slate-800 bg-slate-900 p-6">
+                                        <div className="mb-4 flex items-center justify-between">
+                                            <h4 className="flex items-center gap-2 text-sm font-bold text-white">
+                                                {editingCoin?.id ? <Pencil size={14} /> : <Plus size={14} />}
+                                                {editingCoin?.id ? 'Editar moeda' : 'Nova moeda'}
+                                            </h4>
+                                            {calcDataLoading && <Loader2 size={16} className="animate-spin text-amber-400" aria-hidden />}
+                                        </div>
+
+                                        {!editingCoin ? (
+                                            <div className="flex flex-1 flex-col items-center justify-center rounded-lg border border-dashed border-slate-700 px-4 py-10 text-center text-sm text-slate-500">
+                                                Clique em <span className="mx-1 font-semibold text-slate-300">Nova moeda</span> ou em{' '}
+                                                <span className="mx-1 font-semibold text-slate-300">Editar</span> na tabela.
+                                            </div>
+                                        ) : (
+                                            <form onSubmit={handleSaveCoin} className="flex flex-1 flex-col space-y-4">
+                                                <div className="grid grid-cols-2 gap-3">
+                                                    <div className="space-y-1">
+                                                        <label className="text-[10px] font-bold uppercase text-slate-500">Nome</label>
+                                                        <input
+                                                            type="text"
+                                                            required
+                                                            value={editingCoin.name || ''}
+                                                            onChange={(e) => setEditingCoin((prev) => ({ ...prev, name: e.target.value }))}
+                                                            className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white outline-none focus:border-amber-500"
+                                                            placeholder="Bitcoin"
+                                                        />
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                        <label className="text-[10px] font-bold uppercase text-slate-500">Símbolo</label>
+                                                        <input
+                                                            type="text"
+                                                            required
+                                                            value={editingCoin.symbol || ''}
+                                                            onChange={(e) => setEditingCoin((prev) => ({ ...prev, symbol: e.target.value }))}
+                                                            className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white outline-none focus:border-amber-500"
+                                                            placeholder="BTC"
+                                                        />
+                                                    </div>
+                                                </div>
+
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-bold uppercase text-slate-500">Descrição</label>
+                                                    <input
+                                                        type="text"
+                                                        value={editingCoin.description || ''}
+                                                        onChange={(e) => setEditingCoin((prev) => ({ ...prev, description: e.target.value }))}
+                                                        className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white outline-none focus:border-amber-500"
+                                                        placeholder="Breve descrição"
+                                                    />
+                                                </div>
+
+                                                <div className="grid grid-cols-[1fr_auto] gap-3 items-end">
+                                                    <div className="space-y-1">
+                                                        <label className="text-[10px] font-bold uppercase text-slate-500">Cor (hex)</label>
+                                                        <input
+                                                            type="text"
+                                                            value={editingCoin.color || '#f59e0b'}
+                                                            onChange={(e) => setEditingCoin((prev) => ({ ...prev, color: e.target.value }))}
+                                                            className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 font-mono text-sm text-white outline-none focus:border-amber-500"
+                                                            placeholder="#f59e0b"
+                                                        />
+                                                    </div>
+                                                    <input
+                                                        type="color"
+                                                        aria-label="Escolher cor"
+                                                        value={/^#[0-9A-Fa-f]{6}$/.test(String(editingCoin.color || '')) ? String(editingCoin.color) : '#f59e0b'}
+                                                        onChange={(e) => setEditingCoin((prev) => ({ ...prev, color: e.target.value }))}
+                                                        className="h-10 w-12 cursor-pointer rounded border border-slate-700 bg-slate-900 p-1"
+                                                    />
+                                                </div>
+
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-bold uppercase text-slate-500">Preço USD</label>
+                                                    <input
+                                                        type="number"
+                                                        step="0.00000001"
+                                                        value={editingCoin.priceUSD ?? 0}
+                                                        onChange={(e) => {
+                                                            const v = parseFloat(e.target.value);
+                                                            setEditingCoin((prev) => ({
+                                                                ...prev,
+                                                                priceUSD: Number.isFinite(v) ? v : 0
+                                                            }));
+                                                        }}
+                                                        className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 font-mono text-sm text-white outline-none focus:border-amber-500"
+                                                    />
+                                                </div>
+
+                                                <div className="grid grid-cols-2 gap-3">
+                                                    <div className="space-y-1">
+                                                        <label className="text-[10px] font-bold uppercase text-slate-500">Recompensa / bloco</label>
+                                                        <input
+                                                            type="number"
+                                                            step="0.00000001"
+                                                            value={editingCoin.blockReward ?? 0}
+                                                            onChange={(e) => {
+                                                                const v = parseFloat(e.target.value);
+                                                                setEditingCoin((prev) => ({
+                                                                    ...prev,
+                                                                    blockReward: Number.isFinite(v) ? v : 0
+                                                                }));
+                                                            }}
+                                                            className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 font-mono text-sm text-white outline-none focus:border-amber-500"
+                                                        />
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                        <label className="text-[10px] font-bold uppercase text-slate-500">Tempo de bloco (s)</label>
+                                                        <input
+                                                            type="number"
+                                                            min={1}
+                                                            max={86400}
+                                                            step={1}
+                                                            value={editingCoin.blockTime ?? 600}
+                                                            onChange={(e) => {
+                                                                const v = parseInt(e.target.value, 10);
+                                                                setEditingCoin((prev) => ({
+                                                                    ...prev,
+                                                                    blockTime: Number.isFinite(v) ? v : 600
+                                                                }));
+                                                            }}
+                                                            className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 font-mono text-sm text-white outline-none focus:border-amber-500"
+                                                        />
+                                                    </div>
+                                                </div>
+
+                                                <label className="flex cursor-pointer items-center gap-2">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={editingCoin.isActive !== false}
+                                                        onChange={(e) => setEditingCoin((prev) => ({ ...prev, isActive: e.target.checked }))}
+                                                        className="h-4 w-4 rounded border-slate-700 bg-slate-800"
+                                                    />
+                                                    <span className="text-xs text-white">Moeda ativa (minerável)</span>
+                                                </label>
+
+                                                <details className="rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-sm text-slate-300">
+                                                    <summary className="cursor-pointer select-none text-xs font-bold uppercase tracking-wide text-slate-400">
+                                                        Parâmetros avançados
+                                                    </summary>
+                                                    <div className="mt-3 space-y-3 pb-1">
+                                                        <div className="space-y-1">
+                                                            <label className="text-[10px] font-bold uppercase text-slate-500">Hashrate rede (H/s)</label>
+                                                            <input
+                                                                type="number"
+                                                                value={editingCoin.networkHashrate ?? 0}
+                                                                onChange={(e) => {
+                                                                    const v = parseFloat(e.target.value);
+                                                                    setEditingCoin((prev) => ({
+                                                                        ...prev,
+                                                                        networkHashrate: Number.isFinite(v) ? v : 0
+                                                                    }));
+                                                                }}
+                                                                className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 font-mono text-sm text-white outline-none focus:border-amber-500"
+                                                            />
+                                                        </div>
+                                                        <div className="grid grid-cols-2 gap-3">
+                                                            <div className="space-y-1">
+                                                                <label className="text-[10px] font-bold uppercase text-slate-500">Algoritmo</label>
+                                                                <input
+                                                                    type="text"
+                                                                    value={editingCoin.algorithm || ''}
+                                                                    onChange={(e) => setEditingCoin((prev) => ({ ...prev, algorithm: e.target.value }))}
+                                                                    className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white outline-none focus:border-amber-500"
+                                                                />
+                                                            </div>
+                                                            <div className="space-y-1">
+                                                                <label className="text-[10px] font-bold uppercase text-slate-500">Dificuldade</label>
+                                                                <input
+                                                                    type="number"
+                                                                    value={editingCoin.difficulty ?? 1}
+                                                                    onChange={(e) => {
+                                                                        const v = parseFloat(e.target.value);
+                                                                        setEditingCoin((prev) => ({
+                                                                            ...prev,
+                                                                            difficulty: Number.isFinite(v) ? v : 1
+                                                                        }));
+                                                                    }}
+                                                                    className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 font-mono text-sm text-white outline-none focus:border-amber-500"
+                                                                />
+                                                            </div>
+                                                        </div>
+                                                        <div className="grid grid-cols-2 gap-3">
+                                                            <div className="space-y-1">
+                                                                <label className="text-[10px] font-bold uppercase text-slate-500">Multiplicador</label>
+                                                                <input
+                                                                    type="number"
+                                                                    step="0.1"
+                                                                    value={editingCoin.multiplier ?? 1}
+                                                                    onChange={(e) => {
+                                                                        const v = parseFloat(e.target.value);
+                                                                        setEditingCoin((prev) => ({
+                                                                            ...prev,
+                                                                            multiplier: Number.isFinite(v) ? v : 1
+                                                                        }));
+                                                                    }}
+                                                                    className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 font-mono text-sm text-white outline-none focus:border-amber-500"
+                                                                />
+                                                            </div>
+                                                            <div className="space-y-1">
+                                                                <label className="text-[10px] font-bold uppercase text-slate-500">Prop. mínima</label>
+                                                                <input
+                                                                    type="number"
+                                                                    step="0.000000000001"
+                                                                    value={editingCoin.minProportion ?? 0}
+                                                                    onChange={(e) => {
+                                                                        const v = parseFloat(e.target.value);
+                                                                        setEditingCoin((prev) => ({
+                                                                            ...prev,
+                                                                            minProportion: Number.isFinite(v) ? v : 0
+                                                                        }));
+                                                                    }}
+                                                                    className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 font-mono text-sm text-white outline-none focus:border-amber-500"
+                                                                />
+                                                            </div>
+                                                        </div>
+                                                        <div className="space-y-1">
+                                                            <label className="text-[10px] font-bold uppercase text-slate-500">Meta diária USD (referência)</label>
+                                                            <input
+                                                                type="number"
+                                                                value={editingCoin.targetDailyUSD ?? 0}
+                                                                onChange={(e) => {
+                                                                    const v = parseFloat(e.target.value);
+                                                                    setEditingCoin((prev) => ({
+                                                                        ...prev,
+                                                                        targetDailyUSD: Number.isFinite(v) ? v : 0
+                                                                    }));
+                                                                }}
+                                                                className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 font-mono text-sm text-white outline-none focus:border-amber-500"
+                                                            />
+                                                        </div>
+                                                        <label className="flex cursor-pointer items-center gap-2">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={editingCoin.showInExchange !== false}
+                                                                onChange={(e) =>
+                                                                    setEditingCoin((prev) => ({ ...prev, showInExchange: e.target.checked }))
+                                                                }
+                                                                className="h-4 w-4 rounded border-slate-700 bg-slate-800"
+                                                            />
+                                                            <span className="text-xs text-white">Mostrar na exchange</span>
+                                                        </label>
+                                                    </div>
+                                                </details>
+
+                                                <div className="mt-auto flex gap-2 border-t border-slate-800 pt-4">
+                                                    <button
+                                                        type="submit"
+                                                        disabled={isSavingCoin}
+                                                        className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-green-600 py-2.5 text-sm font-bold text-white transition-colors hover:bg-green-500 disabled:bg-slate-700"
+                                                    >
+                                                        {isSavingCoin ? (
+                                                            <Loader2 size={16} className="animate-spin" />
+                                                        ) : (
+                                                            <Save size={16} />
+                                                        )}
+                                                        {isSavingCoin ? 'A guardar…' : 'Salvar moeda'}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setEditingCoin(null)}
+                                                        className="rounded-lg border border-slate-700 bg-slate-800 px-4 py-2.5 text-sm font-bold text-slate-300 hover:border-slate-600 hover:text-white"
+                                                    >
+                                                        Cancelar edição
+                                                    </button>
+                                                </div>
+                                            </form>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="lg:col-span-8 flex min-h-[320px] flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
+                                    <div className="border-b border-slate-800 px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-500">
+                                        Moedas configuradas ({miningCoins.length})
+                                    </div>
+                                    <div className="custom-scrollbar flex-1 overflow-auto">
+                                        <table className="w-full text-left text-xs">
+                                            <thead className="sticky top-0 z-[1] bg-slate-800/95 text-[10px] font-bold uppercase tracking-wider text-slate-500 backdrop-blur">
+                                                <tr>
+                                                    <th className="border-b border-slate-800 px-3 py-3">Moeda</th>
+                                                    <th className="border-b border-slate-800 px-3 py-3">Símbolo</th>
+                                                    <th className="border-b border-slate-800 px-3 py-3">Preço</th>
+                                                    <th className="border-b border-slate-800 px-3 py-3">Reward</th>
+                                                    <th className="border-b border-slate-800 px-3 py-3">Bloco (s)</th>
+                                                    <th className="border-b border-slate-800 px-3 py-3 text-center">Estado</th>
+                                                    <th className="border-b border-slate-800 px-3 py-3 text-right">Ações</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-800/60">
+                                                {miningCoins.length === 0 && !calcDataLoading ? (
+                                                    <tr>
+                                                        <td colSpan={7} className="px-4 py-12 text-center text-slate-500">
+                                                            Nenhuma moeda cadastrada.
+                                                        </td>
+                                                    </tr>
+                                                ) : null}
+                                                {miningCoins.map((coin) => (
+                                                    <tr key={coin.id} className="group hover:bg-slate-800/35">
+                                                        <td className="px-3 py-3">
+                                                            <div className="flex items-center gap-2">
+                                                                <div
+                                                                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-700 text-[11px] font-bold"
+                                                                    style={{
+                                                                        backgroundColor: `${coin.color || '#fff'}22`,
+                                                                        color: coin.color || '#fff'
+                                                                    }}
+                                                                >
+                                                                    {(coin.symbol && coin.symbol[0]) || '?'}
+                                                                </div>
+                                                                <span className="font-semibold text-white">{coin.name}</span>
+                                                            </div>
+                                                        </td>
+                                                        <td className="px-3 py-3 font-mono text-slate-400">{coin.symbol}</td>
+                                                        <td className="px-3 py-3 font-mono text-white">
+                                                            ${formatAdminDecimalMax8(resolveMiningCoinDisplayPrice(coin))}
+                                                        </td>
+                                                        <td className="px-3 py-3 font-mono text-slate-300">
+                                                            {formatAdminDecimalMax8(coin.blockReward)}
+                                                        </td>
+                                                        <td className="px-3 py-3 font-mono text-slate-300">{coin.blockTime ?? 600}</td>
+                                                        <td className="px-3 py-3 text-center">
+                                                            {coin.isActive ? (
+                                                                <span className="rounded-full border border-green-500/25 bg-green-500/10 px-2 py-0.5 text-[10px] font-bold text-green-400">
+                                                                    Ativa
+                                                                </span>
+                                                            ) : (
+                                                                <span className="rounded-full border border-slate-600 bg-slate-800 px-2 py-0.5 text-[10px] font-bold text-slate-500">
+                                                                    Inativa
+                                                                </span>
+                                                            )}
+                                                        </td>
+                                                        <td className="px-3 py-3 text-right">
+                                                            <div className="flex justify-end gap-1">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setEditingCoin(coin)}
+                                                                    className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-700 hover:text-white"
+                                                                    title="Editar"
+                                                                >
+                                                                    <Pencil size={14} />
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => void handleToggleCoinActive(coin)}
+                                                                    className={`rounded p-1.5 transition-colors ${
+                                                                        coin.isActive
+                                                                            ? 'text-amber-400 hover:bg-amber-500/10'
+                                                                            : 'text-slate-500 hover:bg-slate-700 hover:text-green-400'
+                                                                    }`}
+                                                                    title={coin.isActive ? 'Desativar' : 'Ativar'}
+                                                                >
+                                                                    <Power size={14} />
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => void handleDeleteCoin(coin.id)}
+                                                                    className="rounded p-1.5 text-slate-500 transition-colors hover:bg-red-500/10 hover:text-red-400"
+                                                                    title="Excluir"
+                                                                >
+                                                                    <Trash2 size={14} />
+                                                                </button>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </>
                     )}
                 </div>
             )}

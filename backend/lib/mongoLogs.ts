@@ -68,6 +68,37 @@ export type GameActivityLogRow = {
   createdAt: number;
 };
 
+function mapGameActivityDoc(d: Record<string, unknown>): GameActivityLogRow {
+  const id = d._id != null ? String(d._id) : '';
+  const at = d.at instanceof Date ? d.at : d.at != null ? new Date(String(d.at)) : new Date();
+  const createdAt =
+    typeof d.created_at === 'number' && Number.isFinite(d.created_at) ? d.created_at : at.getTime();
+  return {
+    id,
+    action: String(d.action ?? ''),
+    meta: (d.meta && typeof d.meta === 'object' && !Array.isArray(d.meta) ? d.meta : {}) as Record<
+      string,
+      unknown
+    >,
+    createdAt
+  };
+}
+
+/** `action_logs`: meta vem como campos extra no documento (não há `meta` aninhado). */
+function mapActionLogDoc(d: Record<string, unknown>): GameActivityLogRow {
+  const id = d._id != null ? `action:${String(d._id)}` : 'action:';
+  const at = d.at instanceof Date ? d.at : d.at != null ? new Date(String(d.at)) : new Date();
+  const createdAt =
+    typeof d.created_at === 'number' && Number.isFinite(d.created_at) ? d.created_at : at.getTime();
+  const action = String(d.action ?? '');
+  const meta: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(d)) {
+    if (['_id', 'userId', 'action', 'at', 'created_at'].includes(k)) continue;
+    meta[k] = v as unknown;
+  }
+  return { id, action, meta, createdAt };
+}
+
 /**
  * Grava um evento de atividade de jogo (auditoria admin). Exige Mongo configurado.
  */
@@ -119,24 +150,122 @@ export async function listGameActivityLogsMongo(userId: number, limit: number): 
       .sort({ at: -1 })
       .limit(lim)
       .toArray();
-    return docs.map((d) => {
-      const id = d._id != null ? String(d._id) : '';
-      const at = d.at instanceof Date ? d.at : d.at != null ? new Date(String(d.at)) : new Date();
-      const createdAt =
-        typeof d.created_at === 'number' && Number.isFinite(d.created_at) ? d.created_at : at.getTime();
-      return {
-        id,
-        action: String(d.action ?? ''),
-        meta: (d.meta && typeof d.meta === 'object' && !Array.isArray(d.meta) ? d.meta : {}) as Record<
-          string,
-          unknown
-        >,
-        createdAt
-      };
-    });
+    return docs.map((d) => mapGameActivityDoc(d as Record<string, unknown>));
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     console.warn('[MongoLogs] listGameActivityLogsMongo:', msg);
     return [];
   }
+}
+
+async function listUserActionLogsMongo(userId: number, limit: number): Promise<GameActivityLogRow[]> {
+  const client = getGenesisMongo();
+  if (!client) return [];
+  const lim = Math.min(300, Math.max(1, Math.floor(limit)));
+  try {
+    const docs = await client
+      .db(MONGO_LOG_DB)
+      .collection(MONGO_COLLECTIONS.actionLogs)
+      .find({ userId })
+      .sort({ at: -1 })
+      .limit(lim)
+      .toArray();
+    return docs.map((d) => mapActionLogDoc(d as Record<string, unknown>));
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn('[MongoLogs] listUserActionLogsMongo:', msg);
+    return [];
+  }
+}
+
+const ADMIN_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
+
+async function listGameActivityInWindowMongo(
+  userId: number,
+  centerMs: number,
+  windowMs: number
+): Promise<GameActivityLogRow[]> {
+  const client = getGenesisMongo();
+  if (!client) return [];
+  const from = new Date(centerMs - windowMs);
+  const to = new Date(centerMs + windowMs);
+  try {
+    const docs = await client
+      .db(MONGO_LOG_DB)
+      .collection(MONGO_COLLECTIONS.gameActivity)
+      .find({ userId, at: { $gte: from, $lte: to } })
+      .sort({ at: -1 })
+      .limit(80)
+      .toArray();
+    return docs.map((d) => mapGameActivityDoc(d as Record<string, unknown>));
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn('[MongoLogs] listGameActivityInWindowMongo:', msg);
+    return [];
+  }
+}
+
+async function listUserActionLogsInWindowMongo(
+  userId: number,
+  centerMs: number,
+  windowMs: number
+): Promise<GameActivityLogRow[]> {
+  const client = getGenesisMongo();
+  if (!client) return [];
+  const from = new Date(centerMs - windowMs);
+  const to = new Date(centerMs + windowMs);
+  try {
+    const docs = await client
+      .db(MONGO_LOG_DB)
+      .collection(MONGO_COLLECTIONS.actionLogs)
+      .find({ userId, at: { $gte: from, $lte: to } })
+      .sort({ at: -1 })
+      .limit(80)
+      .toArray();
+    return docs.map((d) => mapActionLogDoc(d as Record<string, unknown>));
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn('[MongoLogs] listUserActionLogsInWindowMongo:', msg);
+    return [];
+  }
+}
+
+/**
+ * União para o painel admin: `game_activity_logs` + `action_logs` (ex.: `signup_complete`, `login`),
+ * e eventos numa janela temporal à volta de `accountCreatedAtMs` (registo fora dos N mais recentes).
+ */
+export async function listAdminUserActivityLogsMongo(
+  userId: number,
+  limit: number,
+  opts?: { accountCreatedAtMs?: number | null }
+): Promise<GameActivityLogRow[]> {
+  const lim = Math.min(500, Math.max(1, Math.floor(limit)));
+  const gameRecent = await listGameActivityLogsMongo(userId, lim);
+  const actionRecent = await listUserActionLogsMongo(userId, Math.min(200, lim));
+
+  const center = opts?.accountCreatedAtMs;
+  let around: GameActivityLogRow[] = [];
+  if (center != null && Number.isFinite(center) && center > 0) {
+    const [g, a] = await Promise.all([
+      listGameActivityInWindowMongo(userId, center, ADMIN_ACTIVITY_WINDOW_MS),
+      listUserActionLogsInWindowMongo(userId, center, ADMIN_ACTIVITY_WINDOW_MS)
+    ]);
+    around = [...g, ...a];
+  }
+
+  const byId = new Map<string, GameActivityLogRow>();
+  const put = (r: GameActivityLogRow) => {
+    if (!r.id) return;
+    if (!byId.has(r.id)) byId.set(r.id, r);
+  };
+  for (const r of around) {
+    if (byId.size >= lim) break;
+    put(r);
+  }
+  const mergedRecent = [...gameRecent, ...actionRecent].sort((a, b) => b.createdAt - a.createdAt);
+  for (const r of mergedRecent) {
+    if (byId.size >= lim) break;
+    put(r);
+  }
+  return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
 }

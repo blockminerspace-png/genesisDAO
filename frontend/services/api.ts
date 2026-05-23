@@ -302,9 +302,21 @@ export type AdminPartnerYoutubePartnerRow = {
   username: string;
   email: string;
   approvedCount: number;
+  approvedLast365d?: number;
+  lastApprovedAt?: number | null;
   channelUrl: string;
   avatarUrl: string;
   allowlisted?: boolean;
+  nftRoom?: {
+    requiredApprovedPerYear: number;
+    requiredIntervalDays: number;
+    approvedLast365d: number;
+    lastApprovedAt?: number | null;
+    nextDeadlineAt?: number | null;
+    active: boolean;
+    overdue: boolean;
+    compliant: boolean;
+  };
 };
 
 export async function getAdminPartnerYoutubePartners(): Promise<{ partners: AdminPartnerYoutubePartnerRow[] }> {
@@ -312,6 +324,53 @@ export async function getAdminPartnerYoutubePartners(): Promise<{ partners: Admi
   const data = (await res.json().catch(() => ({}))) as { partners?: AdminPartnerYoutubePartnerRow[]; error?: string };
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return { partners: Array.isArray(data.partners) ? data.partners : [] };
+}
+
+export async function postAdminDeactivatePartnerNftRoom(
+  userId: number
+): Promise<{ ok: boolean; roomId?: string; removedRackCount?: number; error?: string }> {
+  const res = await apiFetch(`${base}/admin/partner-youtube-partners/${encodeURIComponent(String(userId))}/deactivate-nft-room`, {
+    method: 'POST'
+  });
+  const data = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    roomId?: string;
+    removedRackCount?: number;
+    error?: string;
+  };
+  if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` };
+  return {
+    ok: !!data.ok,
+    roomId: data.roomId,
+    removedRackCount: typeof data.removedRackCount === 'number' ? data.removedRackCount : 0
+  };
+}
+
+export interface AdminStreamerRoomUser {
+  userId: number;
+  username: string;
+  email: string;
+  lastApprovedAt: number | null;
+  approvedLast60d: number;
+  overdue: boolean;
+}
+
+export async function getAdminStreamerRoomUsers(): Promise<{ users: AdminStreamerRoomUser[]; error?: string }> {
+  const res = await apiFetch(`${base}/admin/streamer-room-users`);
+  const data = (await res.json().catch(() => ({}))) as { users?: AdminStreamerRoomUser[]; error?: string };
+  if (!res.ok) return { users: [], error: data.error || `HTTP ${res.status}` };
+  return { users: Array.isArray(data.users) ? data.users : [] };
+}
+
+export async function postAdminDeactivateStreamerRoom(
+  userId: number
+): Promise<{ ok: boolean; removedRackCount?: number; error?: string }> {
+  const res = await apiFetch(`${base}/admin/streamer-room-users/${encodeURIComponent(String(userId))}/deactivate`, {
+    method: 'POST'
+  });
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; removedRackCount?: number; error?: string };
+  if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` };
+  return { ok: !!data.ok, removedRackCount: typeof data.removedRackCount === 'number' ? data.removedRackCount : 0 };
 }
 
 export async function postAdminPartnerYoutubeAllowlist(payload: {
@@ -483,13 +542,25 @@ export async function setAccessLevels(levels: AccessLevel[]): Promise<void> {
 /** Prefixo em `ui_display_labels` para itens da barra de navegação (alinhado ao backend). */
 const GAME_NAV_DB_PREFIX = 'nav.';
 
-function gameNavLabelsFromDisplayLabelsPayload(data: Record<string, unknown>): Record<string, string> {
+export function gameNavLabelsFromDisplayLabelsPayload(data: Record<string, unknown>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const short of GAME_NAV_LABEL_KEYS) {
     const v = data[`${GAME_NAV_DB_PREFIX}${short}`];
     if (typeof v === 'string' && v.trim()) out[short] = v.trim();
   }
   return out;
+}
+
+/** Mapa cru de chaves `ui_display_labels` (GET público `/api/display-labels`). */
+export async function getDisplayLabelsRaw(): Promise<Record<string, unknown>> {
+  try {
+    const res = await apiFetch(`${base}/display-labels`);
+    if (!res.ok) return {};
+    const data = (await res.json().catch(() => ({}))) as unknown;
+    return data && typeof data === 'object' && !Array.isArray(data) ? (data as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
 }
 
 /** Rótulos do menu do jogo (via GET /api/display-labels; chaves `nav.*` no servidor). */
@@ -515,6 +586,8 @@ export type PublicBootstrapPayload = {
   web3Settings: Web3Settings | null;
   systemNews: SystemNews[];
   gameNavLabels: Record<string, string>;
+  /** Quando `false`, o separador «Roleta» não aparece no menu (definição em `ui_display_labels.nav.roleta_tab_visible`). */
+  showRoletaInNav: boolean;
 };
 
 export type PublicBootstrapLitePayload = Pick<
@@ -542,7 +615,8 @@ function normalizePublicBootstrapPayload(raw: unknown): PublicBootstrapPayload |
     gameNavLabels:
       d.gameNavLabels != null && typeof d.gameNavLabels === 'object' && !Array.isArray(d.gameNavLabels)
         ? (d.gameNavLabels as Record<string, string>)
-        : {}
+        : {},
+    showRoletaInNav: d.showRoletaInNav === false ? false : true
   };
 }
 
@@ -665,24 +739,155 @@ export async function getUpgradeShopBundle(): Promise<UpgradeShopBundle | null> 
   }
 }
 
-/** Remove a carteira Polygon do perfil (exige palavra-passe se a conta tiver senha). */
-export async function clearMyPolygonWallet(
-  currentPassword?: string
-): Promise<{ ok: boolean; error?: string; code?: string }> {
+export type ProfileWalletHistoryDto = {
+  id: string;
+  action: string;
+  walletAddress: string | null;
+  network: string;
+  previousWalletAddress: string | null;
+  newWalletAddress: string | null;
+  createdAt: string;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+  actorType?: string | null;
+  actorUserId?: number | null;
+  source?: string | null;
+  notes?: string | null;
+  metadata?: unknown;
+};
+
+export async function getProfileWallet(limit = 100): Promise<{
+  ok: boolean;
+  wallet: { address: string; network: string; connectedAt: string | null } | null;
+  history: ProfileWalletHistoryDto[];
+  error?: string;
+} | null> {
   try {
-    const res = await apiFetch(`${base}/profile/wallet`, {
-      method: 'DELETE',
+    const lim = Math.min(200, Math.max(1, limit));
+    const res = await apiFetch(`${base}/profile/wallet?limit=${lim}`);
+    const raw = await res.json().catch(() => null);
+    if (!res.ok || !raw || typeof raw !== 'object') {
+      const err =
+        raw && typeof raw === 'object' && 'error' in raw
+          ? String((raw as { error?: unknown }).error)
+          : null;
+      return { ok: false, wallet: null, history: [], error: err || `Erro ${res.status}` };
+    }
+    const d = raw as Record<string, unknown>;
+    const hist = Array.isArray(d.history) ? (d.history as ProfileWalletHistoryDto[]) : [];
+    const w =
+      d.wallet && typeof d.wallet === 'object'
+        ? (d.wallet as { address: string; network: string; connectedAt: string | null })
+        : null;
+    return { ok: true, wallet: w, history: hist };
+  } catch {
+    return null;
+  }
+}
+
+export type AdminUserWalletCurrent = {
+  address: string;
+  network: string;
+  connectedAt: string | null;
+  status: 'connected';
+};
+
+export type AdminUserWalletHistoryEntry = {
+  id: string;
+  action: string;
+  network: string;
+  walletAddress: string | null;
+  previousWalletAddress: string | null;
+  newWalletAddress: string | null;
+  ipAddress: string | null;
+  userAgent: string | null;
+  actorType: string;
+  actorUserId: number | null;
+  source: string | null;
+  notes: string | null;
+  createdAt: string;
+  metadata?: unknown;
+};
+
+/** GET /api/admin/users/:userId/wallet-history — só admin. */
+export async function getAdminUserWalletHistory(userId: number): Promise<{
+  ok: boolean;
+  currentWallet: AdminUserWalletCurrent | null;
+  history: AdminUserWalletHistoryEntry[];
+  error?: string;
+}> {
+  const id = Math.floor(Number(userId));
+  if (!Number.isFinite(id) || id <= 0) {
+    return { ok: false, currentWallet: null, history: [], error: 'ID inválido.' };
+  }
+  try {
+    const res = await apiFetch(`${base}/admin/users/${id}/wallet-history`);
+    const raw = await res.json().catch(() => null);
+    if (res.status === 403) {
+      return { ok: false, currentWallet: null, history: [], error: 'Acesso negado (403).' };
+    }
+    if (!res.ok || !raw || typeof raw !== 'object') {
+      const err =
+        raw && typeof raw === 'object' && 'error' in raw
+          ? String((raw as { error?: unknown }).error)
+          : `Erro ${res.status}`;
+      return { ok: false, currentWallet: null, history: [], error: err };
+    }
+    const d = raw as Record<string, unknown>;
+    const cur =
+      d.currentWallet && typeof d.currentWallet === 'object'
+        ? (d.currentWallet as AdminUserWalletCurrent)
+        : null;
+    const hist = Array.isArray(d.history) ? (d.history as AdminUserWalletHistoryEntry[]) : [];
+    return { ok: true, currentWallet: cur, history: hist };
+  } catch {
+    return { ok: false, currentWallet: null, history: [], error: 'Erro de rede.' };
+  }
+}
+
+/** Remove a carteira Polygon do perfil (sessão autenticada; sem palavra-passe). */
+export async function postProfileWalletRemove(): Promise<{
+  ok: boolean;
+  removed?: boolean;
+  message?: string;
+  error?: string;
+  code?: string;
+}> {
+  try {
+    const res = await apiFetch(`${base}/profile/wallet/remove`, {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(currentPassword ? { currentPassword } : {})
+      body: JSON.stringify({})
     });
-    const data = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
+    const data = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      code?: string;
+      message?: string;
+      removed?: boolean;
+    };
     if (!res.ok) {
       return { ok: false, error: data.error || `Erro ${res.status}`, code: data.code };
     }
-    return { ok: true };
+    return {
+      ok: true,
+      removed: data.removed === true,
+      message:
+        typeof data.message === 'string'
+          ? data.message
+          : data.removed === true
+            ? 'Carteira removida com sucesso.'
+            : 'Nenhuma carteira conectada.'
+    };
   } catch {
     return { ok: false, error: 'Erro de rede.' };
   }
+}
+
+/** @deprecated O parâmetro de palavra-passe é ignorado; use `postProfileWalletRemove`. */
+export async function clearMyPolygonWallet(
+  _currentPassword?: string
+): Promise<{ ok: boolean; error?: string; code?: string }> {
+  return postProfileWalletRemove();
 }
 
 /** Overview do Programa Genesis Referral do utilizador autenticado. */
@@ -1050,6 +1255,28 @@ export async function saveGameNavLabels(labels: Record<string, string>): Promise
   const merged = data.labels;
   if (!merged || typeof merged !== 'object' || Array.isArray(merged)) return {};
   return gameNavLabelsFromDisplayLabelsPayload(merged as Record<string, unknown>);
+}
+
+/** Visibilidade do separador «Roleta» no menu (`ui_display_labels.nav.roleta_tab_visible`). */
+export async function saveRoletaTabNavVisible(visible: boolean): Promise<void> {
+  const res = await apiFetch(`${base}/admin/display-labels`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      labels: { 'nav.roleta_tab_visible': visible ? '1' : '0' }
+    })
+  });
+  const data = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+}
+
+/** Lê `nav.roleta_tab_visible` a partir do mapa cru de `/api/display-labels`. */
+export function parseShowRoletaTabNavFromDisplayLabels(all: Record<string, unknown>): boolean {
+  const v = all['nav.roleta_tab_visible'];
+  const s = v != null ? String(v).trim().toLowerCase() : '';
+  if (!s) return true;
+  if (['0', 'false', 'no', 'off', 'hidden', 'hide'].includes(s)) return false;
+  return true;
 }
 
 export async function getLootBoxes(): Promise<LootBox[]> {
@@ -1568,8 +1795,9 @@ export async function getUsers(
   sortDir: 'asc' | 'desc' = 'asc',
   filterStatus: string = 'all',
   filterLevel: string = 'all',
-  filterAdminsOnly: boolean = false
-): Promise<{ users: User[]; total: number; pages: number; levels: { id: string; name: string }[] }> {
+  filterAdminsOnly: boolean = false,
+  filterRoom: string = 'all'
+): Promise<{ users: User[]; total: number; pages: number; levels: { id: string; name: string }[]; rooms: { id: string; name: string }[] }> {
   try {
     const query = new URLSearchParams({
       page: String(page),
@@ -1579,13 +1807,14 @@ export async function getUsers(
       sortDir,
       filterStatus,
       filterLevel,
+      filterRoom,
       ...(filterAdminsOnly ? { filterAdmins: '1' } : {})
     }).toString();
     const res = await apiFetch(`${base}/users?${query}`);
-    if (!res.ok) return { users: [], total: 0, pages: 0, levels: [] };
-    try { return await res.json(); } catch { return { users: [], total: 0, pages: 0, levels: [] }; }
+    if (!res.ok) return { users: [], total: 0, pages: 0, levels: [], rooms: [] };
+    try { return await res.json(); } catch { return { users: [], total: 0, pages: 0, levels: [], rooms: [] }; }
   } catch {
-    return { users: [], total: 0, pages: 0, levels: [] };
+    return { users: [], total: 0, pages: 0, levels: [], rooms: [] };
   }
 }
 
@@ -1625,7 +1854,7 @@ export async function toggleUserBlocked(
   }
 }
 
-export async function updateUser(user: User & { newReferralFor?: string }): Promise<{ ok: boolean; error?: string; code?: string; accounts?: any[] }> {
+export async function updateUser(user: User & { newReferralFor?: string }): Promise<{ ok: boolean; error?: string; code?: string; requiresEmailVerification?: boolean; message?: string }> {
   try {
     const res = await apiFetch(`${base}/user`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(user) });
     const data = await res.json().catch(() => ({}));
@@ -1633,11 +1862,10 @@ export async function updateUser(user: User & { newReferralFor?: string }): Prom
       return {
         ok: false,
         error: (data as { error?: string }).error || `Erro ${res.status}`,
-        code: (data as { code?: string }).code,
-        accounts: (data as { accounts?: any[] }).accounts
+        code: (data as { code?: string }).code
       };
     }
-    return { ok: true, ...(typeof data === 'object' && data ? data : {}) } as { ok: boolean; error?: string; code?: string; accounts?: any[] };
+    return { ok: true, ...(typeof data === 'object' && data ? data : {}) } as { ok: boolean; error?: string; code?: string; requiresEmailVerification?: boolean; message?: string };
   } catch {
     return { ok: false, error: 'Network error' };
   }
@@ -1651,6 +1879,32 @@ export async function deleteUser(email: string): Promise<{ ok: boolean; error?: 
     }
     try { return await res.json(); } catch { return { ok: true } };
   } catch { return { ok: false, error: 'Network error' } }
+}
+
+export async function deactivateStreamerRoomByAdmin(
+  userId: number,
+  currentState: GameState
+): Promise<{ ok: boolean; removedRackCount?: number; error?: string }> {
+  try {
+    const nextPlacedRacks = (currentState.placedRacks || []).filter(
+      (rack) => String(rack.roomId || '').trim() !== 'room_1766898636697'
+    );
+    const removedRackCount = Math.max(0, (currentState.placedRacks || []).length - nextPlacedRacks.length);
+    const res = await saveGameStateAdminOverride(
+      userId,
+      {
+        ...currentState,
+        placedRacks: nextPlacedRacks
+      },
+      { reason: 'admin_disable_streamer_room' }
+    );
+    if (!res.ok) {
+      return { ok: false, error: res.error || 'Não foi possível devolver os itens da sala streamer.' };
+    }
+    return { ok: true, removedRackCount };
+  } catch {
+    return { ok: false, error: 'Network error' };
+  }
 }
 
 export async function bulkDeleteUsers(emails: string[]): Promise<{ ok: boolean; error?: string; count?: number }> {
@@ -2303,6 +2557,19 @@ export type PlayerCalculatorMeOk = {
     dailyUsd: number;
     projection30Usd: number;
     rows: Array<{ label: string; coins: number; usd: number }>;
+    blockHistory: Array<{
+      id: string;
+      roomId: string | null;
+      windowStartMs: number;
+      windowEndMs: number;
+      creditedBlocks: number;
+      amountCoins: number;
+      amountUsd: number;
+      userHashHps: number;
+      networkHashrate: number;
+      blockReward: number;
+      blockTime: number;
+    }>;
   }>;
 };
 
@@ -2339,6 +2606,32 @@ function parsePlayerCalculatorMeBody(body: Record<string, unknown>): PlayerCalcu
           if (label && Number.isFinite(coinsN) && Number.isFinite(usdN)) rows.push({ label, coins: coinsN, usd: usdN });
         }
       }
+      const blockHistory: PlayerCalculatorMeOk['coins'][number]['blockHistory'] = [];
+      if (Array.isArray(o.blockHistory)) {
+        for (const h of o.blockHistory) {
+          if (!h || typeof h !== 'object') continue;
+          const item = h as Record<string, unknown>;
+          const idRaw = item.id;
+          const id = typeof idRaw === 'string' ? idRaw : String(idRaw ?? '').trim();
+          if (!id) continue;
+          blockHistory.push({
+            id,
+            roomId:
+              typeof item.roomId === 'string' && item.roomId.trim()
+                ? item.roomId.trim()
+                : null,
+            windowStartMs: Number(item.windowStartMs),
+            windowEndMs: Number(item.windowEndMs),
+            creditedBlocks: Number(item.creditedBlocks),
+            amountCoins: Number(item.amountCoins),
+            amountUsd: Number(item.amountUsd),
+            userHashHps: Number(item.userHashHps),
+            networkHashrate: Number(item.networkHashrate),
+            blockReward: Number(item.blockReward),
+            blockTime: Number(item.blockTime)
+          });
+        }
+      }
       coins.push({
         id,
         symbol: typeof o.symbol === 'string' ? o.symbol : id,
@@ -2351,7 +2644,8 @@ function parsePlayerCalculatorMeBody(body: Record<string, unknown>): PlayerCalcu
         dailyCoins: Number(o.dailyCoins),
         dailyUsd: Number(o.dailyUsd),
         projection30Usd: Number(o.projection30Usd),
-        rows
+        rows,
+        blockHistory
       });
     }
   }
@@ -3093,6 +3387,8 @@ export function newWheelIdempotencyKey(): string {
 
 export type WheelStatePayload = {
   spinPriceUsdc: number;
+  /** Roleta debitada em USDC no jogo (não a de código). */
+  paidWheelEnabled: boolean;
   usdcBalance: number;
   legacyPaidPending: { wonItemId: string } | null;
   prizes: WheelItem[];
@@ -3111,13 +3407,20 @@ export async function getWheelState(): Promise<
     }
     const j = raw as Record<string, unknown>;
     const spinPriceUsdc = typeof j.spinPriceUsdc === 'number' ? j.spinPriceUsdc : Number(j.spinPriceUsdc) || 1;
+    const cfgObj = j.config as { isEnabled?: unknown } | undefined;
+    const paidWheelEnabled =
+      typeof j.paidWheelEnabled === 'boolean'
+        ? j.paidWheelEnabled
+        : typeof cfgObj?.isEnabled === 'boolean'
+          ? cfgObj.isEnabled
+          : true;
     const usdcBalance = typeof j.usdcBalance === 'number' ? j.usdcBalance : Number(j.usdcBalance) || 0;
     const leg = j.legacyPaidPending as { wonItemId?: string } | null | undefined;
     const legacyPaidPending =
       leg && typeof leg.wonItemId === 'string' && leg.wonItemId.trim() ? { wonItemId: leg.wonItemId.trim() } : null;
     const prizes = Array.isArray(j.prizes) ? (j.prizes as WheelItem[]) : [];
     const notice = typeof j.notice === 'string' ? j.notice : undefined;
-    return { ok: true, data: { spinPriceUsdc, usdcBalance, legacyPaidPending, prizes, notice } };
+    return { ok: true, data: { spinPriceUsdc, paidWheelEnabled, usdcBalance, legacyPaidPending, prizes, notice } };
   } catch {
     return { ok: false, error: 'Erro de rede' };
   }
@@ -3315,7 +3618,8 @@ function roundMiningFieldTo8Decimals(n: number): number {
 export function normalizeMiningCoinPayload(coin: Record<string, any>): Record<string, any> {
   const networkHashrate = parseLocaleNumber(coin.networkHashrate, 1_000_000);
   const blockReward = roundMiningFieldTo8Decimals(Math.max(0, parseLocaleNumber(coin.blockReward, 0)));
-  const blockTime = MINING_BLOCK_TIME_SECONDS;
+  const blockTimeRaw = parseLocaleNumber(coin.blockTime, MINING_BLOCK_TIME_SECONDS);
+  const blockTime = Math.min(86400, Math.max(1, Math.round(blockTimeRaw)));
   const priceUSDRaw = parseLocaleNumber(coin.priceUSD, NaN);
   const priceUSD = roundMiningFieldTo8Decimals(Number.isFinite(priceUSDRaw) && priceUSDRaw >= 0 ? priceUSDRaw : 1);
   const usdcRaw = parseLocaleNumber(coin.usdcRate, NaN);
@@ -3392,8 +3696,38 @@ export async function login(email: string, password: string, deviceFingerprint?:
   }
 }
 
+export async function requestEmailVerification(email: string): Promise<{ ok: boolean; message?: string; error?: string }> {
+  try {
+    const res = await apiFetch(`${base}/request-email-verification`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim() }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string; error?: string };
+    if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` };
+    return { ok: !!data.ok, message: data.message };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'Erro de rede' };
+  }
+}
+
+export async function verifyEmailToken(token: string): Promise<{ ok: boolean; message?: string; error?: string; alreadyVerified?: boolean }> {
+  try {
+    const res = await apiFetch(`${base}/verify-email`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    return await res.json();
+  } catch {
+    return { ok: false, error: 'Network Error' };
+  }
+}
+
 export async function getSession(): Promise<User | null> {
-  if (!getSessionHint()) return null;
+  // Sempre tenta resolver sessão no arranque da página.
+  // Isso evita ficar preso no /login quando a hint local foi limpa,
+  // mas o cookie HTTP-only da sessão ainda está válido.
   try {
     const res = await apiFetch(`${base}/session`);
     if (!res.ok) {
@@ -3404,7 +3738,7 @@ export async function getSession(): Promise<User | null> {
     setSessionHint(true);
     try { return await res.json(); } catch { return null; }
   } catch {
-    setSessionHint(false);
+    // Falha de rede transitória não deve matar a hint de sessão.
     return null;
   }
 }
@@ -3671,6 +4005,13 @@ export {
   newSupportIdempotencyKey,
   archiveSupportTicket,
   reopenSupportTicket,
+  getAdminSupportUserHistory,
+  getAdminSupportTicketDetail,
+} from './supportTicketsApi';
+export type {
+  SupportUserHistoryTicketSummary,
+  SupportUserHistoryResponse,
+  SupportUserHistoryResult,
 } from './supportTicketsApi';
 
 export async function getReferrals(email: string): Promise<string[]> {
@@ -3764,9 +4105,11 @@ export async function getAdminMonetizationSettings(): Promise<MonetizationSettin
   } catch { return null; }
 }
 
-export async function getSecurityStats(): Promise<SecurityStats | null> {
+export async function getSecurityStats(section?: string): Promise<SecurityStats | null> {
   try {
-    const res = await apiFetch(`${base}/admin/security/stats`);
+    const qs = new URLSearchParams();
+    if (section && section.trim()) qs.set('section', section.trim());
+    const res = await apiFetch(`${base}/admin/security/stats${qs.toString() ? `?${qs.toString()}` : ''}`);
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }
@@ -3817,7 +4160,12 @@ export async function removeFromBlacklist(ip: string): Promise<{ ok: boolean; er
 export async function getAdminUserActivity(
   email: string,
   opts?: { userId?: number; limit?: number }
-): Promise<{ logs: GameUserActivityEntry[]; error?: string; activityLogNote?: string }> {
+): Promise<{
+  logs: GameUserActivityEntry[];
+  error?: string;
+  activityLogNote?: string;
+  accountCreatedAtMs?: number | null;
+}> {
   const q = new URLSearchParams();
   const uid = opts?.userId;
   if (uid != null && Number.isFinite(uid) && uid > 0) {
@@ -3841,9 +4189,17 @@ export async function getAdminUserActivity(
     const data = (await res.json()) as {
       logs?: GameUserActivityEntry[];
       activityLogNote?: string;
+      accountCreatedAtMs?: number | null;
     };
     const note = typeof data.activityLogNote === 'string' ? data.activityLogNote : undefined;
-    return { logs: Array.isArray(data.logs) ? data.logs : [], ...(note ? { activityLogNote: note } : {}) };
+    const rawMs = data.accountCreatedAtMs;
+    const accountCreatedAtMs =
+      typeof rawMs === 'number' && Number.isFinite(rawMs) && rawMs > 0 ? Math.floor(rawMs) : null;
+    return {
+      logs: Array.isArray(data.logs) ? data.logs : [],
+      ...(note ? { activityLogNote: note } : {}),
+      accountCreatedAtMs
+    };
   } catch {
     return { logs: [], error: 'Erro de rede.' };
   }
@@ -3935,6 +4291,168 @@ export async function getAdminDormantMiningAccounts(opts?: {
   } catch {
     return { ...empty, error: 'Erro de rede.' };
   }
+}
+
+export type AdminSuspiciousEmailReason = string;
+
+export type AdminSuspiciousEmailReferrer = {
+  id: number | null;
+  username: string | null;
+  email: string | null;
+};
+
+export type AdminSuspiciousEmailUserRow = {
+  id: number;
+  username: string;
+  email: string;
+  emailDomain: string | null;
+  status: 'active' | 'blocked';
+  accessLevel: string | null;
+  createdAt: string | null;
+  lastLoginAt: string | null;
+  walletAddress: string | null;
+  emailVerified: boolean | null;
+  totalHash: number;
+  totalMinedUsd: number;
+  totalDepositedUsdc: number;
+  hasMinedFlag: boolean;
+  referrer: AdminSuspiciousEmailReferrer | null;
+  riskScore: number;
+  riskLevel: 'minimal' | 'low' | 'medium' | 'high';
+  reasons: AdminSuspiciousEmailReason[];
+};
+
+export type AdminSuspiciousEmailsReport = {
+  ok: boolean;
+  summary: {
+    totalSuspicious: number;
+    domainNotTrusted: number;
+    invalidFormat: number;
+    temporaryDomains: number;
+    fakePatterns: number;
+    duplicates: number;
+    unverified: number;
+    suspiciousDomain: number;
+    deadAccounts: number;
+    referralOnly: number;
+    highRisk: number;
+  };
+  trustedDomains?: string[];
+  domainStats: Array<{ domain: string; count: number; reason: string }>;
+  users: AdminSuspiciousEmailUserRow[];
+  pagination: { page: number; limit: number; total: number };
+  meta?: { note?: string; unverifiedEmailSupported?: boolean };
+  error?: string;
+};
+
+/** GET /api/admin/users/suspicious-emails — leitura; requer permissão admin (aba users). */
+export async function getAdminSuspiciousEmails(opts?: {
+  q?: string;
+  reason?: string;
+  status?: string;
+  domain?: string;
+  activity?: string;
+  page?: number;
+  limit?: number;
+  sort?: string;
+}): Promise<AdminSuspiciousEmailsReport> {
+  const emptySummary = {
+    totalSuspicious: 0,
+    domainNotTrusted: 0,
+    invalidFormat: 0,
+    temporaryDomains: 0,
+    fakePatterns: 0,
+    duplicates: 0,
+    unverified: 0,
+    suspiciousDomain: 0,
+    deadAccounts: 0,
+    referralOnly: 0,
+    highRisk: 0,
+  };
+  const q = new URLSearchParams();
+  if (opts?.q) q.set('q', opts.q.slice(0, 200));
+  if (opts?.reason) q.set('reason', opts.reason);
+  if (opts?.status) q.set('status', opts.status);
+  if (opts?.domain) q.set('domain', opts.domain.slice(0, 200));
+  if (opts?.activity) q.set('activity', opts.activity);
+  if (opts?.page != null && opts.page >= 1) q.set('page', String(Math.floor(opts.page)));
+  if (opts?.limit != null && opts.limit >= 1) q.set('limit', String(Math.min(100, Math.floor(opts.limit))));
+  if (opts?.sort) q.set('sort', opts.sort);
+  const qs = q.toString();
+  try {
+    const res = await apiFetch(`${base}/admin/users/suspicious-emails${qs ? `?${qs}` : ''}`);
+    if (!res.ok) {
+      let msg = `Erro ${res.status}`;
+      try {
+        const j = (await res.json()) as { error?: string };
+        if (j.error) msg = j.error;
+      } catch {
+        /* ignore */
+      }
+      return {
+        ok: false,
+        summary: emptySummary,
+        domainStats: [],
+        users: [],
+        pagination: { page: 1, limit: 50, total: 0 },
+        error: msg,
+      };
+    }
+    const data = (await res.json()) as Partial<AdminSuspiciousEmailsReport>;
+    return {
+      ok: data.ok !== false,
+      summary: {
+        totalSuspicious: data.summary?.totalSuspicious ?? 0,
+        domainNotTrusted: data.summary?.domainNotTrusted ?? 0,
+        invalidFormat: data.summary?.invalidFormat ?? 0,
+        temporaryDomains: data.summary?.temporaryDomains ?? 0,
+        fakePatterns: data.summary?.fakePatterns ?? 0,
+        duplicates: data.summary?.duplicates ?? 0,
+        unverified: data.summary?.unverified ?? 0,
+        suspiciousDomain: data.summary?.suspiciousDomain ?? 0,
+        deadAccounts: data.summary?.deadAccounts ?? 0,
+        referralOnly: data.summary?.referralOnly ?? 0,
+        highRisk: data.summary?.highRisk ?? 0,
+      },
+      trustedDomains: Array.isArray(data.trustedDomains) ? data.trustedDomains : undefined,
+      domainStats: parseJsonArray(data.domainStats as unknown[]),
+      users: parseJsonArray<AdminSuspiciousEmailUserRow>(data.users as unknown[]),
+      pagination: {
+        page: data.pagination?.page ?? 1,
+        limit: data.pagination?.limit ?? 50,
+        total: data.pagination?.total ?? 0,
+      },
+      meta: data.meta,
+    };
+  } catch {
+    return {
+      ok: false,
+      summary: emptySummary,
+      domainStats: [],
+      users: [],
+      pagination: { page: 1, limit: 50, total: 0 },
+      error: 'Erro de rede.',
+    };
+  }
+}
+
+export function getAdminSuspiciousEmailsExportUrl(opts?: {
+  q?: string;
+  reason?: string;
+  status?: string;
+  domain?: string;
+  activity?: string;
+  sort?: string;
+}): string {
+  const q = new URLSearchParams();
+  if (opts?.q) q.set('q', opts.q.slice(0, 200));
+  if (opts?.reason) q.set('reason', opts.reason);
+  if (opts?.status) q.set('status', opts.status);
+  if (opts?.domain) q.set('domain', opts.domain.slice(0, 200));
+  if (opts?.activity) q.set('activity', opts.activity);
+  if (opts?.sort) q.set('sort', opts.sort);
+  const qs = q.toString();
+  return `${base}/admin/users/suspicious-emails/export.csv${qs ? `?${qs}` : ''}`;
 }
 
 export async function setMonetizationSettings(settings: MonetizationSettings): Promise<void> {
@@ -4477,6 +4995,7 @@ export type CheckinStatusPayload = {
   lastCheckinAtMs: number | null;
   streak: number;
   todayCheckedIn: boolean;
+  canEarlyCheckin: boolean;
   frozen: boolean;
   nextResetMs: number;
   windowRemainingMs: number;
@@ -4522,6 +5041,7 @@ function parseCheckinStatusPayload(raw: Record<string, unknown>): CheckinStatusP
     lastCheckinAtMs,
     streak,
     todayCheckedIn: raw.todayCheckedIn === true,
+    canEarlyCheckin: raw.canEarlyCheckin === true,
     frozen: raw.frozen === true,
     nextResetMs,
     windowRemainingMs,
@@ -4555,7 +5075,7 @@ export async function getCheckinStatus(): Promise<{ ok: true; data: CheckinStatu
   }
 }
 
-/** POST /api/checkin — idempotente por dia BRT */
+/** POST /api/checkin — idempotente no mesmo ciclo BRT (21:00→21:00) */
 export async function postCheckin(): Promise<
   { ok: true; data: CheckinPerformPayload } | { ok: false; error: string; code?: string }
 > {
@@ -4636,6 +5156,18 @@ export async function updateEconomySettings(coinId: string, networkHashrate: num
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ coinId, networkHashrate, blockReward })
+    });
+    return await res.json();
+  } catch {
+    return { ok: false, error: 'Network Error' };
+  }
+}
+
+export async function syncMiningCoinLivePricesNow(): Promise<{ ok: boolean; updated?: number; error?: string }> {
+  try {
+    const res = await apiFetch(`${base}/admin/mining-coins/sync-live-prices`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
     });
     return await res.json();
   } catch {
@@ -4890,7 +5422,37 @@ export async function requestWithdrawal(
   }
 }
 
-export async function getWithdrawalRequests(): Promise<any[]> {
+export type WithdrawalHistoryEntry = {
+  id: string;
+  userId: number;
+  username: string;
+  email: string;
+  coinId: string;
+  coinSymbol: string;
+  amountCrypto: number;
+  amountUsdc: number;
+  feeAmount: number;
+  netAmount: number;
+  walletAddress: string;
+  status: string;
+  txHash: string | null;
+  createdAt: number;
+  processedAt: number | null;
+};
+
+/** Saques da conta autenticada (histórico pessoal). */
+export async function getMyWithdrawalHistory(limit = 300): Promise<WithdrawalHistoryEntry[]> {
+  try {
+    const res = await apiFetch(`${base}/withdrawals/history?limit=${Math.min(500, Math.max(1, limit))}`);
+    if (!res.ok) return [];
+    const data = await res.json().catch(() => []);
+    return Array.isArray(data) ? (data as WithdrawalHistoryEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function getWithdrawalRequests(): Promise<WithdrawalHistoryEntry[]> {
   try {
     const res = await apiFetch(`${base}/admin/withdrawals`);
     if (!res.ok) return [];

@@ -7,6 +7,7 @@ import { prisma } from '../config/prisma.js';
 import { miningRuntimeStats } from '../cron/miningRuntimeStats.js';
 import { getSettingsRecord, getSettingValue } from './settingsPrisma.js';
 import { normalizePublicAssetUrl } from './publicAssetUrl.js';
+import { mapUpgradeRowToApi } from './upgradeCatalogShape.js';
 
 /** Alinhado com `GAME_NAV_LABEL_KEYS` no frontend (`constants/gameNavLabels.ts`). */
 const GAME_NAV_SHORT_KEYS = [
@@ -18,6 +19,7 @@ const GAME_NAV_SHORT_KEYS = [
   'lucky_store',
   'roleta',
   'wallet',
+  'withdrawal_history',
   'ranking',
   'upgrade',
   'transparency',
@@ -62,42 +64,7 @@ export async function loadUpgradesForBootstrap(userId: number | undefined): Prom
     return acc;
   }, {});
 
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    category: r.category,
-    type: r.type,
-    baseCost: r.base_cost,
-    baseProduction: r.base_production,
-    powerConsumption: r.power_consumption ?? undefined,
-    powerCapacity: r.power_capacity ?? undefined,
-    multiplier: r.multiplier ?? undefined,
-    slotsCapacity: r.slots_capacity ?? undefined,
-    aiSlotsCapacity: r.ai_slots_capacity ?? undefined,
-    description: r.description,
-    icon: r.icon,
-    status: r.status,
-    isNft: !!r.is_nft,
-    nftContract: r.nft_contract ?? undefined,
-    nftTokenId: r.nft_token_id ?? undefined,
-    maxGlobalStock: r.max_global_stock ?? undefined,
-    totalSold: Number((r as { total_sold?: unknown }).total_sold) || 0,
-    image: normalizePublicAssetUrl(r.image != null ? String(r.image) : undefined) ?? undefined,
-    layout: r.layout
-      ? (() => {
-          try {
-            return JSON.parse(r.layout) as unknown;
-          } catch {
-            return undefined;
-          }
-        })()
-      : undefined,
-    compatibleRacks: compatMap[r.id] || [],
-    rewardWh: r.reward_wh ?? 0,
-    sellInHardwareMarket: r.sell_in_hardware_market !== 0,
-    sellInBlackMarket: r.sell_in_black_market !== 0,
-    isActive: r.is_active !== 0
-  }));
+  return rows.map((r) => mapUpgradeRowToApi(r, compatMap[r.id] || []));
 }
 
 export async function loadAccessLevelsForBootstrap(): Promise<unknown[]> {
@@ -185,6 +152,58 @@ export async function loadMiningCoinsForBootstrap(): Promise<unknown[]> {
       showInExchange: !!r.show_in_exchange
     };
   });
+}
+
+function redactMiningCoinForAnonymous(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const coin = raw as Record<string, unknown>;
+  return {
+    id: coin.id,
+    name: coin.name,
+    symbol: coin.symbol,
+    description: coin.description,
+    color: coin.color,
+    algorithm: coin.algorithm,
+    isActive: coin.isActive,
+    showInExchange: coin.showInExchange
+  };
+}
+
+function redactAccessLevelForAnonymous(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const level = raw as Record<string, unknown>;
+  return {
+    id: level.id,
+    name: level.name,
+    description: level.description,
+    isDefault: level.isDefault,
+    isActive: level.isActive,
+    priceUsdc: level.priceUsdc,
+    inactiveMessage: level.inactiveMessage
+  };
+}
+
+function redactLootBoxForAnonymous(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const box = raw as Record<string, unknown>;
+  return {
+    id: box.id,
+    name: box.name,
+    description: box.description,
+    price: box.price,
+    trigger: box.trigger,
+    icon: box.icon,
+    isActive: box.isActive
+  };
+}
+
+function redactWeb3SettingsForAnonymous(raw: Record<string, unknown>): Record<string, unknown> {
+  return {
+    minDepositUsdc: raw.minDepositUsdc,
+    depositPolygonDisabled: raw.depositPolygonDisabled,
+    depositBnbDisabled: raw.depositBnbDisabled,
+    depositBaseDisabled: raw.depositBaseDisabled
+  };
 }
 
 export async function loadEconomySettingsForBootstrap(): Promise<{
@@ -319,6 +338,18 @@ export async function loadGameNavLabelsForBootstrap(): Promise<Record<string, st
   return out;
 }
 
+/** Separador «Roleta» no menu: por defeito visível; `ui_display_labels.nav.roleta_tab_visible` em 0/false/off/hide oculta. */
+export async function loadShowRoletaInNavForBootstrap(): Promise<boolean> {
+  const row = await prisma.ui_display_labels.findUnique({
+    where: { key: 'nav.roleta_tab_visible' },
+    select: { value: true }
+  });
+  const v = row?.value != null ? String(row.value).trim().toLowerCase() : '';
+  if (!v) return true;
+  if (['0', 'false', 'no', 'off', 'hidden', 'hide'].includes(v)) return false;
+  return true;
+}
+
 export type PublicBootstrapPayload = {
   upgrades: unknown[];
   accessLevels: unknown[];
@@ -328,6 +359,7 @@ export type PublicBootstrapPayload = {
   web3Settings: Record<string, unknown>;
   systemNews: unknown[];
   gameNavLabels: Record<string, string>;
+  showRoletaInNav: boolean;
 };
 
 export type PublicBootstrapLitePayload = Pick<
@@ -362,6 +394,7 @@ export async function loadSeasonPassesCatalogForBootstrap(): Promise<unknown[]> 
 }
 
 export async function getPublicBootstrapPayload(userId: number | undefined, lite: boolean): Promise<unknown> {
+  const isAnonymous = !(typeof userId === 'number' && Number.isFinite(userId) && userId > 0);
   if (lite) {
     const [accessLevels, miningCoins, economySettings, lootBoxes, web3Settings] = await Promise.all([
       loadAccessLevelsForBootstrap(),
@@ -371,16 +404,16 @@ export async function getPublicBootstrapPayload(userId: number | undefined, lite
       loadWeb3SettingsForBootstrap()
     ]);
     const payload: PublicBootstrapLitePayload = {
-      accessLevels,
-      miningCoins,
+      accessLevels: isAnonymous ? accessLevels.map(redactAccessLevelForAnonymous) : accessLevels,
+      miningCoins: isAnonymous ? miningCoins.map(redactMiningCoinForAnonymous) : miningCoins,
       economySettings,
-      lootBoxes,
-      web3Settings
+      lootBoxes: isAnonymous ? lootBoxes.map(redactLootBoxForAnonymous) : lootBoxes,
+      web3Settings: isAnonymous ? redactWeb3SettingsForAnonymous(web3Settings) : web3Settings
     };
     return payload;
   }
 
-  const [upgrades, accessLevels, lootBoxes, miningCoins, economySettings, web3Settings, systemNews, gameNavLabels] =
+  const [upgrades, accessLevels, lootBoxes, miningCoins, economySettings, web3Settings, systemNews, gameNavLabels, showRoletaInNav] =
     await Promise.all([
       loadUpgradesForBootstrap(userId),
       loadAccessLevelsForBootstrap(),
@@ -389,18 +422,20 @@ export async function getPublicBootstrapPayload(userId: number | undefined, lite
       loadEconomySettingsForBootstrap(),
       loadWeb3SettingsForBootstrap(),
       loadSystemNewsForBootstrap(),
-      loadGameNavLabelsForBootstrap()
+      loadGameNavLabelsForBootstrap(),
+      loadShowRoletaInNavForBootstrap()
     ]);
 
   const payload: PublicBootstrapPayload = {
-    upgrades,
-    accessLevels,
-    lootBoxes,
-    miningCoins,
+    upgrades: isAnonymous ? [] : upgrades,
+    accessLevels: isAnonymous ? accessLevels.map(redactAccessLevelForAnonymous) : accessLevels,
+    lootBoxes: isAnonymous ? lootBoxes.map(redactLootBoxForAnonymous) : lootBoxes,
+    miningCoins: isAnonymous ? miningCoins.map(redactMiningCoinForAnonymous) : miningCoins,
     economySettings,
-    web3Settings,
+    web3Settings: isAnonymous ? redactWeb3SettingsForAnonymous(web3Settings) : web3Settings,
     systemNews,
-    gameNavLabels
+    gameNavLabels,
+    showRoletaInNav
   };
   return payload;
 }

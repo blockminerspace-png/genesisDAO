@@ -762,6 +762,14 @@ export async function paidWheelRollInTransaction(
   const priceDec = await getWheelPaidSpinPriceDecimal(tx, serverNowMs);
   const price = Number(priceDec.toFixed(6));
 
+  const paidCfg = await tx.wheel_config.findUnique({
+    where: { id: 1 },
+    select: { is_enabled: true }
+  });
+  if (!paidCfg || paidCfg.is_enabled !== 1) {
+    throw new RoletaAppError('A roleta paga está desativada.', 422);
+  }
+
   /** `game_states` primeiro: serializa giros pagos do mesmo jogador e evita cobrança dupla. */
   const gsRows = await tx.$queryRaw<Array<{ usdc: number }>>`
     SELECT usdc::float AS usdc FROM game_states WHERE user_id = ${userId} FOR UPDATE

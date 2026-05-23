@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from 'pg';
 import crypto from 'node:crypto';
+import { getAddress } from 'ethers';
 import { stableIntentFingerprint } from '../../lib/gameIntentIdempotencyPrisma.js';
 import { walletAdvisoryLockKey64 } from './walletLocks.js';
 import { RoletaAppError } from '../../validation/roletaValidation.js';
@@ -139,6 +140,34 @@ export async function runWithdrawRequestIdempotent(
   try {
     const lockKey = walletAdvisoryLockKey64(userId, WITHDRAW_IDEM_SCOPE, idempotencyKey);
     await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [lockKey]);
+
+    const uw = await client.query<{ polygon_wallet: string | null }>(
+      'SELECT polygon_wallet FROM users WHERE id = $1 FOR UPDATE',
+      [userId]
+    );
+    const storedRaw =
+      uw.rows[0]?.polygon_wallet != null ? String(uw.rows[0].polygon_wallet).trim() : '';
+    if (!storedRaw || ['0x', 'null'].includes(storedRaw.toLowerCase())) {
+      throw new RoletaAppError(
+        'Conecte uma carteira antes de usar depósitos ou saques em cripto.',
+        400
+      );
+    }
+    let storedNorm: string;
+    try {
+      storedNorm = getAddress(storedRaw);
+    } catch {
+      throw new RoletaAppError('Carteira de saque inválida no perfil. Reconecte a carteira no perfil.', 400);
+    }
+    let reqNorm: string;
+    try {
+      reqNorm = getAddress(cleanWallet);
+    } catch {
+      throw new RoletaAppError('Informe uma carteira Polygon (EVM) válida (0x + 40 hex).', 400);
+    }
+    if (storedNorm.toLowerCase() !== reqNorm.toLowerCase()) {
+      throw new RoletaAppError('O endereço de saque deve coincidir com a carteira conectada no perfil.', 400);
+    }
 
     const prev = await client.query<{ response_json: string; request_fingerprint: string | null }>(
       `SELECT response_json, request_fingerprint::text AS request_fingerprint FROM wallet_idempotency

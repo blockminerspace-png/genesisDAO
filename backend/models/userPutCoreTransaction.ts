@@ -1,4 +1,14 @@
 import { Prisma } from '@prisma/client';
+import {
+  appendUserWalletHistory,
+  normalizeWalletCompareKey,
+  tryNormalizeWallet,
+  type WalletHistoryAction
+} from '../modules/profile/profileWalletHistory.service.js';
+
+export type UserPutCoreWalletAudit =
+  | { kind: 'admin'; actorUserId: number; clientIp: string | null; userAgent: string | null }
+  | { kind: 'registration'; clientIp: string | null; userAgent: string | null };
 
 export type UserPutCoreTxInput = {
   uid: number;
@@ -13,6 +23,8 @@ export type UserPutCoreTxInput = {
   allowAccessLevelFromBody: boolean;
   accessLevelIdsValidated: string[] | null;
   clientIpReferral: string;
+  /** Quando `polygonForUpdate` está definido, regista histórico append-only (admin ou registo). */
+  walletAudit?: UserPutCoreWalletAudit;
 };
 
 /**
@@ -33,10 +45,63 @@ export async function executeUserPutCoreTransaction(
     referredByForUpdate,
     allowAccessLevelFromBody,
     accessLevelIdsValidated,
-    clientIpReferral
+    walletAudit
   } = input;
 
   const now = BigInt(Date.now());
+
+  let walletChange:
+    | {
+        prevDisp: string | null;
+        nextDisp: string | null;
+        action: WalletHistoryAction;
+        walletAddress: string | null;
+        actorType: 'admin' | 'user';
+        actorUserId: number | null;
+        source: string;
+      }
+    | null = null;
+
+  if (polygonForUpdate !== undefined && walletAudit) {
+    const cur = await tx.users.findUnique({
+      where: { id: uid },
+      select: { polygon_wallet: true }
+    });
+    const prevRaw = cur?.polygon_wallet != null ? String(cur.polygon_wallet).trim() : '';
+    const nextRaw =
+      polygonForUpdate == null || polygonForUpdate === '' ? '' : String(polygonForUpdate).trim();
+    const prevKey = normalizeWalletCompareKey(prevRaw || null);
+    const nextKey = normalizeWalletCompareKey(nextRaw || null);
+    if (prevKey !== nextKey) {
+      const prevDisp = tryNormalizeWallet(prevRaw || null);
+      const nextDisp = tryNormalizeWallet(nextRaw || null);
+      if (walletAudit.kind === 'admin') {
+        walletChange = {
+          prevDisp,
+          nextDisp,
+          action: 'admin_changed',
+          walletAddress: nextDisp ?? prevDisp,
+          actorType: 'admin',
+          actorUserId: walletAudit.actorUserId,
+          source: 'admin_panel'
+        };
+      } else {
+        let action: WalletHistoryAction = 'changed';
+        if (!prevDisp && nextDisp) action = 'connected';
+        else if (prevDisp && !nextDisp) action = 'removed';
+        walletChange = {
+          prevDisp,
+          nextDisp,
+          action,
+          walletAddress:
+            action === 'removed' ? prevDisp : nextDisp ?? prevDisp,
+          actorType: 'user',
+          actorUserId: null,
+          source: 'registration'
+        };
+      }
+    }
+  }
 
   const userUpdateBase: Prisma.usersUpdateInput = {
     username: usernameForUpdate,
@@ -58,6 +123,23 @@ export async function executeUserPutCoreTransaction(
     await tx.users.update({
       where: { id: uid },
       data: userUpdateBase
+    });
+  }
+
+  if (walletChange && walletAudit) {
+    await appendUserWalletHistory(tx, {
+      userId: uid,
+      action: walletChange.action,
+      network: 'polygon',
+      walletAddress: walletChange.walletAddress,
+      previousWalletAddress: walletChange.prevDisp,
+      newWalletAddress: walletChange.nextDisp,
+      ipAddress: walletAudit.clientIp,
+      userAgent: walletAudit.userAgent,
+      actorType: walletChange.actorType,
+      actorUserId: walletChange.actorUserId,
+      source: walletChange.source,
+      notes: null
     });
   }
 
@@ -94,29 +176,26 @@ export async function executeUserPutCoreTransaction(
     where: {
       referral_code: { equals: referredByForUpdate, mode: 'insensitive' }
     },
-    select: { id: true, access_level_id: true }
+    select: { id: true, access_level_id: true, referral_code: true }
   });
 
   const referredUsername = usernameForUpdate;
   if (!ref || !referredUsername) return;
 
-  const referrerRow = await tx.users.findUnique({
-    where: { id: ref.id },
-    select: { registration_ip: true }
-  });
-  const referrerRegIp = referrerRow?.registration_ip ?? null;
+  if (ref.id === uid) {
+    throw new Error('Você não pode usar seu próprio código de indicação.');
+  }
 
-  const historyHit = await tx.user_history_ips.findUnique({
-    where: { user_id_ip: { user_id: ref.id, ip: clientIpReferral } }
+  const newUserRow = await tx.users.findUnique({
+    where: { id: uid },
+    select: { referral_code: true }
   });
-
-  if ((referrerRegIp && referrerRegIp === clientIpReferral) || historyHit != null) {
-    console.warn(
-      `[Referral] Bloqueada tentativa de auto-indicação. IP ${clientIpReferral} vinculado ao indicador ID: ${ref.id}`
-    );
-    throw new Error(
-      'Auto-indicação não permitida. Você não pode usar seu próprio código de indicação em contas do mesmo IP.'
-    );
+  const ownCode = newUserRow?.referral_code?.trim();
+  if (
+    ownCode &&
+    ownCode.toLowerCase() === String(referredByForUpdate).trim().toLowerCase()
+  ) {
+    throw new Error('Você não pode usar seu próprio código de indicação.');
   }
 
   let insertedReferral = false;

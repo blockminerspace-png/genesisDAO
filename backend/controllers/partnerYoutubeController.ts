@@ -1,4 +1,5 @@
 import type { Express, Request, RequestHandler, Response } from 'express';
+import type { Pool } from 'pg';
 import { rateLimit } from 'express-rate-limit';
 import {
   countPartnerSubmissionsForUserUtcDay,
@@ -29,6 +30,11 @@ import {
 } from '../utils/partnerYoutubeHelpers.js';
 import { PartnerYoutubeSubmitError, runPartnerYoutubeSubmitVideo } from '../modules/partners/partnersSubmit.service.js';
 import { sendInternalErrorSafeMessageOrPrisma } from '../utils/apiErrorResponse.js';
+import { NFT_AUTO_ROOM_ID, resolveNftAutoArmario1OnlyRoomIds } from '../lib/nftRoomMining.js';
+import {
+  loadUserPlacedRacksWithSlots,
+  persistStockStoredBatteriesPlacedRacks
+} from '../lib/serverRoomPersistence.js';
 
 const partnerYoutubeSubmitLimiter = rateLimit({
   windowMs: 60_000,
@@ -49,6 +55,7 @@ export type PartnerYoutubeDeps = {
   authenticateToken: RequestHandler;
   isAdmin: RequestHandler;
   appendGameActivityLog: AppendGameActivityLog;
+  db: Pool;
 };
 
 function uidNum(req: Request): number | null {
@@ -59,7 +66,181 @@ function uidNum(req: Request): number | null {
 }
 
 export function registerPartnerYoutubeRoutes(app: Express, deps: PartnerYoutubeDeps): void {
-  const { authenticateToken, isAdmin, appendGameActivityLog } = deps;
+  const { authenticateToken, isAdmin, appendGameActivityLog, db } = deps;
+  const partnerVideoWindowMs = 60 * 24 * 60 * 60 * 1000;
+
+  function buildPartnerRoomCompliance(lastApprovedAt: number | null | undefined, approvedLast365d: number) {
+    const lastMs = Number(lastApprovedAt) || 0;
+    const now = Date.now();
+    const nextDeadlineAt = lastMs > 0 ? lastMs + partnerVideoWindowMs : 0;
+    const overdue = !lastMs || nextDeadlineAt < now;
+    return {
+      requiredApprovedPerYear: 6,
+      requiredIntervalDays: 60,
+      approvedLast365d: Math.max(0, Number(approvedLast365d) || 0),
+      lastApprovedAt: lastMs || null,
+      nextDeadlineAt: nextDeadlineAt || null,
+      overdue,
+      compliant: !overdue
+    };
+  }
+
+  async function loadPartnerRowsForUserIds(userIds: number[]): Promise<Array<{
+    user_id: number;
+    username: string;
+    email: string;
+    approved_count: number;
+    approved_last_365d: number;
+    last_approved_at: bigint | null;
+    partner_channel_url: string;
+    partner_avatar_url: string;
+    is_allowlisted: boolean;
+  }>> {
+    if (userIds.length === 0) return [];
+    const cutoff365d = Date.now() - 365 * 24 * 60 * 60 * 1000;
+    const r = await db.query(
+      `SELECT
+          u.id AS user_id,
+          u.username,
+          u.email,
+          COALESCE(SUM(CASE WHEN s.status = 'approved' THEN 1 ELSE 0 END), 0)::int AS approved_count,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN s.status = 'approved' AND COALESCE(s.reviewed_at, s.created_at) >= $2::bigint THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          )::int AS approved_last_365d,
+          MAX(CASE WHEN s.status = 'approved' THEN COALESCE(s.reviewed_at, s.created_at) ELSE NULL END)::bigint AS last_approved_at,
+          COALESCE(NULLIF(BTRIM(p.channel_url), ''), '') AS partner_channel_url,
+          COALESCE(NULLIF(BTRIM(p.avatar_url), ''), '') AS partner_avatar_url,
+          EXISTS (SELECT 1 FROM partner_youtube_manual_allowlist m WHERE m.user_id = u.id) AS is_allowlisted
+       FROM users u
+       LEFT JOIN partner_youtube_submissions s ON s.user_id = u.id
+       LEFT JOIN partner_youtube_creator_profiles p ON p.user_id = u.id
+       WHERE u.id = ANY($1::int[])
+       GROUP BY
+         u.id, u.username, u.email,
+         COALESCE(NULLIF(BTRIM(p.channel_url), ''), ''),
+         COALESCE(NULLIF(BTRIM(p.avatar_url), ''), '')
+       ORDER BY u.username ASC`,
+      [userIds, cutoff365d]
+    );
+    return r.rows as Array<{
+      user_id: number;
+      username: string;
+      email: string;
+      approved_count: number;
+      approved_last_365d: number;
+      last_approved_at: bigint | null;
+      partner_channel_url: string;
+      partner_avatar_url: string;
+      is_allowlisted: boolean;
+    }>;
+  }
+
+  async function loadPartnerNftRoomUserIds(filterUserIds?: number[]): Promise<Set<number>> {
+    // Sala STREAMERS — quem tem acesso à room_1766898636697 (níveis tester/creator)
+    const STREAMER_ROOM_ID = 'room_1766898636697';
+    const roomIds = [STREAMER_ROOM_ID];
+    const hasFilter = Array.isArray(filterUserIds) && filterUserIds.length > 0;
+    const sql = hasFilter
+      ? `SELECT DISTINCT u.id AS user_id
+           FROM users u
+          WHERE u.id = ANY($2::int[])
+            AND (
+              EXISTS (
+                SELECT 1
+                  FROM user_rig_rooms urr
+                 WHERE urr.user_id = u.id
+                   AND urr.room_id = ANY($1::text[])
+              )
+              OR EXISTS (
+                SELECT 1
+                  FROM placed_racks pr
+                 WHERE pr.user_id = u.id
+                   AND COALESCE(NULLIF(BTRIM(pr.room_id::text), ''), 'room_initial') = ANY($1::text[])
+              )
+              OR EXISTS (
+                SELECT 1
+                  FROM rig_rooms rr
+                 WHERE rr.id = ANY($1::text[])
+                   AND COALESCE(rr.is_active, 1) = 1
+                   AND (
+                     COALESCE(NULLIF(BTRIM(rr.allowed_levels), ''), '[]') = '[]'
+                     OR EXISTS (
+                       SELECT 1
+                         FROM jsonb_array_elements_text(COALESCE(NULLIF(BTRIM(rr.allowed_levels), ''), '[]')::jsonb) AS room_lvl(level_id)
+                        WHERE LOWER(BTRIM(room_lvl.level_id)) IN (
+                          SELECT lvl.level_id
+                            FROM (
+                              SELECT LOWER(BTRIM(u.access_level_id::text)) AS level_id
+                               WHERE u.access_level_id IS NOT NULL
+                                 AND BTRIM(u.access_level_id::text) <> ''
+                              UNION
+                              SELECT LOWER(BTRIM(ual.access_level_id::text)) AS level_id
+                                FROM user_access_levels ual
+                               WHERE ual.user_id = u.id
+                                 AND ual.access_level_id IS NOT NULL
+                                 AND BTRIM(ual.access_level_id::text) <> ''
+                            ) lvl
+                        )
+                     )
+                   )
+              )
+            )`
+      : `SELECT DISTINCT u.id AS user_id
+           FROM users u
+          WHERE
+            EXISTS (
+              SELECT 1
+                FROM user_rig_rooms urr
+               WHERE urr.user_id = u.id
+                 AND urr.room_id = ANY($1::text[])
+            )
+            OR EXISTS (
+              SELECT 1
+                FROM placed_racks pr
+               WHERE pr.user_id = u.id
+                 AND COALESCE(NULLIF(BTRIM(pr.room_id::text), ''), 'room_initial') = ANY($1::text[])
+            )
+            OR EXISTS (
+              SELECT 1
+                FROM rig_rooms rr
+               WHERE rr.id = ANY($1::text[])
+                 AND COALESCE(rr.is_active, 1) = 1
+                 AND (
+                   COALESCE(NULLIF(BTRIM(rr.allowed_levels), ''), '[]') = '[]'
+                   OR EXISTS (
+                     SELECT 1
+                       FROM jsonb_array_elements_text(COALESCE(NULLIF(BTRIM(rr.allowed_levels), ''), '[]')::jsonb) AS room_lvl(level_id)
+                      WHERE LOWER(BTRIM(room_lvl.level_id)) IN (
+                        SELECT lvl.level_id
+                          FROM (
+                            SELECT LOWER(BTRIM(u.access_level_id::text)) AS level_id
+                             WHERE u.access_level_id IS NOT NULL
+                               AND BTRIM(u.access_level_id::text) <> ''
+                            UNION
+                            SELECT LOWER(BTRIM(ual.access_level_id::text)) AS level_id
+                              FROM user_access_levels ual
+                             WHERE ual.user_id = u.id
+                               AND ual.access_level_id IS NOT NULL
+                               AND BTRIM(ual.access_level_id::text) <> ''
+                          ) lvl
+                      )
+                   )
+                 )
+            )`;
+    const params = hasFilter ? [roomIds, filterUserIds] : [roomIds];
+    const r = await db.query(sql, params);
+    return new Set(
+      r.rows
+        .map((row) => Number(row.user_id))
+        .filter((v) => Number.isFinite(v) && v > 0)
+    );
+  }
 
   app.get('/api/partner-videos/public', async (req: Request, res: Response) => {
     try {
@@ -266,13 +447,40 @@ export function registerPartnerYoutubeRoutes(app: Express, deps: PartnerYoutubeD
 
   app.get('/api/admin/partner-youtube-partners', isAdmin, async (_req: Request, res: Response) => {
     try {
-      const partnerRows = await listPartnerYoutubePartnersForAdmin();
+      const basePartnerRows = await listPartnerYoutubePartnersForAdmin();
+      const partnerUserIds = basePartnerRows
+        .map((row) => Number(row.user_id))
+        .filter((v) => Number.isFinite(v) && v > 0);
+      const nftRoomActiveUserIds = await loadPartnerNftRoomUserIds();
+      const missingNftRoomUserIds = Array.from(nftRoomActiveUserIds).filter((uid) => !partnerUserIds.includes(uid));
+      const extraRows = await loadPartnerRowsForUserIds(missingNftRoomUserIds);
+      const mergedRows = [...basePartnerRows, ...extraRows].sort((a, b) =>
+        String(a.username || '').localeCompare(String(b.username || ''), 'pt-PT', { sensitivity: 'base' })
+      );
+      const activeRoomRows = mergedRows.filter((row) => nftRoomActiveUserIds.has(Number(row.user_id) || 0));
       res.json({
-        partners: partnerRows.map((row) => ({
+        partners: activeRoomRows.map((row) => ({
+          ...(function () {
+            const hasNftRoom = nftRoomActiveUserIds.has(Number(row.user_id) || 0);
+            const compliance = buildPartnerRoomCompliance(
+              row.last_approved_at != null ? Number(row.last_approved_at) : null,
+              Number(row.approved_last_365d) || 0
+            );
+            return {
+              nftRoom: {
+                ...compliance,
+                active: hasNftRoom,
+                overdue: hasNftRoom ? compliance.overdue : false,
+                compliant: hasNftRoom ? compliance.compliant : true
+              }
+            };
+          })(),
           userId: row.user_id,
           username: row.username,
           email: row.email,
           approvedCount: Number(row.approved_count) || 0,
+          approvedLast365d: Number(row.approved_last_365d) || 0,
+          lastApprovedAt: row.last_approved_at != null ? Number(row.last_approved_at) : null,
           channelUrl: row.partner_channel_url || '',
           avatarUrl: row.partner_avatar_url || '',
           allowlisted: Boolean(row.is_allowlisted)
@@ -286,6 +494,95 @@ export function registerPartnerYoutubeRoutes(app: Express, deps: PartnerYoutubeD
         e,
         'Erro ao listar parceiros.'
       );
+    }
+  });
+
+  app.post('/api/admin/partner-youtube-partners/:userId/deactivate-nft-room', isAdmin, async (req: Request, res: Response) => {
+    const targetUserId = parseInt(String(req.params.userId || '').trim(), 10);
+    const adminId = uidNum(req);
+    if (!Number.isFinite(targetUserId) || targetUserId < 1) {
+      res.status(400).json({ error: 'ID de utilizador inválido.' });
+      return;
+    }
+    if (!adminId) {
+      res.status(401).json({ error: 'Não autenticado' });
+      return;
+    }
+
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      const nftRoomIds = await resolveNftAutoArmario1OnlyRoomIds({
+        query: (text: string, params?: unknown[]) => client.query(text, params)
+      });
+      const roomIds = Array.from(nftRoomIds);
+
+      const roomOwnRes = await client.query(
+        `SELECT room_id
+           FROM user_rig_rooms
+          WHERE user_id = $1
+            AND room_id = ANY($2::text[])
+          LIMIT 1`,
+        [targetUserId, roomIds]
+      );
+      if (!roomOwnRes.rows[0]) {
+        await client.query('ROLLBACK');
+        res.status(404).json({ error: 'Este utilizador não tem a sala NFT ativa.' });
+        return;
+      }
+
+      const currentRacks = await loadUserPlacedRacksWithSlots(client, targetUserId);
+      const nextRacks = currentRacks.filter((rack) => !nftRoomIds.has(String(rack.roomId || '')));
+      const saveActivityLogs: Array<{ action: string; meta: Record<string, unknown> }> = [];
+
+      await persistStockStoredBatteriesPlacedRacks(
+        client,
+        targetUserId,
+        {
+          placedRacks: nextRacks
+        },
+        saveActivityLogs
+      );
+
+      await client.query(
+        `DELETE FROM user_rig_rooms
+          WHERE user_id = $1
+            AND room_id = ANY($2::text[])`,
+        [targetUserId, roomIds]
+      );
+
+      await client.query('COMMIT');
+
+      try {
+        await appendGameActivityLog(null, targetUserId, 'partner_nft_room_deactivated_by_admin', {
+          roomId: NFT_AUTO_ROOM_ID,
+          adminUserId: adminId,
+          removedRackCount: Math.max(0, currentRacks.length - nextRacks.length)
+        });
+      } catch {
+        /* ignore */
+      }
+
+      res.json({
+        ok: true,
+        roomId: NFT_AUTO_ROOM_ID,
+        removedRackCount: Math.max(0, currentRacks.length - nextRacks.length)
+      });
+    } catch (e) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        /* ignore */
+      }
+      console.error('[POST /api/admin/partner-youtube-partners/:userId/deactivate-nft-room]', e);
+      sendInternalErrorSafeMessageOrPrisma(
+        res,
+        'POST /api/admin/partner-youtube-partners/:userId/deactivate-nft-room',
+        e,
+        'Erro ao desativar a sala NFT.'
+      );
+    } finally {
+      client.release();
     }
   });
 
@@ -442,6 +739,140 @@ export function registerPartnerYoutubeRoutes(app: Express, deps: PartnerYoutubeD
       );
     }
   });
+
+  // ── Streamer Room Management ────────────────────────────────────────────────
+
+  const STREAMER_ROOM_ID_CONST = 'room_1766898636697';
+  const STREAMER_LEVEL_IDS = ['creator', 'tester'];
+  const OVERDUE_DAYS = 60;
+
+  app.get('/api/admin/streamer-room-users', isAdmin, async (_req: Request, res: Response) => {
+    try {
+      const overdueThresholdMs = Date.now() - OVERDUE_DAYS * 24 * 60 * 60 * 1000;
+      const sql = `
+        SELECT DISTINCT ON (u.id)
+          u.id AS user_id,
+          u.username,
+          u.email,
+          (
+            SELECT MAX(pys.created_at)
+              FROM partner_youtube_submissions pys
+             WHERE pys.user_id = u.id
+               AND pys.status = 'approved'
+          ) AS last_approved_at,
+          (
+            SELECT COUNT(*)
+              FROM partner_youtube_submissions pys
+             WHERE pys.user_id = u.id
+               AND pys.status = 'approved'
+               AND pys.created_at >= $1
+          ) AS approved_last_60d
+        FROM users u
+        WHERE (
+          EXISTS (
+            SELECT 1 FROM user_rig_rooms urr
+             WHERE urr.user_id = u.id AND urr.room_id = $2
+          )
+          OR EXISTS (
+            SELECT 1 FROM placed_racks pr
+             WHERE pr.user_id = u.id
+               AND COALESCE(NULLIF(BTRIM(pr.room_id::text), ''), 'room_initial') = $2
+          )
+          OR EXISTS (
+            SELECT 1 FROM user_access_levels ual
+             WHERE ual.user_id = u.id
+               AND LOWER(BTRIM(ual.access_level_id::text)) = ANY($3::text[])
+          )
+          OR LOWER(BTRIM(u.access_level_id::text)) = ANY($3::text[])
+        )
+        ORDER BY u.id ASC
+      `;
+      const r = await db.query(sql, [overdueThresholdMs, STREAMER_ROOM_ID_CONST, STREAMER_LEVEL_IDS]);
+      const users = r.rows.map((row) => {
+        const lastApprovedAt = row.last_approved_at != null ? Number(row.last_approved_at) : null;
+        const approvedLast60d = parseInt(String(row.approved_last_60d || '0'), 10);
+        const overdue = approvedLast60d === 0;
+        return {
+          userId: Number(row.user_id),
+          username: String(row.username || ''),
+          email: String(row.email || ''),
+          lastApprovedAt,
+          approvedLast60d,
+          overdue
+        };
+      });
+      res.json({ users });
+    } catch (e) {
+      console.error('[GET /api/admin/streamer-room-users]', e);
+      sendInternalErrorSafeMessageOrPrisma(res, 'GET /api/admin/streamer-room-users', e, 'Erro ao listar streamers.');
+    }
+  });
+
+  app.post('/api/admin/streamer-room-users/:userId/deactivate', isAdmin, async (req: Request, res: Response) => {
+    const targetUserId = parseInt(String(req.params.userId || '').trim(), 10);
+    const adminId = uidNum(req);
+    if (!Number.isFinite(targetUserId) || targetUserId < 1) {
+      res.status(400).json({ error: 'ID de utilizador inválido.' });
+      return;
+    }
+    if (!adminId) {
+      res.status(401).json({ error: 'Não autenticado' });
+      return;
+    }
+
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+
+      const currentRacks = await loadUserPlacedRacksWithSlots(client, targetUserId);
+      const streamerRacks = currentRacks.filter(
+        (rack) => String(rack.roomId || '').trim() === STREAMER_ROOM_ID_CONST
+      );
+      const nextRacks = currentRacks.filter(
+        (rack) => String(rack.roomId || '').trim() !== STREAMER_ROOM_ID_CONST
+      );
+      const removedRackCount = streamerRacks.length;
+
+      const saveActivityLogs: Array<{ action: string; meta: Record<string, unknown> }> = [];
+      await persistStockStoredBatteriesPlacedRacks(client, targetUserId, { placedRacks: nextRacks }, saveActivityLogs);
+
+      await client.query(
+        'DELETE FROM user_rig_rooms WHERE user_id = $1 AND room_id = $2',
+        [targetUserId, STREAMER_ROOM_ID_CONST]
+      );
+
+      await client.query(
+        `DELETE FROM user_access_levels WHERE user_id = $1 AND LOWER(BTRIM(access_level_id::text)) = ANY($2::text[])`,
+        [targetUserId, STREAMER_LEVEL_IDS]
+      );
+
+      await client.query(
+        `UPDATE users SET access_level_id = 'normal'
+          WHERE id = $1 AND LOWER(BTRIM(access_level_id::text)) = ANY($2::text[])`,
+        [targetUserId, STREAMER_LEVEL_IDS]
+      );
+
+      await client.query('COMMIT');
+
+      try {
+        await appendGameActivityLog(null, targetUserId, 'streamer_room_deactivated_by_admin', {
+          roomId: STREAMER_ROOM_ID_CONST,
+          adminUserId: adminId,
+          removedRackCount
+        });
+      } catch { /* ignore */ }
+
+      res.json({ ok: true, removedRackCount });
+    } catch (e) {
+      try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+      console.error('[POST /api/admin/streamer-room-users/:userId/deactivate]', e);
+      sendInternalErrorSafeMessageOrPrisma(res, 'POST /api/admin/streamer-room-users/:userId/deactivate', e, 'Erro ao desativar sala streamer.');
+    } finally {
+      client.release();
+    }
+  });
+
+  // ── End Streamer Room Management ────────────────────────────────────────────
 
   app.delete(
     ['/api/admin/partner-videos/:id', '/api/admin/partners/videos/:id/archive'],

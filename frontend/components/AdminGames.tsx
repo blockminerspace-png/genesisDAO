@@ -14,6 +14,8 @@ export const AdminGames: React.FC<AdminGamesProps> = ({ gameUpgrades }) => {
 
     // State for Roleta
     const [wheelItems, setWheelItems] = useState<WheelItem[]>([]);
+    const [paidWheelEnabled, setPaidWheelEnabled] = useState(true);
+    const [paidSpinPriceUsdc, setPaidSpinPriceUsdc] = useState(1);
 
     useEffect(() => {
         if (activeGame === 'roleta') {
@@ -24,9 +26,12 @@ export const AdminGames: React.FC<AdminGamesProps> = ({ gameUpgrades }) => {
     const fetchRoletaConfig = async () => {
         setLoading(true);
         try {
-            const res = await fetch('/api/admin/wheel/config');
-            if (res.ok) {
-                const data = await res.json();
+            const [resItems, resRt] = await Promise.all([
+                fetch('/api/admin/wheel/config'),
+                fetch('/api/admin/wheel/runtime-config')
+            ]);
+            if (resItems.ok) {
+                const data = await resItems.json();
                 setWheelItems(data.map((d: Record<string, unknown>) => ({
                     id: String(d.id),
                     label: String(d.label),
@@ -36,6 +41,13 @@ export const AdminGames: React.FC<AdminGamesProps> = ({ gameUpgrades }) => {
                     isActive: d.isActive != null ? Number(d.isActive) : 1,
                     tier: typeof d.tier === 'string' ? d.tier : 'BASIC'
                 })));
+            }
+            if (resRt.ok) {
+                const rt = (await resRt.json()) as Record<string, unknown>;
+                setPaidWheelEnabled(rt.isEnabled !== false && rt.isEnabled !== 0);
+                const p = rt.spinPriceUsdc;
+                const n = typeof p === 'number' ? p : Number(p);
+                setPaidSpinPriceUsdc(Number.isFinite(n) && n >= 0.1 ? n : 1);
             }
         } catch (error) {
             console.error('Failed to fetch config:', error);
@@ -63,12 +75,25 @@ export const AdminGames: React.FC<AdminGamesProps> = ({ gameUpgrades }) => {
                 body: JSON.stringify(payload)
             });
 
-            if (res.ok) {
-                alert('Configuração salva com sucesso!');
-                // Optionally refresh or just stay
-            } else {
+            if (!res.ok) {
                 alert('Erro ao salvar configuração.');
+                return;
             }
+
+            const rtRes = await fetch('/api/admin/wheel/runtime-config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    spinPriceUsdc: paidSpinPriceUsdc,
+                    minSpinPriceUsdc: paidSpinPriceUsdc,
+                    isEnabled: paidWheelEnabled
+                })
+            });
+            if (!rtRes.ok) {
+                alert('Prémios salvos, mas falhou ao guardar o preço ou o estado da roleta paga.');
+                return;
+            }
+            alert('Configuração salva com sucesso!');
         } catch (error) {
             console.error('Error saving config:', error);
             alert('Erro de conexão.');
@@ -113,6 +138,10 @@ export const AdminGames: React.FC<AdminGamesProps> = ({ gameUpgrades }) => {
                             onSave={handleSaveRoleta}
                             gameUpgrades={gameUpgrades}
                             loading={loading}
+                            paidWheelEnabled={paidWheelEnabled}
+                            onPaidWheelEnabledChange={setPaidWheelEnabled}
+                            paidSpinPriceUsdc={paidSpinPriceUsdc}
+                            onPaidSpinPriceUsdcChange={setPaidSpinPriceUsdc}
                         />
                     )}
                 </div>

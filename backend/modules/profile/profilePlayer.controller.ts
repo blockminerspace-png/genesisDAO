@@ -1,5 +1,5 @@
 import type { Express, Request, RequestHandler, Response } from 'express';
-import { rateLimit } from 'express-rate-limit';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import crypto from 'node:crypto';
 import {
   respondIfHttpControlledError,
@@ -13,6 +13,7 @@ import {
   removeProfileWallet,
   verifyWalletConnectSignature
 } from './profileWallet.service.js';
+import { getProfileWalletWithHistory } from './profileWalletHistory.service.js';
 import { bindProfileReferralCode } from './profileReferralBind.service.js';
 import { buildReferralOverview } from './profileReferralOverview.service.js';
 import { listProfileSecurityEvents } from './profileAudit.service.js';
@@ -48,7 +49,7 @@ const profileIdentityLimiter = rateLimit({
   max: 40,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => `${(req as Request).ip || 'ip'}:profile_identity:${uidRequired(req as Request) ?? 'anon'}`,
+  keyGenerator: (req) => `${ipKeyGenerator(req.ip || req.socket.remoteAddress || '')}:profile_identity:${uidRequired(req) ?? 'anon'}`,
   message: { error: 'Demasiadas alterações de nome. Tente mais tarde.', code: 'RATE_LIMIT' }
 });
 
@@ -57,7 +58,7 @@ const profilePasswordLimiter = rateLimit({
   max: 12,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => `${(req as Request).ip || 'ip'}:profile_password:${uidRequired(req as Request) ?? 'anon'}`,
+  keyGenerator: (req) => `${ipKeyGenerator(req.ip || req.socket.remoteAddress || '')}:profile_password:${uidRequired(req) ?? 'anon'}`,
   message: { error: 'Demasiadas tentativas de alteração de senha.', code: 'RATE_LIMIT' }
 });
 
@@ -66,7 +67,7 @@ const profileWalletMutationLimiter = rateLimit({
   max: 25,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => `${(req as Request).ip || 'ip'}:profile_wallet:${uidRequired(req as Request) ?? 'anon'}`,
+  keyGenerator: (req) => `${ipKeyGenerator(req.ip || req.socket.remoteAddress || '')}:profile_wallet:${uidRequired(req) ?? 'anon'}`,
   message: { error: 'Demasiadas operações de carteira.', code: 'RATE_LIMIT' }
 });
 
@@ -248,6 +249,7 @@ export function registerProfilePlayerRoutes(app: Express, deps: ProfilePlayerCon
       const rid = requestId(req);
       try {
         const body = (req.body || {}) as Record<string, unknown>;
+        const ua = req.headers['user-agent'];
         const out = await verifyWalletConnectSignature({
           userId: uid,
           challengeId: body.challengeId,
@@ -255,7 +257,9 @@ export function registerProfilePlayerRoutes(app: Express, deps: ProfilePlayerCon
           signature: body.signature,
           chainId: body.chainId,
           requestId: rid,
-          route: '/api/profile/wallet/connect/verify'
+          route: '/api/profile/wallet/connect/verify',
+          clientIp: getClientIp(req),
+          userAgent: typeof ua === 'string' ? ua : null
         });
         res.json({ ok: true, address: out.address });
       } catch (e) {
@@ -270,24 +274,51 @@ export function registerProfilePlayerRoutes(app: Express, deps: ProfilePlayerCon
     }
   );
 
-  app.delete('/api/profile/wallet', authenticateToken, profileWalletMutationLimiter, async (req: Request, res: Response) => {
+  app.get('/api/profile/wallet', authenticateToken, async (req: Request, res: Response) => {
+    const uid = uidRequired(req);
+    if (!uid) return res.status(401).json({ error: 'Não autenticado', code: 'AUTH_REQUIRED' });
+    try {
+      const lim = Math.min(200, Math.max(1, parseInt(String(req.query.limit || '100'), 10) || 100));
+      const payload = await getProfileWalletWithHistory({ userId: uid, historyLimit: lim });
+      res.json(payload);
+    } catch (e) {
+      sendInternalErrorSafeMessageOrPrisma(res, '[GET /api/profile/wallet]', e, 'Erro ao carregar a carteira.');
+    }
+  });
+
+  const handleProfileWalletRemove = async (req: Request, res: Response) => {
     const uid = uidRequired(req);
     if (!uid) return res.status(401).json({ error: 'Não autenticado', code: 'AUTH_REQUIRED' });
     const rid = requestId(req);
     try {
-      const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
-      await removeProfileWallet({
+      const ua = req.headers['user-agent'];
+      const out = await removeProfileWallet({
         userId: uid,
-        currentPassword: body.currentPassword,
         requestId: rid,
-        route: 'DELETE /api/profile/wallet'
+        route: String(req.method || '').toUpperCase() === 'POST' ? 'POST /api/profile/wallet/remove' : 'DELETE /api/profile/wallet',
+        clientIp: getClientIp(req),
+        userAgent: typeof ua === 'string' ? ua : null
       });
-      res.json({ ok: true });
+      res.json({
+        ok: true,
+        wallet: null,
+        removed: out.removed,
+        message: out.message
+      });
     } catch (e) {
       if (respondIfHttpControlledError(res, e)) return;
-      sendInternalErrorSafeMessageOrPrisma(res, '[DELETE /api/profile/wallet]', e, 'Erro ao remover a carteira.');
+      sendInternalErrorSafeMessageOrPrisma(res, '[profile/wallet/remove]', e, 'Erro ao remover a carteira.');
     }
-  });
+  };
+
+  app.post(
+    '/api/profile/wallet/remove',
+    authenticateToken,
+    profileWalletMutationLimiter,
+    handleProfileWalletRemove
+  );
+
+  app.delete('/api/profile/wallet', authenticateToken, profileWalletMutationLimiter, handleProfileWalletRemove);
 
   app.get('/api/profile/badges', authenticateToken, async (req: Request, res: Response) => {
     const uid = uidRequired(req);

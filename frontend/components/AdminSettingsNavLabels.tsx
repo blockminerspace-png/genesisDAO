@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { Save, CheckCircle2, RotateCcw } from 'lucide-react';
-import { getGameNavLabels, saveGameNavLabels } from '../services/api';
+import { getDisplayLabelsRaw, saveGameNavLabels, saveRoletaTabNavVisible, parseShowRoletaTabNavFromDisplayLabels, gameNavLabelsFromDisplayLabelsPayload } from '../services/api';
 import { DEFAULT_GAME_NAV_LABELS, GAME_NAV_LABEL_KEYS, type GameNavLabelKey } from '../constants/gameNavLabels';
 
 const fieldHint: Partial<Record<GameNavLabelKey, string>> = {
-  lucky_store: 'Mesma permissão da Roleta no menu.',
-  roleta: 'Visível quando o nível tem acesso a Caixas da Sorte.',
+  lucky_store: 'Mesma permissão da Roleta no menu (separador «Roleta» pode ser oculto abaixo).',
+  roleta: 'Texto do separador «Roleta» (só visível se «Caixas da Sorte» estiver permitido e a opção abaixo estiver ligada).',
   partners: 'Vitrine de vídeos; envio só para níveis Parceiros/Partners.',
 };
 
@@ -14,14 +14,17 @@ export const AdminSettingsNavLabels: React.FC = () => {
   const [loaded, setLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [showRoletaInNav, setShowRoletaInNav] = useState(true);
+  const [roletaToggleBusy, setRoletaToggleBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const remote = await getGameNavLabels();
+        const raw = await getDisplayLabelsRaw();
         if (cancelled) return;
-        setDraft({ ...DEFAULT_GAME_NAV_LABELS, ...remote });
+        setDraft({ ...DEFAULT_GAME_NAV_LABELS, ...gameNavLabelsFromDisplayLabelsPayload(raw) });
+        setShowRoletaInNav(parseShowRoletaTabNavFromDisplayLabels(raw));
         setLoaded(true);
         setError(null);
       } catch {
@@ -99,6 +102,38 @@ export const AdminSettingsNavLabels: React.FC = () => {
       </div>
 
       {error && <div className="text-xs text-red-400 font-mono">{error}</div>}
+
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-lg border border-slate-600 bg-slate-900/60 p-4">
+        <div>
+          <p className="text-sm font-bold text-white">Separador «Roleta» no menu do jogador</p>
+          <p className="text-xs text-slate-400 mt-1 max-w-xl">
+            Desligar remove apenas o botão da barra superior. A página continua acessível por URL direta e por fluxos internos (ex.: códigos a partir de Caixas da Sorte).
+          </p>
+        </div>
+        <label className="flex items-center gap-3 cursor-pointer select-none shrink-0">
+          <span className="text-xs font-bold text-slate-300 whitespace-nowrap">Mostrar no menu</span>
+          <input
+            type="checkbox"
+            className="h-5 w-5 rounded border-slate-500 text-amber-600 focus:ring-amber-500"
+            checked={showRoletaInNav}
+            disabled={!loaded || roletaToggleBusy}
+            title={showRoletaInNav ? 'Separador visível na barra superior' : 'Separador oculto (página /wheel continua a funcionar)'}
+            onChange={async (e) => {
+              const next = e.target.checked;
+              setRoletaToggleBusy(true);
+              setError(null);
+              try {
+                await saveRoletaTabNavVisible(next);
+                setShowRoletaInNav(next);
+              } catch (err) {
+                setError(err instanceof Error ? err.message : 'Erro ao guardar.');
+              } finally {
+                setRoletaToggleBusy(false);
+              }
+            }}
+          />
+        </label>
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {GAME_NAV_LABEL_KEYS.map((key) => (

@@ -43,7 +43,7 @@ Substitui a antiga tabela Postgres `game_activity_logs` (removida do `initDb` e 
 | `at` | `Date` | Timestamp do insert. |
 | `created_at` | `number` | Epoch ms (duplicado para ordenação simples). |
 
-Escrita: `appendGameActivityLogMongo` (`lib/mongoLogs.ts`), chamada pelo `appendGameActivityLog` em `server.ts`. Leitura admin: `listGameActivityLogsMongo` → `GET /api/admin/user-activity`.
+Escrita: `appendGameActivityLogMongo` (`lib/mongoLogs.ts`), chamada pelo `appendGameActivityLog` em `server.ts`. Leitura admin: `listAdminUserActivityLogsMongo` (agrega `game_activity_logs` + `action_logs` e janela temporal) → `GET /api/admin/user-activity`.
 
 Bases já existentes: executar uma vez `backend/scripts/drop_game_activity_logs.sql` no Postgres para remover a tabela legada.
 

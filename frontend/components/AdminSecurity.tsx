@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { SecurityStats, GameUserActivityEntry, AdminDeviceFingerprintLog } from '../types';
-import { getSecurityStats, addToBlacklist, removeFromBlacklist, getAdminUserActivity, getAdminDeviceFingerprints } from '../services/api';
+import { getSecurityStats, addToBlacklist, removeFromBlacklist, getAdminUserActivity, getAdminDeviceFingerprints, toggleUserBlocked } from '../services/api';
 import { Shield, AlertTriangle, Users, Globe, RefreshCw, Lock, Terminal, Ban, CheckCircle, Gamepad2, Fingerprint, Eye } from 'lucide-react';
 
 function formatActivityMeta(meta: GameUserActivityEntry['meta']): string {
@@ -14,11 +14,22 @@ function formatActivityMeta(meta: GameUserActivityEntry['meta']): string {
 }
 
 export const AdminSecurity: React.FC = () => {
-    const [stats, setStats] = useState<SecurityStats | null>(null);
+    const [stats, setStats] = useState<SecurityStats>({
+        multiAccounts: [],
+        historyMultiAccounts: [],
+        sharedRegistrationIps: [],
+        sharedDeviceIps: [],
+        sharedFingerprints: [],
+        suspectedAutoReferrals: [],
+        accessLogs: [],
+        blacklist: [],
+        blockedUsers: []
+    });
     const [loading, setLoading] = useState(true);
     const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
-    const [activeTab, setActiveTab] = useState<'multi' | 'logs' | 'blacklist' | 'activity' | 'fingerprints'>('multi');
+    const [activeTab, setActiveTab] = useState<'multi' | 'registrationIps' | 'historyIps' | 'sharedDevices' | 'logs' | 'blacklist' | 'activity' | 'fingerprints'>('multi');
     const [banningIp, setBanningIp] = useState<string | null>(null);
+    const [togglingUserEmail, setTogglingUserEmail] = useState<string | null>(null);
     const [activityEmail, setActivityEmail] = useState('');
     const [activityLogs, setActivityLogs] = useState<GameUserActivityEntry[]>([]);
     const [activityLoading, setActivityLoading] = useState(false);
@@ -33,6 +44,46 @@ export const AdminSecurity: React.FC = () => {
     const [fpDetail, setFpDetail] = useState<AdminDeviceFingerprintLog | null>(null);
     const [fpApplyTick, setFpApplyTick] = useState(0);
     const fpPageSize = 40;
+
+    const loadSection = async (section: 'multi' | 'registrationIps' | 'historyIps' | 'sharedDevices' | 'logs' | 'blacklist') => {
+        const sectionMap: Record<typeof section, string[]> = {
+            multi: ['multiAccounts', 'historyMultiAccounts', 'suspectedAutoReferrals'],
+            registrationIps: ['sharedRegistrationIps'],
+            historyIps: ['sharedDeviceIps'],
+            sharedDevices: ['sharedFingerprints'],
+            logs: ['accessLogs'],
+            blacklist: ['blacklist']
+        };
+        setLoading(true);
+        const parts = sectionMap[section];
+        const responses = await Promise.all(parts.map((part) => getSecurityStats(part)));
+        const merged: SecurityStats = {
+            multiAccounts: [],
+            historyMultiAccounts: [],
+            sharedRegistrationIps: [],
+            sharedDeviceIps: [],
+            sharedFingerprints: [],
+            suspectedAutoReferrals: [],
+            accessLogs: [],
+            blacklist: [],
+            blockedUsers: []
+        };
+        for (const data of responses) {
+            if (!data) continue;
+            merged.multiAccounts = data.multiAccounts ?? merged.multiAccounts;
+            merged.historyMultiAccounts = data.historyMultiAccounts ?? merged.historyMultiAccounts;
+            merged.sharedRegistrationIps = data.sharedRegistrationIps ?? merged.sharedRegistrationIps;
+            merged.sharedDeviceIps = data.sharedDeviceIps ?? merged.sharedDeviceIps;
+            merged.sharedFingerprints = data.sharedFingerprints ?? merged.sharedFingerprints;
+            merged.suspectedAutoReferrals = data.suspectedAutoReferrals ?? merged.suspectedAutoReferrals;
+            merged.accessLogs = data.accessLogs ?? merged.accessLogs;
+            merged.blacklist = data.blacklist ?? merged.blacklist;
+            merged.blockedUsers = data.blockedUsers ?? merged.blockedUsers;
+        }
+        setStats((prev) => ({ ...prev, ...merged }));
+        setLoading(false);
+        setLastRefresh(new Date());
+    };
 
     useEffect(() => {
         if (activeTab !== 'fingerprints') return;
@@ -81,17 +132,10 @@ export const AdminSecurity: React.FC = () => {
         if (data?.rows?.length) setFpRows((prev) => [...prev, ...data.rows]);
     };
 
-    const loadData = async () => {
-        setLoading(true);
-        const data = await getSecurityStats();
-        setStats(data);
-        setLoading(false);
-        setLastRefresh(new Date());
-    };
-
     useEffect(() => {
-        loadData();
-    }, []);
+        if (activeTab === 'activity' || activeTab === 'fingerprints') return;
+        void loadSection(activeTab);
+    }, [activeTab]);
 
     const handleBanIp = async (ip: string) => {
         const reason = window.prompt(`Motivo do banimento para o IP ${ip}:`, 'Multi-contas ou acesso não autorizado');
@@ -100,7 +144,7 @@ export const AdminSecurity: React.FC = () => {
         setBanningIp(ip);
         const res = await addToBlacklist(ip, reason);
         if (res.ok) {
-            await loadData();
+            await loadSection(activeTab === 'activity' || activeTab === 'fingerprints' ? 'blacklist' : activeTab);
         } else {
             alert('Erro ao banir IP: ' + res.error);
         }
@@ -112,10 +156,38 @@ export const AdminSecurity: React.FC = () => {
 
         const res = await removeFromBlacklist(ip);
         if (res.ok) {
-            await loadData();
+            await loadSection('blacklist');
         } else {
             alert('Erro ao remover IP: ' + res.error);
         }
+    };
+
+    const isIpBlacklisted = (ip: string): boolean =>
+        stats.blacklist.some((entry) => String(entry.ip || '').trim().toLowerCase() === String(ip || '').trim().toLowerCase());
+
+    const handleToggleIpBan = async (ip: string) => {
+        if (isIpBlacklisted(ip)) {
+            await handleUnbanIp(ip);
+            return;
+        }
+        await handleBanIp(ip);
+    };
+
+    const handleToggleUserBlocked = async (email: string, blocked: boolean) => {
+        const em = String(email || '').trim();
+        if (!em) return;
+        const confirmMsg = blocked
+            ? `Deseja bloquear o usuário ${em}?`
+            : `Deseja desbloquear o usuário ${em}?`;
+        if (!window.confirm(confirmMsg)) return;
+        setTogglingUserEmail(em);
+        const res = await toggleUserBlocked(em, blocked);
+        if (res.ok) {
+            await loadSection(activeTab === 'activity' || activeTab === 'fingerprints' ? 'blacklist' : activeTab);
+        } else {
+            alert(`Erro ao ${blocked ? 'bloquear' : 'desbloquear'} usuário: ` + res.error);
+        }
+        setTogglingUserEmail(null);
     };
 
     const loadUserActivity = async () => {
@@ -154,7 +226,10 @@ export const AdminSecurity: React.FC = () => {
                 <div className="flex items-center gap-4">
                     <span className="text-[10px] text-slate-500">ÚLTIMA SCAN: {lastRefresh.toLocaleTimeString()}</span>
                     <button
-                        onClick={loadData}
+                        onClick={() => {
+                            if (activeTab === 'activity' || activeTab === 'fingerprints') return;
+                            void loadSection(activeTab);
+                        }}
                         disabled={loading}
                         className="p-2 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:text-white hover:border-red-600 transition-all disabled:opacity-50"
                     >
@@ -170,6 +245,24 @@ export const AdminSecurity: React.FC = () => {
                     className={`px-4 py-2 text-xs font-bold rounded-md transition-all flex items-center gap-2 ${activeTab === 'multi' ? 'bg-red-600 text-white shadow-lg shadow-red-900/40' : 'text-slate-500 hover:text-slate-300'}`}
                 >
                     <Users size={14} /> MULTI-CONTAS
+                </button>
+                <button
+                    onClick={() => setActiveTab('registrationIps')}
+                    className={`px-4 py-2 text-xs font-bold rounded-md transition-all flex items-center gap-2 ${activeTab === 'registrationIps' ? 'bg-red-600 text-white shadow-lg shadow-red-900/40' : 'text-slate-500 hover:text-slate-300'}`}
+                >
+                    <Users size={14} /> IP RESIDENCIAL
+                </button>
+                <button
+                    onClick={() => setActiveTab('historyIps')}
+                    className={`px-4 py-2 text-xs font-bold rounded-md transition-all flex items-center gap-2 ${activeTab === 'historyIps' ? 'bg-red-600 text-white shadow-lg shadow-red-900/40' : 'text-slate-500 hover:text-slate-300'}`}
+                >
+                    <Globe size={14} /> IP HISTORICO
+                </button>
+                <button
+                    onClick={() => setActiveTab('sharedDevices')}
+                    className={`px-4 py-2 text-xs font-bold rounded-md transition-all flex items-center gap-2 ${activeTab === 'sharedDevices' ? 'bg-red-600 text-white shadow-lg shadow-red-900/40' : 'text-slate-500 hover:text-slate-300'}`}
+                >
+                    <Fingerprint size={14} /> DISPOSITIVO PARTILHADO
                 </button>
                 <button
                     onClick={() => setActiveTab('logs')}
@@ -359,6 +452,187 @@ export const AdminSecurity: React.FC = () => {
                                     </tbody>
                                 </table>
                             </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {activeTab === 'registrationIps' && (
+                <div className="space-y-8 animate-in fade-in duration-300">
+                    <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden shadow-xl">
+                        <div className="bg-slate-950 p-4 border-b border-slate-800 flex items-center gap-3">
+                            <Users className="text-amber-500" size={20} />
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-100 italic">IP residencial partilhado</h3>
+                                <p className="text-[10px] text-slate-500 uppercase tracking-tighter">Contas com o mesmo `registration_ip`</p>
+                            </div>
+                        </div>
+                        <div className="p-4 space-y-4">
+                            {stats?.sharedRegistrationIps && stats.sharedRegistrationIps.length > 0 ? (
+                                stats.sharedRegistrationIps.map((group) => (
+                                    <div key={`reg-${group.ip}`} className="rounded-lg border border-slate-800 bg-slate-950/70 overflow-hidden">
+                                        <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-800">
+                                            <div>
+                                                <div className="font-mono text-sm text-amber-400">{group.ip}</div>
+                                                <div className="text-[10px] text-slate-500">{group.userCount} conta(s)</div>
+                                            </div>
+                                            <button
+                                                onClick={() => void handleToggleIpBan(group.ip)}
+                                                className="text-xs font-bold px-3 py-1.5 rounded bg-red-900/30 hover:bg-red-600 text-red-300 hover:text-white border border-red-900/50"
+                                                disabled={banningIp === group.ip}
+                                            >
+                                                {isIpBlacklisted(group.ip) ? 'Desbanir IP' : 'Banir IP'}
+                                            </button>
+                                        </div>
+                                        <div className="divide-y divide-slate-800/60">
+                                            {group.users.map((user) => (
+                                                <div key={`reg-${group.ip}-${user.id}`} className="px-4 py-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                                                    <div>
+                                                        <div className="text-sm font-bold text-white">{user.username || '—'}</div>
+                                                        <div className="text-[11px] text-slate-400">{user.email || '—'}</div>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="text-[10px] text-slate-500 font-mono">ID {user.id}</div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => void handleToggleUserBlocked(user.email, !user.isBlocked)}
+                                                            disabled={togglingUserEmail === user.email}
+                                                            className={`text-[10px] font-bold px-2 py-1 rounded border ${
+                                                                user.isBlocked
+                                                                    ? 'border-emerald-700/50 bg-emerald-900/20 text-emerald-300'
+                                                                    : 'border-red-700/50 bg-red-900/20 text-red-300'
+                                                            }`}
+                                                        >
+                                                            {togglingUserEmail === user.email ? '...' : user.isBlocked ? 'Desbloquear usuário' : 'Bloquear usuário'}
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ))
+                            ) : (
+                                <div className="py-10 text-center text-slate-600 italic">Nenhum grupo com IP residencial partilhado.</div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {activeTab === 'historyIps' && (
+                <div className="space-y-8 animate-in fade-in duration-300">
+                    <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden shadow-xl">
+                        <div className="bg-slate-950 p-4 border-b border-slate-800 flex items-center gap-3">
+                            <Globe className="text-cyan-500" size={20} />
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-100 italic">IP historico partilhado</h3>
+                                <p className="text-[10px] text-slate-500 uppercase tracking-tighter">Contas com o mesmo IP em `user_history_ips`</p>
+                            </div>
+                        </div>
+                        <div className="p-4 space-y-4">
+                            {stats?.sharedDeviceIps && stats.sharedDeviceIps.length > 0 ? (
+                                stats.sharedDeviceIps.map((group) => (
+                                    <div key={`dev-${group.ip}`} className="rounded-lg border border-slate-800 bg-slate-950/70 overflow-hidden">
+                                        <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-800">
+                                            <div>
+                                                <div className="font-mono text-sm text-cyan-400">{group.ip}</div>
+                                                <div className="text-[10px] text-slate-500">
+                                                    {group.userCount} conta(s)
+                                                    {group.lastSeenAt ? ` · último uso ${new Date(group.lastSeenAt).toLocaleString()}` : ''}
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={() => void handleToggleIpBan(group.ip)}
+                                                className="text-xs font-bold px-3 py-1.5 rounded bg-red-900/30 hover:bg-red-600 text-red-300 hover:text-white border border-red-900/50"
+                                                disabled={banningIp === group.ip}
+                                            >
+                                                {isIpBlacklisted(group.ip) ? 'Desbanir IP' : 'Banir IP'}
+                                            </button>
+                                        </div>
+                                        <div className="divide-y divide-slate-800/60">
+                                            {group.users.map((user) => (
+                                                <div key={`dev-${group.ip}-${user.id}`} className="px-4 py-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                                                    <div>
+                                                        <div className="text-sm font-bold text-white">{user.username || '—'}</div>
+                                                        <div className="text-[11px] text-slate-400">{user.email || '—'}</div>
+                                                        <div className="text-[10px] text-slate-500">
+                                                            IP de registo: {user.registrationIp || '—'}
+                                                        </div>
+                                                    </div>
+                                                    <div className="text-right">
+                                                        <div className="text-[10px] text-slate-500 font-mono">ID {user.id}</div>
+                                                        <div className="text-[10px] text-slate-500">
+                                                            {user.lastUsedAt ? `Visto em ${new Date(user.lastUsedAt).toLocaleString()}` : 'Sem data'}
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => void handleToggleUserBlocked(user.email, !user.isBlocked)}
+                                                            disabled={togglingUserEmail === user.email}
+                                                            className={`mt-2 text-[10px] font-bold px-2 py-1 rounded border ${
+                                                                user.isBlocked
+                                                                    ? 'border-emerald-700/50 bg-emerald-900/20 text-emerald-300'
+                                                                    : 'border-red-700/50 bg-red-900/20 text-red-300'
+                                                            }`}
+                                                        >
+                                                            {togglingUserEmail === user.email ? '...' : user.isBlocked ? 'Desbloquear usuário' : 'Bloquear usuário'}
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ))
+                            ) : (
+                                <div className="py-10 text-center text-slate-600 italic">Nenhum grupo com IP de dispositivo partilhado.</div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {activeTab === 'sharedDevices' && (
+                <div className="space-y-8 animate-in fade-in duration-300">
+                    <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden shadow-xl">
+                        <div className="bg-slate-950 p-4 border-b border-slate-800 flex items-center gap-3">
+                            <Fingerprint className="text-cyan-500" size={20} />
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-100 italic">Dispositivo partilhado</h3>
+                                <p className="text-[10px] text-slate-500 uppercase tracking-tighter">Contas com o mesmo fingerprint de dispositivo</p>
+                            </div>
+                        </div>
+                        <div className="p-4 space-y-4">
+                            {stats?.sharedFingerprints && stats.sharedFingerprints.length > 0 ? (
+                                stats.sharedFingerprints.map((group) => (
+                                    <div key={group.fingerprintHash} className="rounded-lg border border-slate-800 bg-slate-950/70 overflow-hidden">
+                                        <div className="px-4 py-3 border-b border-slate-800">
+                                            <div className="font-mono text-sm text-cyan-400 break-all">{group.fingerprintHash}</div>
+                                            <div className="text-[10px] text-slate-500">
+                                                {group.userCount} conta(s)
+                                                {group.lastSeenAt ? ` · ultimo uso ${new Date(group.lastSeenAt).toLocaleString()}` : ''}
+                                            </div>
+                                        </div>
+                                        <div className="divide-y divide-slate-800/60">
+                                            {group.users.map((user) => (
+                                                <div key={`${group.fingerprintHash}-${user.id}`} className="px-4 py-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                                                    <div>
+                                                        <div className="text-sm font-bold text-white">{user.username || '—'}</div>
+                                                        <div className="text-[11px] text-slate-400">{user.email || '—'}</div>
+                                                        <div className="text-[10px] text-slate-500">Ultimo IP visto: {user.lastIp || '—'}</div>
+                                                    </div>
+                                                    <div className="text-right">
+                                                        <div className="text-[10px] text-slate-500 font-mono">ID {user.id}</div>
+                                                        <div className="text-[10px] text-slate-500">
+                                                            {user.lastSeenAt ? `Visto em ${new Date(user.lastSeenAt).toLocaleString()}` : 'Sem data'}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ))
+                            ) : (
+                                <div className="py-10 text-center text-slate-600 italic">Nenhum grupo com fingerprint partilhado.</div>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -669,75 +943,115 @@ export const AdminSecurity: React.FC = () => {
 
             {activeTab === 'blacklist' && (
                 <div className="animate-in fade-in duration-300">
-                    <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl">
-                        <div className="bg-slate-950 p-4 border-b border-slate-800 flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                                <Lock className="text-yellow-500" size={20} />
-                                <h3 className="text-lg font-bold text-white">Lista Negra de IPs (Banimentos Ativos)</h3>
+                    <div className="space-y-8">
+                        <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl">
+                            <div className="bg-slate-950 p-4 border-b border-slate-800 flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                    <Users className="text-red-500" size={20} />
+                                    <h3 className="text-lg font-bold text-white">Usuários Bloqueados</h3>
+                                </div>
+                            </div>
+                            <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                {stats?.blockedUsers && stats.blockedUsers.length > 0 ? (
+                                    stats.blockedUsers.map((user) => (
+                                        <div key={user.id} className="bg-slate-950 border border-slate-800 p-4 rounded-lg">
+                                            <div className="text-sm font-bold text-white">{user.username || '—'}</div>
+                                            <div className="text-[11px] text-slate-400">{user.email || '—'}</div>
+                                            <div className="mt-2 text-[10px] text-slate-500 font-mono">ID {user.id}</div>
+                                            <div className="text-[10px] text-slate-500 font-mono break-all">
+                                                IP registo: {user.registrationIp || '—'}
+                                            </div>
+                                            <div className="mt-4 pt-2 border-t border-slate-900 flex justify-end">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void handleToggleUserBlocked(user.email, false)}
+                                                    disabled={togglingUserEmail === user.email}
+                                                    className="text-[10px] font-bold px-3 py-1.5 rounded bg-emerald-900/20 hover:bg-emerald-700/30 text-emerald-300 border border-emerald-700/40"
+                                                >
+                                                    {togglingUserEmail === user.email ? '...' : 'Desbloquear usuário'}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="col-span-full py-12 text-center">
+                                        <Shield className="text-slate-800 mx-auto mb-4" size={48} />
+                                        <p className="text-slate-600 font-bold uppercase tracking-tighter">NENHUM USUÁRIO BLOQUEADO</p>
+                                    </div>
+                                )}
                             </div>
                         </div>
-                        <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {stats?.blacklist && stats.blacklist.length > 0 ? (
-                                stats.blacklist.map((entry, idx) => (
-                                    <div key={idx} className="bg-slate-950 border border-slate-800 p-4 rounded-lg relative group overflow-hidden">
-                                        <div className="absolute top-0 right-0 p-2 opacity-0 group-hover:opacity-100 transition-all">
-                                            <button
-                                                onClick={() => handleUnbanIp(entry.ip)}
-                                                className="text-slate-500 hover:text-emerald-500"
-                                                title="Remover Banimento"
-                                            >
-                                                <CheckCircle size={18} />
-                                            </button>
-                                        </div>
-                                        <div className="font-mono text-sm text-red-500 font-bold mb-1">{entry.ip}</div>
-                                        <div className="text-[10px] text-slate-500 mb-2 italic">"{entry.reason || 'Sem motivo especificado'}"</div>
-                                        {entry.linkedUsers && entry.linkedUsers.length > 0 && (
-                                            <div className="text-[10px] text-amber-600/90 dark:text-amber-400/90 mb-2 space-y-1">
-                                                <div className="font-bold text-amber-700 dark:text-amber-300 uppercase tracking-tight">Contas associadas a este IP</div>
-                                                {entry.linkedUsers.map((u) => (
-                                                    <div key={u.id} className="pl-1 border-l border-amber-700/40 dark:border-amber-500/40">
-                                                        <span className="text-slate-200 font-semibold">{u.username}</span>
-                                                        <span className="text-slate-500"> · </span>
-                                                        <span className="text-slate-400">{u.email}</span>
-                                                        <span className="text-slate-600 block text-[9px] mt-0.5">
-                                                            {[
-                                                                u.vias?.includes('registro') ? 'IP de registo' : null,
-                                                                u.vias?.includes('hist_login') ? 'Histórico de login' : null
-                                                            ]
-                                                                .filter(Boolean)
-                                                                .join(' · ')}
-                                                        </span>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        )}
-                                        <div className="flex items-center justify-between mt-4 pt-2 border-t border-slate-900">
-                                            <span className="text-[9px] text-slate-600">
-                                                BANIDO EM:{' '}
-                                                {new Date(Number(entry.added_at)).toLocaleString('pt-PT', {
-                                                    day: '2-digit',
-                                                    month: '2-digit',
-                                                    year: 'numeric',
-                                                    hour: '2-digit',
-                                                    minute: '2-digit',
-                                                    second: '2-digit'
-                                                })}
-                                            </span>
-                                            <button
-                                                onClick={() => handleUnbanIp(entry.ip)}
-                                                className="text-[9px] text-red-900 hover:text-red-500 font-bold uppercase transition-colors"
-                                            >
-                                                REVOGAR
-                                            </button>
-                                        </div>
-                                    </div>
-                                ))
-                            ) : (
-                                <div className="col-span-full py-12 text-center">
-                                    <Shield className="text-slate-800 mx-auto mb-4" size={48} />
-                                    <p className="text-slate-600 font-bold uppercase tracking-tighter">NENHUM IP BANIDO NO MOMENTO</p>
+
+                        <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl">
+                            <div className="bg-slate-950 p-4 border-b border-slate-800 flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                    <Lock className="text-yellow-500" size={20} />
+                                    <h3 className="text-lg font-bold text-white">IPs Bloqueados</h3>
                                 </div>
-                            )}
+                            </div>
+                            <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                {stats?.blacklist && stats.blacklist.length > 0 ? (
+                                    stats.blacklist.map((entry, idx) => (
+                                        <div key={idx} className="bg-slate-950 border border-slate-800 p-4 rounded-lg relative group overflow-hidden">
+                                            <div className="absolute top-0 right-0 p-2 opacity-0 group-hover:opacity-100 transition-all">
+                                                <button
+                                                    onClick={() => handleUnbanIp(entry.ip)}
+                                                    className="text-slate-500 hover:text-emerald-500"
+                                                    title="Remover Banimento"
+                                                >
+                                                    <CheckCircle size={18} />
+                                                </button>
+                                            </div>
+                                            <div className="font-mono text-sm text-red-500 font-bold mb-1">{entry.ip}</div>
+                                            <div className="text-[10px] text-slate-500 mb-2 italic">"{entry.reason || 'Sem motivo especificado'}"</div>
+                                            {entry.linkedUsers && entry.linkedUsers.length > 0 && (
+                                                <div className="text-[10px] text-amber-600/90 dark:text-amber-400/90 mb-2 space-y-1">
+                                                    <div className="font-bold text-amber-700 dark:text-amber-300 uppercase tracking-tight">Contas associadas a este IP</div>
+                                                    {entry.linkedUsers.map((u) => (
+                                                        <div key={u.id} className="pl-1 border-l border-amber-700/40 dark:border-amber-500/40">
+                                                            <span className="text-slate-200 font-semibold">{u.username}</span>
+                                                            <span className="text-slate-500"> · </span>
+                                                            <span className="text-slate-400">{u.email}</span>
+                                                            <span className="text-slate-600 block text-[9px] mt-0.5">
+                                                                {[
+                                                                    u.vias?.includes('registro') ? 'IP de registo' : null,
+                                                                    u.vias?.includes('hist_login') ? 'Histórico de login' : null
+                                                                ]
+                                                                    .filter(Boolean)
+                                                                    .join(' · ')}
+                                                            </span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            <div className="flex items-center justify-between mt-4 pt-2 border-t border-slate-900">
+                                                <span className="text-[9px] text-slate-600">
+                                                    BANIDO EM:{' '}
+                                                    {new Date(Number(entry.added_at)).toLocaleString('pt-PT', {
+                                                        day: '2-digit',
+                                                        month: '2-digit',
+                                                        year: 'numeric',
+                                                        hour: '2-digit',
+                                                        minute: '2-digit',
+                                                        second: '2-digit'
+                                                    })}
+                                                </span>
+                                                <button
+                                                    onClick={() => handleUnbanIp(entry.ip)}
+                                                    className="text-[9px] text-red-900 hover:text-red-500 font-bold uppercase transition-colors"
+                                                >
+                                                    REVOGAR
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="col-span-full py-12 text-center">
+                                        <Shield className="text-slate-800 mx-auto mb-4" size={48} />
+                                        <p className="text-slate-600 font-bold uppercase tracking-tighter">NENHUM IP BLOQUEADO NO MOMENTO</p>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </div>

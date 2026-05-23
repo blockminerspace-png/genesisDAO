@@ -7,6 +7,13 @@ import { getSettingValue } from '../../lib/settingsPrisma.js';
 import { appendGameActivityLogMongo } from '../../lib/mongoLogs.js';
 import { stableIntentFingerprint } from '../../lib/gameIntentIdempotencyPrisma.js';
 import { walletAdvisoryLockKey64 } from '../wallet/walletLocks.js';
+import {
+  createAsicLeasesOnPurchase,
+  isTimedAsicDuration,
+  normalizeAsicDurationConfig,
+  syncTimedAsicStockForItem
+} from '../../lib/asicLease.js';
+import { isAsicMachineUpgradeRow } from '../../lib/nftRoomMining.js';
 
 const ID_RE = /^[a-zA-Z0-9_.-]{1,160}$/;
 const MAX_LINE_QTY = 50000;
@@ -139,7 +146,10 @@ export async function runHardwareCheckoutTransaction(
 
     const upgradesRes = await client.query(
       `SELECT id, base_cost, name, sell_in_hardware_market, status, max_global_stock, total_sold,
-              COALESCE(is_active, 1) AS ia, COALESCE(is_nft, 0) AS is_nft
+              COALESCE(is_active, 1) AS ia, COALESCE(is_nft, 0) AS is_nft,
+              type, category, COALESCE(asic_duration_kind, 'none') AS asic_duration_kind,
+              COALESCE(asic_duration_amount, 0) AS asic_duration_amount,
+              asic_duration_unit
        FROM upgrades WHERE id = ANY($1::text[]) ORDER BY id FOR UPDATE`,
       [upgradeIds]
     );
@@ -249,11 +259,38 @@ export async function runHardwareCheckoutTransaction(
     }
 
     for (const item of itemsToBuy) {
-      await client.query(
-        `INSERT INTO stock (user_id, item_id, qty) VALUES ($1, $2, $3)
-         ON CONFLICT (user_id, item_id) DO UPDATE SET qty = stock.qty + EXCLUDED.qty`,
-        [userId, item.id, item.qty]
-      );
+      const uRow = upgradesRes.rows.find((x: { id: string }) => x.id === item.id) as
+        | {
+            id: string;
+            type?: string;
+            category?: string;
+            asic_duration_kind?: string;
+            asic_duration_amount?: number;
+            asic_duration_unit?: string | null;
+          }
+        | undefined;
+      const durationCfg = normalizeAsicDurationConfig({
+        amount: uRow?.asic_duration_amount,
+        unit: uRow?.asic_duration_unit,
+        kind: uRow?.asic_duration_kind
+      });
+      const timedAsic =
+        isTimedAsicDuration(durationCfg) &&
+        isAsicMachineUpgradeRow({
+          id: item.id,
+          type: uRow?.type,
+          category: uRow?.category
+        });
+      if (timedAsic) {
+        await createAsicLeasesOnPurchase(client, userId, item.id, item.qty, durationCfg, now);
+        await syncTimedAsicStockForItem(client, userId, item.id, now);
+      } else {
+        await client.query(
+          `INSERT INTO stock (user_id, item_id, qty) VALUES ($1, $2, $3)
+           ON CONFLICT (user_id, item_id) DO UPDATE SET qty = stock.qty + EXCLUDED.qty`,
+          [userId, item.id, item.qty]
+        );
+      }
     }
 
     const clearCartId = opts?.clearCartId != null ? String(opts.clearCartId).trim() : '';

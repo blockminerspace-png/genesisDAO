@@ -386,3 +386,79 @@ export async function updateAdminSupportTicketStatus(
     return { ok: false, error: 'Network error' };
   }
 }
+
+export type SupportUserHistoryTicketSummary = {
+  id: string;
+  subject: string;
+  status: string;
+  createdAt: number;
+  updatedAt: number;
+  lastMessageAt: number;
+  messageCount: number;
+  hasAttachments: boolean;
+  assignedTo: string | null;
+  preview: string;
+};
+
+export type SupportUserHistoryResponse = {
+  ok: true;
+  user: { id: number; email: string; username: string; createdAt: number | null };
+  summary: { total: number; open: number; archived: number; lastTicketAt: number };
+  pagination: { page: number; limit: number; hasMore: boolean };
+  tickets: SupportUserHistoryTicketSummary[];
+};
+
+export type SupportUserHistoryResult =
+  | { ok: true; data: SupportUserHistoryResponse }
+  | { ok: false; status: number; error: string; notFound?: boolean };
+
+export async function getAdminSupportUserHistory(
+  email: string,
+  params?: { page?: number; limit?: number }
+): Promise<SupportUserHistoryResult> {
+  const qs = new URLSearchParams();
+  qs.set('email', email.trim());
+  if (params?.page != null) qs.set('page', String(params.page));
+  if (params?.limit != null) qs.set('limit', String(params.limit));
+  try {
+    const res = await apiFetch(`${API_BASE}/admin/support/user-history?${qs.toString()}`);
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      const err = typeof data.error === 'string' ? data.error : `HTTP ${res.status}`;
+      return { ok: false, status: res.status, error: err, notFound: res.status === 404 };
+    }
+    if (data.ok !== true || !data.user || !data.summary || !Array.isArray(data.tickets)) {
+      return { ok: false, status: res.status, error: 'Resposta inválida do servidor.' };
+    }
+    return { ok: true, data: data as unknown as SupportUserHistoryResponse };
+  } catch {
+    return { ok: false, status: 0, error: 'Erro de rede.' };
+  }
+}
+
+export async function getAdminSupportTicketDetail(
+  ticketId: string
+): Promise<{ ok: true; ticket: SupportTicketRow } | { ok: false; error: string }> {
+  try {
+    const res = await apiFetch(`${API_BASE}/admin/support/tickets/${encodeURIComponent(ticketId)}`);
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      return { ok: false, error: typeof data.error === 'string' ? data.error : `HTTP ${res.status}` };
+    }
+    const ticket = data.ticket as SupportTicketRow | undefined;
+    if (!ticket?.id) {
+      return { ok: false, error: 'Resposta inválida.' };
+    }
+    return {
+      ok: true,
+      ticket: {
+        ...ticket,
+        replies: Array.isArray(ticket.replies) ? ticket.replies : [],
+        playerReplies: Array.isArray(ticket.playerReplies) ? ticket.playerReplies : [],
+        attachments: Array.isArray(ticket.attachments) ? ticket.attachments : [],
+      },
+    };
+  } catch {
+    return { ok: false, error: 'Erro de rede.' };
+  }
+}

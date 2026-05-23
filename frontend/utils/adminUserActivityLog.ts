@@ -10,6 +10,20 @@ export function formatUserActivityMeta(meta: GameUserActivityEntry['meta']): str
   }
 }
 
+/** Data estimada de registo a partir de `game_states.start_time` (ms epoch, America/Sao_Paulo). */
+export function formatAccountCreatedBrt(ms: number | null | undefined): string | null {
+  if (ms == null || !Number.isFinite(ms) || ms <= 0) return null;
+  try {
+    return new Intl.DateTimeFormat('pt-BR', {
+      dateStyle: 'short',
+      timeStyle: 'short',
+      timeZone: 'America/Sao_Paulo'
+    }).format(new Date(ms));
+  } catch {
+    return null;
+  }
+}
+
 /** Filtros da aba Atividade (ações gravadas no Mongo `game_activity_logs`). */
 export const ACTIVITY_LOG_FILTER_GROUPS: {
   id: string;
@@ -17,6 +31,13 @@ export const ACTIVITY_LOG_FILTER_GROUPS: {
   test?: (action: string) => boolean;
 }[] = [
   { id: 'all', label: 'Todas' },
+  /** Sem `test` — tratado em `filterUserActivityLogs` com `accountCreatedAtMs`. */
+  { id: 'near_account_creation', label: 'Perto da criação da conta (±5 min)' },
+  {
+    id: 'signup_complete',
+    label: 'Registo signup (Mongo action_logs)',
+    test: (a) => /^signup_complete$/i.test(a)
+  },
   {
     id: 'deposit',
     label: 'Depósitos',
@@ -59,10 +80,13 @@ export const ACTIVITY_LOG_FILTER_GROUPS: {
   },
 ];
 
+const NEAR_ACCOUNT_WINDOW_MS = 5 * 60 * 1000;
+
 export function filterUserActivityLogs(
   rows: GameUserActivityEntry[],
   activityLogFilterId: string,
-  activityLogSearch: string
+  activityLogSearch: string,
+  opts?: { accountCreatedAtMs?: number | null }
 ): GameUserActivityEntry[] {
   let out = Array.isArray(rows) ? rows : [];
   const q = activityLogSearch.trim().toLowerCase();
@@ -72,6 +96,13 @@ export function filterUserActivityLogs(
       const metaStr = formatUserActivityMeta(r.meta).toLowerCase();
       return action.includes(q) || metaStr.includes(q);
     });
+  }
+  if (activityLogFilterId === 'near_account_creation') {
+    const t0 = opts?.accountCreatedAtMs;
+    if (t0 == null || !Number.isFinite(t0) || t0 <= 0) return [];
+    return out.filter(
+      (r) => Number.isFinite(r.createdAt) && Math.abs(Number(r.createdAt) - t0) <= NEAR_ACCOUNT_WINDOW_MS
+    );
   }
   const group = ACTIVITY_LOG_FILTER_GROUPS.find((g) => g.id === activityLogFilterId);
   if (!group?.test) return out;

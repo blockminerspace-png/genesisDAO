@@ -267,6 +267,107 @@ export async function listTicketsForAdmin(limit: number): Promise<AdminTicketLis
   `;
 }
 
+export type UserSupportHistorySummaryRow = {
+  id: string;
+  subject: string;
+  status: string;
+  message: string;
+  attachments: unknown;
+  created_at: unknown;
+  message_count: number;
+  last_message_at: unknown;
+  last_admin_username: string | null;
+};
+
+export type UserSupportTicketStatsRow = {
+  total: number;
+  open_count: number;
+  archived_count: number;
+  last_ticket_at: unknown;
+};
+
+/** Histórico completo de tickets de um utilizador (admin), mais recente primeiro. */
+export async function listUserSupportTicketHistorySummaries(
+  userId: number,
+  opts?: { limit?: number; offset?: number }
+): Promise<UserSupportHistorySummaryRow[]> {
+  const lim = Math.min(200, Math.max(1, opts?.limit ?? 100));
+  const off = Math.max(0, opts?.offset ?? 0);
+  return prisma.$queryRaw<UserSupportHistorySummaryRow[]>`
+    SELECT
+      t.id,
+      t.subject,
+      t.status,
+      t.message,
+      t.attachments,
+      t.created_at,
+      (
+        1
+        + (SELECT COUNT(*)::int FROM support_ticket_player_replies p WHERE p.ticket_id = t.id)
+        + (SELECT COUNT(*)::int FROM support_ticket_replies r WHERE r.ticket_id = t.id)
+      ) AS message_count,
+      GREATEST(
+        t.created_at,
+        COALESCE((SELECT MAX(r.created_at) FROM support_ticket_replies r WHERE r.ticket_id = t.id), 0::bigint),
+        COALESCE((SELECT MAX(p.created_at) FROM support_ticket_player_replies p WHERE p.ticket_id = t.id), 0::bigint)
+      ) AS last_message_at,
+      (
+        SELECT au.username
+        FROM support_ticket_replies r
+        JOIN users au ON au.id = r.admin_user_id
+        WHERE r.ticket_id = t.id
+        ORDER BY r.created_at DESC
+        LIMIT 1
+      ) AS last_admin_username
+    FROM support_tickets t
+    WHERE t.user_id = ${userId}
+    ORDER BY last_message_at DESC, t.created_at DESC
+    LIMIT ${lim}
+    OFFSET ${off}
+  `;
+}
+
+export async function getUserSupportTicketStats(userId: number): Promise<UserSupportTicketStatsRow> {
+  const rows = await prisma.$queryRaw<UserSupportTicketStatsRow[]>`
+    SELECT
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE t.status IS DISTINCT FROM 'archived')::int AS open_count,
+      COUNT(*) FILTER (WHERE t.status = 'archived')::int AS archived_count,
+      COALESCE(
+        MAX(
+          GREATEST(
+            t.created_at,
+            COALESCE((SELECT MAX(r.created_at) FROM support_ticket_replies r WHERE r.ticket_id = t.id), 0::bigint),
+            COALESCE((SELECT MAX(p.created_at) FROM support_ticket_player_replies p WHERE p.ticket_id = t.id), 0::bigint)
+          )
+        ),
+        0::bigint
+      ) AS last_ticket_at
+    FROM support_tickets t
+    WHERE t.user_id = ${userId}
+  `;
+  return (
+    rows[0] ?? {
+      total: 0,
+      open_count: 0,
+      archived_count: 0,
+      last_ticket_at: 0
+    }
+  );
+}
+
+export async function getAdminTicketListRowById(ticketId: string): Promise<AdminTicketListRow | null> {
+  const rows = await prisma.$queryRaw<AdminTicketListRow[]>`
+    SELECT t.id, t.user_id, t.subject, t.message, t.attachments, t.status, t.created_at,
+           u.username, u.email
+    FROM support_tickets t
+    JOIN users u ON u.id = t.user_id
+    WHERE t.id = ${ticketId}
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
 export async function listAdminRepliesForTicketIds(ticketIds: string[]): Promise<AdminReplyBatchRow[]> {
   if (ticketIds.length === 0) return [];
   return prisma.$queryRaw<AdminReplyBatchRow[]>`

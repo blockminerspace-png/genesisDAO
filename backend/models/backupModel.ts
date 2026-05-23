@@ -110,6 +110,7 @@ export const BACKUP_TABLE_NAMES = [
   'promo_code_redemptions',
   'economy_settings',
   'withdrawal_requests',
+  'user_wallet_history',
   'device_fingerprint_logs'
 ] as const;
 

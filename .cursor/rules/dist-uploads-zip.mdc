@@ -1,0 +1,16 @@
+---
+description: Gerar zip de cada correção em dist_uploads
+alwaysApply: true
+---
+
+# Zips de Entrega
+
+- Em toda correção ou implementação concluída, gerar um arquivo `.zip` em `C:\Users\Fraga\Desktop\minestation\dist_uploads`.
+- O `.zip` deve conter os arquivos alterados naquela entrega, preservando a estrutura relativa do projeto.
+- Nunca colocar os arquivos “soltos” na raiz do `dist_uploads`; o artefacto de entrega deve ser o `.zip`.
+- Dentro do `.zip`, os arquivos devem ficar organizados nas suas pastas corretas do projeto, por exemplo `backend/...`, `frontend/...`, `admin/...`.
+- Os caminhos internos do `.zip` devem corresponder exatamente aos caminhos reais do projeto; nunca achatar, renomear pasta, ou colocar ficheiro em diretório diferente do original.
+- Excluir `.cursor` do `.zip` por padrão; só incluir ficheiros dessa pasta se o utilizador pedir explicitamente.
+- Para garantir isso, montar primeiro uma pasta temporária espelhando a árvore do projeto e só depois gerar o `.zip` a partir dessa pasta.
+- O nome do arquivo deve identificar a mudança de forma curta e incluir timestamp quando ajudar a evitar colisão.
+- Antes de encerrar a tarefa, confirmar ao utilizador o caminho do `.zip` gerado.

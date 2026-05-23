@@ -11,11 +11,18 @@ import { stableIntentFingerprint } from '../../lib/gameIntentIdempotencyPrisma.j
 import { SAVE_GAME_ITEM_ID_RE } from '../../lib/saveGameEconomyValidate.js';
 import type { PlacedRackLoaded } from '../../lib/serverRoomPersistence.js';
 import { normalizePlacedRackRoomId } from '../batteries/batteries.validation.js';
+import { isAsicMachineUpgradeRow, isNftAutoRoomId } from '../../lib/nftRoomMining.js';
+import {
+  isTimedAsicDuration,
+  normalizeAsicDurationConfig,
+  type AsicDurationUnit
+} from '../../lib/asicLease.js';
 
 export type RackAuxUpgradeRow = {
   id: string;
   type?: string;
   category?: string;
+  nftMiningCoinId?: string | null;
   powerCapacity?: number;
   name?: string | null;
   image?: string | null;
@@ -24,6 +31,10 @@ export type RackAuxUpgradeRow = {
   /** 0 = inactivo no catálogo. */
   isActive?: number;
   compatibleRacks?: string[];
+  asicDurationAmount?: number | null;
+  asicDurationUnit?: AsicDurationUnit | string | null;
+  /** Legado */
+  asicDurationKind?: string | null;
 };
 
 export type StoredBatteryRowLite = {
@@ -63,8 +74,22 @@ function cloneRack(r: PlacedRackLoaded): PlacedRackLoaded {
   return {
     ...r,
     slots: [...(r.slots || [])],
+    slotLeaseIds: [...(r.slotLeaseIds || [])],
     multiplierSlots: [...(r.multiplierSlots || [])]
   };
+}
+
+function upgradeTimedAsicConfig(upgrades: RackAuxUpgradeRow[], itemId: string) {
+  const def = upgrades.find((u) => u.id === itemId);
+  return normalizeAsicDurationConfig({
+    amount: def?.asicDurationAmount,
+    unit: def?.asicDurationUnit,
+    kind: def?.asicDurationKind
+  });
+}
+
+function isTimedMachineStockItem(upgrades: RackAuxUpgradeRow[], itemId: string): boolean {
+  return isTimedAsicDuration(upgradeTimedAsicConfig(upgrades, itemId));
 }
 
 export type RackAuxEquipBatteryInput =
@@ -167,6 +192,24 @@ export function applyRackMinerEquip(
 
   const placedRacks = prev.placedRacks.map(cloneRack);
   const rack = cloneRack(placedRacks[ri]);
+  const roomNorm = normalizePlacedRackRoomId(rack.roomId);
+  if (isNftAutoRoomId(roomNorm)) {
+    const asicRow = {
+      id: def.id,
+      type: def.type,
+      category: def.category,
+      nft_mining_coin_id: def.nftMiningCoinId
+    };
+    if (!isAsicMachineUpgradeRow(asicRow)) {
+      return { ok: false, error: 'Na Sala NFT só pode instalar ASICs.' };
+    }
+    if (!def.nftMiningCoinId || !String(def.nftMiningCoinId).trim()) {
+      return {
+        ok: false,
+        error: 'Este ASIC ainda não tem moeda configurada no painel admin (Sala NFT).'
+      };
+    }
+  }
   const rackDef = upgrades.find((u) => u.id === rack.itemId);
   const declaredSlots =
     rackDef?.slotsCapacity != null && Number.isFinite(rackDef.slotsCapacity)
@@ -182,10 +225,17 @@ export function applyRackMinerEquip(
   }
 
   const stock = { ...prev.stock };
-  if ((stock[itemId] || 0) < 1) return { ok: false, error: 'Stock insuficiente.' };
-  stock[itemId] = (stock[itemId] || 0) - 1;
-  if (stock[itemId] <= 0) delete stock[itemId];
+  const timed = isTimedMachineStockItem(upgrades, itemId);
+  if (!timed) {
+    if ((stock[itemId] || 0) < 1) return { ok: false, error: 'Stock insuficiente.' };
+    stock[itemId] = (stock[itemId] || 0) - 1;
+    if (stock[itemId] <= 0) delete stock[itemId];
+  } else if ((stock[itemId] || 0) < 1) {
+    return { ok: false, error: 'Sem ASICs válidos no estoque (validade expirada ou esgotado).' };
+  }
 
+  rack.slotLeaseIds = [...(rack.slotLeaseIds || [])];
+  while (rack.slotLeaseIds.length <= slotIndex) rack.slotLeaseIds.push('');
   rack.slots[slotIndex] = itemId;
   placedRacks[ri] = rack;
   return { ok: true, stock, storedBatteries: [...prev.storedBatteries], placedRacks };
@@ -198,7 +248,8 @@ export function applyRackMinerUnequip(
     placedRacks: PlacedRackLoaded[];
   },
   rackId: string,
-  slotIndexRaw: number
+  slotIndexRaw: number,
+  upgrades: RackAuxUpgradeRow[] = []
 ): RackAuxApplyResult {
   const ri = prev.placedRacks.findIndex((r) => r.id === rackId);
   if (ri === -1) return { ok: false, error: 'Rig não encontrada.' };
@@ -214,9 +265,13 @@ export function applyRackMinerUnequip(
   if (!itemId) return { ok: false, error: 'Nada equipado nesse slot.' };
 
   const stock = { ...prev.stock };
-  stock[itemId] = (stock[itemId] || 0) + 1;
+  if (!isTimedMachineStockItem(upgrades, itemId)) {
+    stock[itemId] = (stock[itemId] || 0) + 1;
+  }
   rack.slots = [...(rack.slots || [])];
+  rack.slotLeaseIds = [...(rack.slotLeaseIds || [])];
   rack.slots[slotIndex] = '';
+  if (rack.slotLeaseIds.length > slotIndex) rack.slotLeaseIds[slotIndex] = '';
   placedRacks[ri] = rack;
   return { ok: true, stock, storedBatteries: [...prev.storedBatteries], placedRacks };
 }
@@ -405,7 +460,11 @@ export function applyRemoveRackToStock(
 
   bump(rack.itemId);
   bump(rack.wiringId);
-  for (const sid of rack.slots || []) bump(sid || null);
+  for (const sid of rack.slots || []) {
+    const id = sid != null ? String(sid).trim() : '';
+    if (id && isTimedMachineStockItem(upgrades, id)) continue;
+    bump(id || null);
+  }
   for (const mid of rack.multiplierSlots || []) bump(mid || null);
 
   const batteryId = rack.batteryId != null ? String(rack.batteryId).trim() : '';

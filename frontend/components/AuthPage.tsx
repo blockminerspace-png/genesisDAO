@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { AccessLevel, User } from '../types';
-import { getUsers, updateUser, login, requestPasswordReset, resetPasswordSecure } from '../services/api';
+import { updateUser, login, requestPasswordReset, resetPasswordSecure, requestEmailVerification, verifyEmailToken } from '../services/api';
 import { collectDeviceFingerprint } from '../utils/deviceFingerprint';
 import {
     AUTH_LOGIN_RECOVERY_EMAIL_MAX,
@@ -12,21 +12,35 @@ import {
     AUTH_USERNAME_MAX,
     AUTH_USERNAME_MIN
 } from '../constants/authLimits';
-import { Lock, Mail, User as UserIcon, ArrowRight, AlertCircle, CheckCircle2, CreditCard, Wallet, Share2, ShieldCheck, Key } from 'lucide-react';
+import { Lock, Mail, User as UserIcon, ArrowRight, AlertCircle, CheckCircle2, CreditCard, Wallet, Share2, ShieldCheck, Key, Eye, EyeOff, ArrowLeft } from 'lucide-react';
 
 interface AuthPageProps {
     onLogin: (user: User) => void;
     accessLevels?: AccessLevel[];
+    initialMode?: 'login' | 'register';
 }
 
-export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }) => {
-    const [activeTab, setActiveTab] = useState<'login' | 'register' | 'special' | 'recovery'>('login');
+function sanitizeAuthTextInput(value: string): string {
+    return value.replace(/[<>'"`\\;]/g, '');
+}
+
+function passwordFieldBorder(hasValue: boolean, matches: boolean | null): string {
+    if (!hasValue) return 'border-slate-200 dark:border-slate-700 focus:border-amber-500 focus:ring-1 focus:ring-amber-500';
+    if (matches === null) return 'border-slate-200 dark:border-slate-700 focus:border-amber-500 focus:ring-1 focus:ring-amber-500';
+    return matches
+        ? 'border-emerald-500/70 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500'
+        : 'border-red-500/70 focus:border-red-500 focus:ring-1 focus:ring-red-500';
+}
+
+export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [], initialMode = 'login' }) => {
+    const [activeTab, setActiveTab] = useState<'login' | 'register' | 'special' | 'recovery' | 'verify'>('login');
 
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [username, setUsername] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [referralInput, setReferralInput] = useState('');
+    const [acceptedTerms, setAcceptedTerms] = useState(false);
 
     const [error, setError] = useState<string | null>(null);
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -35,23 +49,64 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
     const [selectedLevelId, setSelectedLevelId] = useState<string>('');
     const [isWeb3Processing, setIsWeb3Processing] = useState(false);
 
-    // Recovery State (link por email; token na URL /redefinir-senha?token=)
+    // Recovery State (link por email; token no path /redefinir-senha/:token)
     const [recoveryStep, setRecoveryStep] = useState<'email' | 'sent' | 'reset'>('email');
     const [recoveryToken, setRecoveryToken] = useState<string>('');
+    const [verificationToken, setVerificationToken] = useState<string>('');
+    const [showPassword, setShowPassword] = useState(false);
+    const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+    const [showRecoveryPassword, setShowRecoveryPassword] = useState(false);
+    const [showRecoveryConfirmPassword, setShowRecoveryConfirmPassword] = useState(false);
+    const [showResendActivationCta, setShowResendActivationCta] = useState(false);
 
-    // IP Restriction Modal State
-    const [showIpLimitModal, setShowIpLimitModal] = useState(false);
-    const [existingAccounts, setExistingAccounts] = useState<any[]>([]);
+    const navigateAuthMode = (mode: 'login' | 'register') => {
+        try {
+            window.history.replaceState({}, '', mode === 'register' ? '/registro' : '/login');
+        } catch {
+            /* ignore */
+        }
+        setActiveTab(mode);
+    };
 
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
-        const path = (window.location.pathname || '').toLowerCase();
-        const token = params.get('token');
+        const pathname = window.location.pathname || '';
+        const path = pathname.toLowerCase();
+        const pathParts = pathname.split('/').filter(Boolean);
+        const tokenFromPath = pathParts.length >= 2 && (path.includes('verificar-email') || path.includes('redefinir-senha'))
+            ? pathParts[pathParts.length - 1]
+            : null;
+        const token = tokenFromPath || params.get('token');
+        if (token && path.includes('verificar-email')) {
+            try {
+                setVerificationToken(decodeURIComponent(token));
+            } catch {
+                setVerificationToken(token);
+            }
+            if (tokenFromPath) {
+                try {
+                    window.history.replaceState({}, '', '/verificar-email');
+                } catch {
+                    /* ignore */
+                }
+            }
+            setActiveTab('verify');
+            setError(null);
+            setSuccessMessage(null);
+            return;
+        }
         if (token && path.includes('redefinir-senha')) {
             try {
                 setRecoveryToken(decodeURIComponent(token));
             } catch {
                 setRecoveryToken(token);
+            }
+            if (tokenFromPath) {
+                try {
+                    window.history.replaceState({}, '', '/redefinir-senha');
+                } catch {
+                    /* ignore */
+                }
             }
             setActiveTab('recovery');
             setRecoveryStep('reset');
@@ -63,14 +118,32 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
         if (ref) {
             setReferralInput(ref.slice(0, AUTH_REFERRAL_MAX));
             setActiveTab('register');
+            return;
         }
-    }, []);
+        const authMode = params.get('auth');
+        if (window.location.pathname.toLowerCase().includes('/registro') || authMode === 'register' || initialMode === 'register') {
+            setActiveTab('register');
+            return;
+        }
+        if (window.location.pathname.toLowerCase().includes('/login') || initialMode === 'login') {
+            setActiveTab('login');
+        }
+    }, [initialMode]);
 
     const resetForm = (opts?: { keepSuccess?: boolean }) => {
         setEmail(''); setPassword(''); setUsername(''); setConfirmPassword(''); setError(null);
+        setAcceptedTerms(false);
         setRecoveryStep('email'); setRecoveryToken('');
+        setShowResendActivationCta(false);
+        setShowPassword(false);
+        setShowConfirmPassword(false);
+        setShowRecoveryPassword(false);
+        setShowRecoveryConfirmPassword(false);
         if (!opts?.keepSuccess) setSuccessMessage(null);
     };
+
+    const registerPasswordsMatch = confirmPassword.length === 0 ? null : password === confirmPassword;
+    const recoveryPasswordsMatch = confirmPassword.length === 0 ? null : password === confirmPassword;
 
     const handleRequestPasswordResetEmail = async () => {
         const em = email.trim();
@@ -107,11 +180,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
         setIsWeb3Processing(false);
 
         if (res.ok) {
-            try {
-                window.history.replaceState({}, '', '/');
-            } catch { /* ignore */ }
+            navigateAuthMode('login');
             setSuccessMessage('Senha redefinida com sucesso. Faça login agora.');
-            setActiveTab('login');
             resetForm({ keepSuccess: true });
         } else {
             setError(res.error || 'Falha ao redefinir senha.');
@@ -122,6 +192,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
         e.preventDefault();
         setError(null);
         setSuccessMessage(null);
+        setShowResendActivationCta(false);
 
         let deviceFingerprint: Awaited<ReturnType<typeof collectDeviceFingerprint>> | undefined;
         try {
@@ -158,15 +229,13 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                 setError("As senhas não coincidem.");
                 return;
             }
+            if (activeTab === 'register' && !acceptedTerms) {
+                setError('Você precisa concordar com os Termos de Uso e a Política de Privacidade para concluir o cadastro.');
+                return;
+            }
 
             // 2. DETERMINE ACCESS LEVEL & PAYMENT
-            let accessLevelId = 'normal';
-
-            if (activeTab === 'register') {
-                const defaultLevel = accessLevels.find(l => l.isDefault);
-                accessLevelId = defaultLevel ? defaultLevel.id : 'normal';
-            }
-            else if (activeTab === 'special') {
+            if (activeTab === 'special') {
                 if (!selectedLevelId) {
                     setError("Selecione um plano.");
                     return;
@@ -196,7 +265,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                     return;
                 }
 
-                accessLevelId = selectedLevelId;
             }
 
             // 3. GENERATE REFERRAL CODE
@@ -208,7 +276,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                 password,
                 username: u,
                 isBlocked: false,
-                accessLevelId,
                 referralCode: newReferralCode,
                 referredBy: referralInput || undefined, // Send raw input, let server validate
                 referrals: []
@@ -217,18 +284,15 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
             const result = await updateUser({ ...newUser, newReferralFor: u, ...(deviceFingerprint ? { deviceFingerprint } : {}) });
 
             if (!result.ok) {
-                if (result.code === 'IP_LIMIT_REACHED') {
-                    setExistingAccounts(result.accounts || []);
-                    setShowIpLimitModal(true);
-                } else {
-                    setError(result.error || "Falha ao processar cadastro.");
-                }
+                setError(result.error || "Falha ao processar cadastro.");
                 return;
             }
 
-            // Auto login
-            const logged = await login(email, password, deviceFingerprint);
-            onLogin({ ...(logged || newUser), isNewRegistration: true } as User);
+            setSuccessMessage(result.message || 'Cadastro concluído. Verifique o email para ativar a sua conta.');
+            navigateAuthMode('login');
+            setPassword('');
+            setConfirmPassword('');
+            return;
 
         } else {
             // LOGIN LOGIC
@@ -270,40 +334,86 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
 
                 onLogin(sessionUser);
             } else {
+                const needsVerification =
+                    sessionUser?.code === 'EMAIL_NOT_VERIFIED' ||
+                    sessionUser?.emailVerificationRequired === true;
+                setShowResendActivationCta(needsVerification);
                 setError(sessionUser?.error || 'E-mail ou palavra-passe incorretos.');
             }
         }
     };
 
+    const handleResendVerification = async () => {
+        const em = email.trim();
+        if (!em || em.length > AUTH_LOGIN_RECOVERY_EMAIL_MAX || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) {
+            setError('Indique um email válido.');
+            return;
+        }
+        setIsWeb3Processing(true);
+        setError(null);
+        setShowResendActivationCta(false);
+        const result = await requestEmailVerification(em);
+        setIsWeb3Processing(false);
+        if (result.ok) {
+            setSuccessMessage(result.message || 'Se a conta estiver pendente, reenviámos o link de confirmação.');
+        } else {
+            setError(result.error || 'Não foi possível reenviar o email de confirmação.');
+        }
+    };
+
+    useEffect(() => {
+        if (activeTab !== 'verify' || !verificationToken) return;
+        let cancelled = false;
+        setIsWeb3Processing(true);
+        setError(null);
+        setSuccessMessage(null);
+        void verifyEmailToken(verificationToken).then((result) => {
+            if (cancelled) return;
+            setIsWeb3Processing(false);
+            if (result.ok) {
+                setSuccessMessage(result.message || 'Email confirmado com sucesso. Já pode iniciar sessão.');
+                navigateAuthMode('login');
+            } else {
+                setError(result.error || 'Não foi possível confirmar o email.');
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [activeTab, verificationToken]);
+
     const paidLevels = accessLevels.filter(l => l.priceUsdc && l.priceUsdc > 0 && l.isActive);
     const selectedLevel = accessLevels.find(l => l.id === selectedLevelId);
 
     return (
-        <div className="flex flex-col items-center justify-center min-h-[80vh] px-4 animate-in fade-in zoom-in-95 duration-300">
+        <div className="flex flex-col items-center justify-center min-h-[80vh] px-4 py-10 animate-in fade-in zoom-in-95 duration-300">
 
             <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden relative transition-colors">
-                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-amber-500 to-orange-600"></div>
-
                 <div className="p-8">
+                    <div className="mb-6">
+                        <a
+                            href="/"
+                            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-4 py-2 text-sm font-semibold text-slate-700 dark:text-slate-200 hover:border-amber-500/50 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+                        >
+                            <ArrowLeft size={16} />
+                            Voltar para o início
+                        </a>
+                    </div>
+
                     <div className="text-center mb-8">
                         <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">
-                            {activeTab === 'register' ? 'Criar conta' : activeTab === 'special' ? 'Planos premium' : activeTab === 'recovery' ? 'Recuperar senha' : 'Entrar'}
+                            {activeTab === 'register' ? 'Criar conta' : activeTab === 'special' ? 'Planos premium' : activeTab === 'recovery' ? 'Recuperar senha' : activeTab === 'verify' ? 'Confirmar email' : 'Entrar'}
                         </h2>
                         <p className="text-slate-500 text-sm">
-                            {activeTab === 'register' ? 'Abra a sua conta e comece a montar a operação na Polygon.' : activeTab === 'special' ? 'Desbloqueie níveis pagos com USDC na simulação Web3.' : activeTab === 'recovery' ? 'Receba um link seguro no email para criar uma nova senha.' : 'Use email e senha para voltar ao painel.'}
+                            {activeTab === 'register' ? 'Abra a sua conta e comece a montar a operação na Polygon.' : activeTab === 'special' ? 'Desbloqueie níveis pagos com USDC na simulação Web3.' : activeTab === 'recovery' ? 'Receba um link seguro no email para criar uma nova senha.' : activeTab === 'verify' ? 'Estamos validando o link de confirmação da sua conta.' : 'Use email e senha para voltar ao painel.'}
                         </p>
-                        {(activeTab === 'register' || activeTab === 'special') && (
-                            <p className="text-slate-500 text-xs mt-2 leading-relaxed">
-                                Novos cadastros: Gmail, Outlook, Yahoo, Hotmail, Live, Mail.ru ou Web.de. E-mails temporários não são aceites.
-                            </p>
-                        )}
                     </div>
 
                     {/* TABS (Hidden in recovery mode to focus) */}
-                    {activeTab !== 'recovery' && (
+                    {activeTab !== 'recovery' && activeTab !== 'verify' && (
                         <div className="flex mb-6 bg-slate-100 dark:bg-slate-950 p-1 rounded-lg">
-                            <button onClick={() => { setActiveTab('login'); resetForm(); }} className={`flex-1 py-2 text-xs font-bold uppercase rounded ${activeTab === 'login' ? 'bg-white dark:bg-slate-800 shadow text-amber-600' : 'text-slate-500'}`}>Login</button>
-                            <button onClick={() => { setActiveTab('register'); resetForm(); }} className={`flex-1 py-2 text-xs font-bold uppercase rounded ${activeTab === 'register' ? 'bg-white dark:bg-slate-800 shadow text-amber-600' : 'text-slate-500'}`}>Cadastro</button>
+                            <button onClick={() => { navigateAuthMode('login'); resetForm(); }} className={`flex-1 py-2 text-xs font-bold uppercase rounded ${activeTab === 'login' ? 'bg-white dark:bg-slate-800 shadow text-amber-600' : 'text-slate-500'}`}>Login</button>
+                            <button onClick={() => { navigateAuthMode('register'); resetForm(); }} className={`flex-1 py-2 text-xs font-bold uppercase rounded ${activeTab === 'register' ? 'bg-white dark:bg-slate-800 shadow text-amber-600' : 'text-slate-500'}`}>Cadastro</button>
                         </div>
                     )}
 
@@ -315,6 +425,24 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                     {error && (
                         <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400 p-3 rounded-lg mb-6 flex items-center gap-2 text-sm">
                             <AlertCircle size={16} /> {error}
+                        </div>
+                    )}
+                    {showResendActivationCta && activeTab === 'login' && (
+                        <div className="mb-6 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm">
+                            <div className="font-semibold text-amber-600 dark:text-amber-300">
+                                A conta ainda não foi ativada.
+                            </div>
+                            <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                                Se o email de ativação não chegou, você pode reenviar agora.
+                            </p>
+                            <button
+                                type="button"
+                                onClick={handleResendVerification}
+                                disabled={isWeb3Processing}
+                                className="mt-3 inline-flex items-center gap-2 rounded-lg bg-amber-500 px-3 py-2 text-xs font-bold text-stone-950 hover:bg-amber-400 disabled:opacity-60"
+                            >
+                                {isWeb3Processing ? 'REENVIANDO...' : 'REENVIAR EMAIL DE ATIVAÇÃO'}
+                            </button>
                         </div>
                     )}
 
@@ -354,7 +482,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                                     >
                                         {isWeb3Processing ? 'A ENVIAR...' : 'ENVIAR LINK POR EMAIL'} <Mail size={16} />
                                     </button>
-                                    <button type="button" onClick={() => setActiveTab('login')} className="w-full text-center text-xs text-slate-500 hover:text-amber-500 mt-2">
+                                    <button type="button" onClick={() => navigateAuthMode('login')} className="w-full text-center text-xs text-slate-500 hover:text-amber-500 mt-2">
                                         Voltar para login
                                     </button>
                                 </div>
@@ -373,7 +501,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                                     <p className="text-xs text-slate-500">O link expira em cerca de 1 hora.</p>
                                     <button
                                         type="button"
-                                        onClick={() => { setActiveTab('login'); resetForm(); }}
+                                        onClick={() => { navigateAuthMode('login'); resetForm(); }}
                                         className="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 rounded-lg"
                                     >
                                         Voltar para login
@@ -393,14 +521,22 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                                         <div className="relative">
                                             <Key className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                                             <input
-                                                type="password"
+                                                type={showRecoveryPassword ? 'text' : 'password'}
                                                 value={password}
                                                 onChange={(e) => setPassword(e.target.value)}
                                                 maxLength={AUTH_PASSWORD_MAX}
                                                 autoComplete="new-password"
-                                                className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-lg py-3 pl-10 pr-4 text-slate-900 dark:text-white outline-none"
+                                                className={`w-full bg-slate-50 dark:bg-slate-950 border rounded-lg py-3 pl-10 pr-12 text-slate-900 dark:text-white outline-none ${passwordFieldBorder(password.length > 0, recoveryPasswordsMatch)}`}
                                                 placeholder="••••••••"
                                             />
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowRecoveryPassword((prev) => !prev)}
+                                                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-200 transition-colors"
+                                                aria-label={showRecoveryPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                                            >
+                                                {showRecoveryPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                                            </button>
                                         </div>
                                     </div>
                                     <div className="space-y-1">
@@ -408,15 +544,28 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                                         <div className="relative">
                                             <Key className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                                             <input
-                                                type="password"
+                                                type={showRecoveryConfirmPassword ? 'text' : 'password'}
                                                 value={confirmPassword}
                                                 onChange={(e) => setConfirmPassword(e.target.value)}
                                                 maxLength={AUTH_PASSWORD_MAX}
                                                 autoComplete="new-password"
-                                                className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-lg py-3 pl-10 pr-4 text-slate-900 dark:text-white outline-none"
+                                                className={`w-full bg-slate-50 dark:bg-slate-950 border rounded-lg py-3 pl-10 pr-12 text-slate-900 dark:text-white outline-none ${passwordFieldBorder(confirmPassword.length > 0, recoveryPasswordsMatch)}`}
                                                 placeholder="••••••••"
                                             />
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowRecoveryConfirmPassword((prev) => !prev)}
+                                                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-200 transition-colors"
+                                                aria-label={showRecoveryConfirmPassword ? 'Ocultar confirmação de senha' : 'Mostrar confirmação de senha'}
+                                            >
+                                                {showRecoveryConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                                            </button>
                                         </div>
+                                        {confirmPassword.length > 0 && (
+                                            <p className={`text-[11px] ${recoveryPasswordsMatch ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                {recoveryPasswordsMatch ? 'As senhas coincidem.' : 'As senhas não coincidem.'}
+                                            </p>
+                                        )}
                                     </div>
                                     <button
                                         type="submit"
@@ -427,6 +576,28 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                                     </button>
                                 </form>
                             )}
+                        </div>
+                    )}
+
+                    {activeTab === 'verify' && (
+                        <div className="space-y-4 text-center">
+                            <div className="flex justify-center mb-2">
+                                <div className="w-16 h-16 bg-amber-100 dark:bg-amber-900/30 rounded-full flex items-center justify-center text-amber-600">
+                                    <Mail size={32} />
+                                </div>
+                            </div>
+                            <p className="text-sm text-slate-600 dark:text-slate-300">
+                                {isWeb3Processing
+                                    ? 'Validando o link de confirmação...'
+                                    : 'Se o link for válido, a sua conta será ativada e poderá entrar normalmente.'}
+                            </p>
+                            <button
+                                type="button"
+                                onClick={() => { navigateAuthMode('login'); setVerificationToken(''); }}
+                                className="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 rounded-lg"
+                            >
+                                Ir para login
+                            </button>
                         </div>
                     )}
 
@@ -482,7 +653,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                                         <input
                                             type="text"
                                             value={username}
-                                            onChange={(e) => setUsername(e.target.value)}
+                                                onChange={(e) => setUsername(sanitizeAuthTextInput(e.target.value))}
                                             maxLength={AUTH_USERNAME_MAX}
                                             autoComplete="username"
                                             className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-lg py-3 pl-10 pr-4 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all"
@@ -499,7 +670,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                                     <input
                                         type="email"
                                         value={email}
-                                        onChange={(e) => setEmail(e.target.value)}
+                                        onChange={(e) => setEmail(e.target.value.replace(/[<>'"`\\\s]/g, ''))}
                                         maxLength={
                                             activeTab === 'login'
                                                 ? AUTH_LOGIN_RECOVERY_EMAIL_MAX
@@ -510,6 +681,15 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                                         placeholder="usuario@exemplo.com"
                                     />
                                 </div>
+                                {activeTab === 'login' && (
+                                    <button
+                                        type="button"
+                                        onClick={handleResendVerification}
+                                        className="text-[10px] text-slate-500 hover:text-amber-500 block text-right mt-1"
+                                    >
+                                        Reenviar email de confirmação
+                                    </button>
+                                )}
                             </div>
 
                             <div className="space-y-1">
@@ -517,14 +697,26 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                                 <div className="relative">
                                     <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                                     <input
-                                        type="password"
+                                        type={showPassword ? 'text' : 'password'}
                                         value={password}
                                         onChange={(e) => setPassword(e.target.value)}
                                         maxLength={AUTH_PASSWORD_MAX}
                                         autoComplete={activeTab === 'login' ? 'current-password' : 'new-password'}
-                                        className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-lg py-3 pl-10 pr-4 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all"
+                                        className={`w-full bg-slate-50 dark:bg-slate-950 border rounded-lg py-3 pl-10 pr-12 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 outline-none transition-all ${
+                                            activeTab === 'login'
+                                                ? 'border-slate-200 dark:border-slate-700 focus:border-amber-500 focus:ring-1 focus:ring-amber-500'
+                                                : passwordFieldBorder(password.length > 0, registerPasswordsMatch)
+                                        }`}
                                         placeholder="••••••••"
                                     />
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowPassword((prev) => !prev)}
+                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-200 transition-colors"
+                                        aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                                    >
+                                        {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                                    </button>
                                 </div>
                                 {activeTab === 'login' && (
                                     <button
@@ -544,15 +736,28 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                                         <div className="relative">
                                             <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                                             <input
-                                                type="password"
+                                                type={showConfirmPassword ? 'text' : 'password'}
                                                 value={confirmPassword}
                                                 onChange={(e) => setConfirmPassword(e.target.value)}
                                                 maxLength={AUTH_PASSWORD_MAX}
                                                 autoComplete="new-password"
-                                                className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-lg py-3 pl-10 pr-4 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all"
+                                                className={`w-full bg-slate-50 dark:bg-slate-950 border rounded-lg py-3 pl-10 pr-12 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 outline-none transition-all ${passwordFieldBorder(confirmPassword.length > 0, registerPasswordsMatch)}`}
                                                 placeholder="••••••••"
                                             />
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowConfirmPassword((prev) => !prev)}
+                                                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-200 transition-colors"
+                                                aria-label={showConfirmPassword ? 'Ocultar confirmação de senha' : 'Mostrar confirmação de senha'}
+                                            >
+                                                {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                                            </button>
                                         </div>
+                                        {confirmPassword.length > 0 && (
+                                            <p className={`text-[11px] ${registerPasswordsMatch ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                {registerPasswordsMatch ? 'As senhas coincidem.' : 'As senhas não coincidem.'}
+                                            </p>
+                                        )}
                                     </div>
                                     <div className="space-y-1">
                                         <label className="text-xs font-bold text-slate-500 uppercase ml-1">Código de Indicação (Opcional)</label>
@@ -561,7 +766,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                                             <input
                                                 type="text"
                                                 value={referralInput}
-                                                onChange={(e) => setReferralInput(e.target.value)}
+                                                onChange={(e) => setReferralInput(sanitizeAuthTextInput(e.target.value))}
                                                 maxLength={AUTH_REFERRAL_MAX}
                                                 autoComplete="off"
                                                 className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-lg py-3 pl-10 pr-4 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-600 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all"
@@ -569,6 +774,33 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                                             />
                                         </div>
                                     </div>
+                                    {activeTab === 'register' && (
+                                        <label className="flex items-start gap-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-3 text-xs text-slate-600 dark:text-slate-300">
+                                            <input
+                                                type="checkbox"
+                                                checked={acceptedTerms}
+                                                onChange={(e) => setAcceptedTerms(e.target.checked)}
+                                                className="mt-0.5 h-4 w-4 rounded border-slate-300 text-amber-500 focus:ring-amber-500"
+                                            />
+                                            <span className="leading-relaxed">
+                                                Li e concordo com os{' '}
+                                                <a
+                                                    href="/termos"
+                                                    className="font-semibold text-amber-600 hover:text-amber-500"
+                                                >
+                                                    Termos de Uso
+                                                </a>
+                                                {' '}e com a{' '}
+                                                <a
+                                                    href="/privacidade"
+                                                    className="font-semibold text-emerald-600 hover:text-emerald-500"
+                                                >
+                                                    Política de Privacidade
+                                                </a>
+                                                .
+                                            </span>
+                                        </label>
+                                    )}
                                 </>
                             )}
 
@@ -595,35 +827,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [] }
                 </div>
 
                 {/* IP LIMIT MODAL */}
-                {showIpLimitModal && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm animate-in fade-in duration-300">
-                        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-sm w-full p-6 animate-in zoom-in-95 duration-300">
-                            <div className="flex justify-center mb-4">
-                                <div className="w-16 h-16 bg-red-100 dark:bg-red-900/20 rounded-full flex items-center justify-center text-red-600">
-                                    <AlertCircle size={32} />
-                                </div>
-                            </div>
-                            <h3 className="text-xl font-bold text-center text-slate-900 dark:text-white mb-2">Limite de Contas Atingido</h3>
-                            <p className="text-center text-sm text-slate-500 mb-6 font-normal">
-                                Você já possui o limite máximo de 3 contas vinculadas a este endereço de IP:
-                            </p>
-                            <div className="bg-slate-50 dark:bg-slate-950 rounded-lg p-3 mb-6 space-y-2 border border-slate-100 dark:border-slate-800">
-                                {existingAccounts.map((acc, i) => (
-                                    <div key={i} className="flex flex-col border-b border-slate-200 dark:border-slate-800 last:border-0 pb-2 last:pb-0">
-                                        <span className="text-xs font-bold text-slate-700 dark:text-slate-200">{acc.username}</span>
-                                        <span className="text-[10px] text-slate-500">{acc.email}</span>
-                                    </div>
-                                ))}
-                            </div>
-                            <button
-                                onClick={() => setShowIpLimitModal(false)}
-                                className="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 rounded-lg transition-colors"
-                            >
-                                ENTENDI
-                            </button>
-                        </div>
-                    </div>
-                )}
             </div>
         </div>
     );

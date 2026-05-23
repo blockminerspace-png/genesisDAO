@@ -1,12 +1,26 @@
 import { prisma } from '../config/prisma.js';
 import { isCheckinFrozenAtMs } from '../modules/checkin/checkin.service.js';
+import { normalizePlacedRackRoomId } from '../modules/batteries/batteries.validation.js';
+import {
+  listSlotMiningCredits,
+  NFT_AUTO_POLICY_ROOM_NAME_KEYS,
+  NFT_AUTO_ROOM_ID,
+  type UpgradeMiningRow
+} from './nftRoomMining.js';
 
 function num(v: unknown, def = 0): number {
   const n = typeof v === 'number' ? v : parseFloat(String(v ?? ''));
   return Number.isFinite(n) ? n : def;
 }
 
-export type UpgradeRow = { base: number; mult: number; cap: number | null };
+export type UpgradeRow = {
+  base: number;
+  mult: number;
+  cap: number | null;
+  type: string;
+  category: string | null;
+  nft_mining_coin_id: string | null;
+};
 
 function parsePowerCapacity(raw: unknown): number | null {
   if (raw == null || raw === '') return null;
@@ -22,37 +36,84 @@ const UPGRADES_CATALOG_CACHE_TTL_MS = Math.min(
   Math.max(15_000, parseInt(String(process.env.UPGRADES_SNAPSHOT_CACHE_TTL_MS || '60000'), 10) || 60_000)
 );
 
-let upgradesCatalogCache: { map: Map<string, UpgradeRow>; expiresAt: number } | null = null;
+let upgradesCatalogCache: {
+  map: Map<string, UpgradeRow>;
+  miningMap: Map<string, UpgradeMiningRow>;
+  expiresAt: number;
+} | null = null;
 
 /** Só para testes (Vitest); invalida cache entre casos. */
 export function resetUpgradesCatalogCacheForTests(): void {
   upgradesCatalogCache = null;
 }
 
-async function loadUpgradesCatalogMap(): Promise<Map<string, UpgradeRow>> {
+function normalizeRigRoomPolicyNameKey(name: unknown): string {
+  return String(name ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+async function loadNftMiningRoomIds(): Promise<Set<string>> {
+  const rows = await prisma.rig_rooms.findMany({ select: { id: true, name: true } });
+  const policyKeys = new Set<string>(NFT_AUTO_POLICY_ROOM_NAME_KEYS);
+  const ids = new Set<string>();
+  const canonical = normalizePlacedRackRoomId(NFT_AUTO_ROOM_ID);
+  for (const r of rows) {
+    const id = normalizePlacedRackRoomId(r.id);
+    if (id === canonical || policyKeys.has(normalizeRigRoomPolicyNameKey(r.name))) ids.add(id);
+  }
+  ids.add(canonical);
+  return ids;
+}
+
+async function loadUpgradesCatalogMaps(): Promise<{
+  catalog: Map<string, UpgradeRow>;
+  mining: Map<string, UpgradeMiningRow>;
+}> {
   const now = Date.now();
   if (upgradesCatalogCache && upgradesCatalogCache.expiresAt > now) {
-    return upgradesCatalogCache.map;
+    return { catalog: upgradesCatalogCache.map, mining: upgradesCatalogCache.miningMap };
   }
   const upRows = await prisma.upgrades.findMany({
     select: {
       id: true,
       base_production: true,
       multiplier: true,
-      power_capacity: true
+      power_capacity: true,
+      type: true,
+      category: true,
+      nft_mining_coin_id: true
     }
   });
   const upgrades = new Map<string, UpgradeRow>();
+  const upgradesMining = new Map<string, UpgradeMiningRow>();
   for (const u of upRows) {
+    const id = String(u.id);
     const cap = parsePowerCapacity(u.power_capacity);
-    upgrades.set(String(u.id), {
+    upgrades.set(id, {
       base: num(u.base_production),
       mult: num(u.multiplier),
-      cap
+      cap,
+      type: String(u.type ?? ''),
+      category: u.category != null ? String(u.category) : null,
+      nft_mining_coin_id: u.nft_mining_coin_id != null ? String(u.nft_mining_coin_id) : null
+    });
+    upgradesMining.set(id, {
+      id,
+      type: u.type,
+      category: u.category,
+      base_production: u.base_production,
+      multiplier: u.multiplier,
+      nft_mining_coin_id: u.nft_mining_coin_id
     });
   }
-  upgradesCatalogCache = { map: upgrades, expiresAt: now + UPGRADES_CATALOG_CACHE_TTL_MS };
-  return upgrades;
+  upgradesCatalogCache = {
+    map: upgrades,
+    miningMap: upgradesMining,
+    expiresAt: now + UPGRADES_CATALOG_CACHE_TTL_MS
+  };
+  return { catalog: upgrades, mining: upgradesMining };
 }
 
 export type PlayerGameHeaderPayload = {
@@ -93,7 +154,7 @@ export async function computePlayerGameHeaderSnapshot(userId: number): Promise<P
     coinBalances[String(row.coin_id)] = num(row.amount);
   }
 
-  const upgrades = await loadUpgradesCatalogMap();
+  const { mining: upgradesMining } = await loadUpgradesCatalogMaps();
 
   const lastCheckinAtMs = gs.last_checkin_at_ms != null ? Number(gs.last_checkin_at_ms) : null;
   const checkinFrozen = isCheckinFrozenAtMs(lastCheckinAtMs, Date.now());
@@ -107,7 +168,8 @@ export async function computePlayerGameHeaderSnapshot(userId: number): Promise<P
           is_on: true,
           wiring_id: true,
           battery_id: true,
-          selected_coin_id: true
+          selected_coin_id: true,
+          room_id: true
         }
       });
   const rackIds = racksRows.map((r) => String(r.id));
@@ -142,6 +204,7 @@ export async function computePlayerGameHeaderSnapshot(userId: number): Promise<P
     }
   }
 
+  const nftRoomIds = await loadNftMiningRoomIds();
   const hashByCoinId: Record<string, number> = {};
   let totalHash = 0;
 
@@ -149,31 +212,28 @@ export async function computePlayerGameHeaderSnapshot(userId: number): Promise<P
     const isOn = Number(r.is_on) === 1;
     const wiringId = r.wiring_id ? String(r.wiring_id).trim() : '';
     const batteryId = r.battery_id ? String(r.battery_id).trim() : '';
-    const selectedCoinId = r.selected_coin_id ? String(r.selected_coin_id).trim() : '';
 
     // Baterias são instâncias UUID infinitas: rig opera se montada e ligada.
     if (!isOn || !wiringId || !batteryId) continue;
-    if (!selectedCoinId) continue;
 
     const rid = String(r.id);
     const slots = slotsMap.get(rid) || [];
-    let rackBaseProd = 0;
-    for (const sid of slots) {
-      if (!sid) continue;
-      const up = upgrades.get(sid);
-      if (up) rackBaseProd += up.base;
+    const multSlots = multiMap.get(rid) || [];
+    const roomId = r.room_id != null ? String(r.room_id) : null;
+    const selectedCoinId = r.selected_coin_id ? String(r.selected_coin_id).trim() : '';
+    const credits = listSlotMiningCredits(
+      roomId,
+      slots,
+      multSlots,
+      upgradesMining,
+      selectedCoinId,
+      nftRoomIds
+    );
+    for (const sc of credits) {
+      if (!Number.isFinite(sc.effectiveBaseProd) || sc.effectiveBaseProd <= 0) continue;
+      hashByCoinId[sc.coinId] = (hashByCoinId[sc.coinId] || 0) + sc.effectiveBaseProd;
+      totalHash += sc.effectiveBaseProd;
     }
-    let multFactor = 1;
-    for (const sid of multiMap.get(rid) || []) {
-      if (!sid) continue;
-      const up = upgrades.get(sid);
-      if (up && up.mult) multFactor += up.mult;
-    }
-    const power = rackBaseProd * multFactor;
-    if (!Number.isFinite(power) || power <= 0) continue;
-
-    hashByCoinId[selectedCoinId] = (hashByCoinId[selectedCoinId] || 0) + power;
-    totalHash += power;
   }
 
   return { coinBalances, usdc, hashByCoinId, totalHash, serverUpdatedAt };

@@ -119,7 +119,7 @@ export async function bindProfileReferralCode(input: {
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes('Auto-indicação')) {
+    if (msg.includes('próprio código')) {
       await appendProfileAuditLog({
         userId: uid,
         action: 'referral_bind_ip_antifraud',

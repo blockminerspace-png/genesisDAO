@@ -43,6 +43,8 @@ model users {
   ranking_excluded   Int?    @default(0)
   registration_ip    String?
   admin_permissions    String?
+  email_verification_required Int @default(0)
+  email_verified     Int     @default(0)
 
   @@map("users")
 }
@@ -105,6 +107,34 @@ model profile_audit_log {
 
   @@index([user_id, created_at])
   @@map("profile_audit_log")
+}
+
+/** Histórico append-only de ligações / trocas / remoções da carteira Polygon do perfil. */
+model user_wallet_history {
+  id                      String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                 Int
+  wallet_address          String?
+  network                 String  @default("polygon") @db.VarChar(32)
+  action                  String  @db.VarChar(32)
+  previous_wallet_address String?
+  new_wallet_address      String?
+  ip_address              String? @db.VarChar(80)
+  user_agent              String? @db.VarChar(500)
+  signature_address       String? @db.VarChar(80)
+  signature_message       String?
+  created_at              BigInt
+  metadata                Json?
+  actor_type              String  @default("user") @db.VarChar(24)
+  actor_user_id           Int?
+  source                  String? @db.VarChar(80)
+  notes                   String?
+
+  @@index([user_id])
+  @@index([created_at])
+  @@index([wallet_address])
+  @@index([action])
+  @@index([actor_type])
+  @@map("user_wallet_history")
 }
 
 // --- Economia de mineração: moedas, catálogo de peças, compatibilidade de racks ---
@@ -172,6 +202,14 @@ model upgrades {
   sell_in_hardware_market Int? @default(1)
   sell_in_black_market Int?    @default(1)
   is_active            Int?    @default(1)
+  /** Moeda fixa na Sala NFT (por modelo de ASIC); NULL = não aplicável / outras salas. */
+  nft_mining_coin_id   String?
+  /** Legado: none | daily | weekly | monthly | annual */
+  asic_duration_kind   String?  @default("none")
+  /** Validade custom: quantidade (0 = permanente) */
+  asic_duration_amount Int?     @default(0)
+  /** day | week | month | year */
+  asic_duration_unit   String?
 
   @@map("upgrades")
 }
@@ -268,12 +306,15 @@ model game_states {
    *  Dia local America/Sao_Paulo no formato 'YYYY-MM-DD'. NULL = nunca fez check-in.
    *  Mantido para diagnóstico — a regra de freeze usa `last_checkin_at_ms`. */
   last_checkin_day         String? @db.VarChar(10)
-  /** Timestamp (ms epoch) do último check-in. Janela de validade = 24h
-   *  contadas a partir deste instante. NULL = nunca fez check-in. */
+  /** Timestamp (ms epoch) do último check-in. Ciclo BRT 21:00→21:00
+   *  (America/Sao_Paulo): freeze se o último check-in caiu noutro ciclo.
+   *  NULL = nunca fez check-in. */
   last_checkin_at_ms       BigInt?
   /** Sequência consecutiva de dias com check-in. A cada múltiplo de 7
    *  o jogador ganha uma `battery_estelar`. */
   checkin_streak           Int     @default(0)
+  /** USD recuperado por mineração de ASICs na Sala NFT (payback). */
+  nft_asic_mined_usd_total Float   @default(0)
 
   @@index([last_checkin_day], map: "game_states_last_checkin_day_idx")
   @@index([last_checkin_at_ms], map: "game_states_last_checkin_at_ms_idx")
@@ -442,12 +483,28 @@ model placed_racks {
 }
 
 model rack_slots {
-  rack_id         String
-  slot_index      Int
-  machine_item_id String?
+  rack_id           String
+  slot_index        Int
+  machine_item_id   String?
+  machine_lease_id  String? @db.Uuid
 
   @@id([rack_id, slot_index])
   @@map("rack_slots")
+}
+
+model player_asic_leases {
+  id          String  @id @db.Uuid
+  user_id     Int
+  item_id     String
+  acquired_at BigInt
+  expires_at  BigInt
+  status      String
+  rack_id     String?
+  slot_index  Int?
+
+  @@index([user_id, item_id], map: "idx_player_asic_leases_user_item")
+  @@index([user_id, expires_at], map: "idx_player_asic_leases_expires")
+  @@map("player_asic_leases")
 }
 
 model rack_multiplier_slots {

@@ -2,7 +2,7 @@ import React from 'react';
 import { Cpu, TrendingUp, ShieldCheck, Zap, ArrowRight, Server, Box, Gift, Lock, Info, Rocket, Crown, CheckCircle2 } from 'lucide-react';
 
 interface HomePageProps {
-    onNavigate: (view: 'auth' | 'docs') => void;
+    onNavigate: (view: 'auth' | 'docs', opts?: { mode?: 'login' | 'register' }) => void;
 }
 
 export const HomePage: React.FC<HomePageProps> = ({ onNavigate }) => {
@@ -42,19 +42,19 @@ export const HomePage: React.FC<HomePageProps> = ({ onNavigate }) => {
                     <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
                         <button
                             type="button"
-                            onClick={() => onNavigate('auth')}
-                            aria-label="Entrar na operação — abrir login"
+                            onClick={() => onNavigate('auth', { mode: 'login' })}
+                            aria-label="Abrir login"
                             className="group w-full sm:w-auto bg-gradient-to-r from-amber-400 to-amber-600 hover:from-amber-300 hover:to-amber-500 text-stone-950 font-bold py-4 px-10 rounded-xl shadow-[0_0_32px_rgba(245,158,11,0.45)] border border-amber-300/50 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
                         >
-                            ENTRAR NA OPERAÇÃO <ArrowRight size={20} className="group-hover:translate-x-1 transition-transform" aria-hidden />
+                            LOGIN <ArrowRight size={20} className="group-hover:translate-x-1 transition-transform" aria-hidden />
                         </button>
                         <button
                             type="button"
-                            onClick={() => onNavigate('docs')}
-                            aria-label="Abrir manual e documentação"
+                            onClick={() => onNavigate('auth', { mode: 'register' })}
+                            aria-label="Abrir cadastro"
                             className="w-full sm:w-auto bg-white/90 dark:bg-slate-900/80 hover:bg-white dark:hover:bg-slate-900 text-slate-800 dark:text-slate-100 font-bold py-4 px-10 rounded-xl border-2 border-amber-500/25 dark:border-amber-400/30 hover:border-orange-500/40 dark:hover:border-orange-400/40 transition-all shadow-md backdrop-blur-sm"
                         >
-                            ABRIR MANUAL
+                            REGISTRO
                         </button>
                     </div>
                 </div>

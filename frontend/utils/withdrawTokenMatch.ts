@@ -8,6 +8,7 @@ export interface WithdrawTokenCfgLike {
   name?: string;
   symbol?: string;
   coinId?: string;
+  network?: 'polygon' | 'bnb' | 'base';
   contract?: string;
   payoutWallet?: string;
   minAmount?: number;

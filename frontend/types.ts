@@ -52,7 +52,105 @@ export interface Upgrade {
   sellInBlackMarket?: boolean;
   isActive?: boolean;
   isNft?: boolean;
+  /** Moeda fixa na Sala NFT (cada modelo de ASIC). */
+  nftMiningCoinId?: string;
+  /** Legado (dropdown antigo); preferir amount+unit */
+  asicDurationKind?: AsicDurationKind;
+  /** Validade: quantidade (0 = permanente) */
+  asicDurationAmount?: number;
+  /** day | week | month | year */
+  asicDurationUnit?: AsicDurationUnit;
   visibleToAccessLevelIds?: string[];
+}
+
+export const ASIC_DURATION_KINDS = ['none', 'daily', 'weekly', 'monthly', 'annual'] as const;
+export type AsicDurationKind = (typeof ASIC_DURATION_KINDS)[number];
+
+export const ASIC_DURATION_UNITS = ['day', 'week', 'month', 'year'] as const;
+export type AsicDurationUnit = (typeof ASIC_DURATION_UNITS)[number];
+
+export const ASIC_DURATION_UNIT_LABELS: Record<AsicDurationUnit, string> = {
+  day: 'Dias',
+  week: 'Semanas',
+  month: 'Meses',
+  year: 'Anos'
+};
+
+export function resolveAsicDurationForForm(u: Pick<Upgrade, 'asicDurationAmount' | 'asicDurationUnit' | 'asicDurationKind'>): {
+  permanent: boolean;
+  amount: number;
+  unit: AsicDurationUnit;
+} {
+  const amount = Math.floor(Number(u.asicDurationAmount) || 0);
+  const unitRaw = u.asicDurationUnit;
+  if (amount > 0 && unitRaw && ASIC_DURATION_UNITS.includes(unitRaw as AsicDurationUnit)) {
+    return { permanent: false, amount, unit: unitRaw as AsicDurationUnit };
+  }
+  const kind = String(u.asicDurationKind || 'none').toLowerCase();
+  if (kind === 'daily') return { permanent: false, amount: 1, unit: 'day' };
+  if (kind === 'weekly') return { permanent: false, amount: 1, unit: 'week' };
+  if (kind === 'monthly') return { permanent: false, amount: 1, unit: 'month' };
+  if (kind === 'annual') return { permanent: false, amount: 1, unit: 'year' };
+  return { permanent: true, amount: 7, unit: 'day' };
+}
+
+export function resolveAsicValidityLabel(u: Pick<Upgrade, 'asicDurationAmount' | 'asicDurationUnit' | 'asicDurationKind'>): string {
+  const d = resolveAsicDurationForForm(u);
+  if (d.permanent) return 'Permanente';
+  return formatAsicDurationPreview(d.amount, d.unit);
+}
+
+/** Tempo restante até `expiresAt` (ms). */
+export function formatAsicRemainingUntil(expiresAtMs: number, nowMs: number = Date.now()): string {
+  const left = Math.floor(Number(expiresAtMs) - nowMs);
+  if (!Number.isFinite(left) || left <= 0) return 'Expirado';
+  const totalSec = Math.floor(left / 1000);
+  const days = Math.floor(totalSec / 86400);
+  const hours = Math.floor((totalSec % 86400) / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  if (mins > 0) return `${mins}m`;
+  return '<1m';
+}
+
+export function formatAsicDurationPreview(amount: number, unit: AsicDurationUnit): string {
+  const n = Math.max(1, Math.floor(amount) || 1);
+  const labels: Record<AsicDurationUnit, [string, string]> = {
+    day: ['dia', 'dias'],
+    week: ['semana', 'semanas'],
+    month: ['mês', 'meses'],
+    year: ['ano', 'anos']
+  };
+  const pair = labels[unit];
+  return `${n} ${n === 1 ? pair[0] : pair[1]}`;
+}
+
+export type AsicLeaseSummary = {
+  itemId: string;
+  inStock: number;
+  equipped: number;
+  nearestExpiresAt: number | null;
+};
+
+export type AsicLeaseDetail = {
+  leaseId: string;
+  itemId: string;
+  expiresAt: number;
+  status: 'stock' | 'equipped';
+  rackId: string | null;
+  slotIndex: number | null;
+};
+
+/** ASIC (máquina) elegível na Sala NFT. */
+export function isAsicMachineUpgrade(u: Pick<Upgrade, 'id' | 'category' | 'type'>): boolean {
+  if (u.type !== 'machine') return false;
+  const id = String(u.id || '').trim().toLowerCase();
+  if (id.startsWith('asic_')) return true;
+  return String(u.category || '')
+    .trim()
+    .toLowerCase()
+    .includes('asic');
 }
 
 /** Sala padrão do projeto (AdminRigRooms); rigs antigos vinham com room_id NULL ou "main" no servidor. */
@@ -65,6 +163,72 @@ export const NFT_AUTO_ALLOWED_CHASSIS_ID = 'armario_1';
 
 /** Nomes normalizados de sala com a mesma política (id pode variar na BD). */
 export const NFT_AUTO_POLICY_ROOM_NAME_KEYS = ['nfts auto', 'nft auto', 'nfts arbam'] as const;
+
+/** Só mineiráveis na Sala NFT (ASIC + moeda no admin). */
+export const NFT_ROOM_EXCLUSIVE_MINING_COIN_SYMBOLS = ['USDT', 'CBBTC', 'DAI', 'GHO', 'GEMT'] as const;
+
+/** Stables NFT: payback/H/s usam fallback $1 se `usdc_rate`/`price_usd` vazios. */
+export const NFT_ROOM_STABLE_USD_SYMBOLS = ['DAI', 'USDT', 'GHO'] as const;
+
+const NFT_EXCLUSIVE_COIN_ID_KEYS = ['usdt', 'cbbtc', 'dai', 'gho', 'gemt'] as const;
+
+export const NFT_ROOM_EXCLUSIVE_COIN_ERROR_PT =
+  'USDT, cbBTC, DAI, GHO e GEMT só podem ser mineirados por ASICs na Sala NFT.';
+
+export function normalizeMiningCoinSymbolKey(symbol: string | null | undefined): string {
+  return String(symbol ?? '')
+    .trim()
+    .toUpperCase();
+}
+
+export function isNftRoomExclusiveMiningCoin(
+  coin: Pick<MiningCoin, 'id' | 'symbol'> | string | null | undefined
+): boolean {
+  if (coin == null) return false;
+  if (typeof coin === 'string') {
+    const low = coin.trim().toLowerCase();
+    if (!low) return false;
+    return (NFT_EXCLUSIVE_COIN_ID_KEYS as readonly string[]).some(
+      (k) => low === k || low.endsWith(`_${k}`) || low.startsWith(`${k}_`)
+    );
+  }
+  const sym = normalizeMiningCoinSymbolKey(coin.symbol);
+  if ((NFT_ROOM_EXCLUSIVE_MINING_COIN_SYMBOLS as readonly string[]).includes(sym)) return true;
+  return isNftRoomExclusiveMiningCoin(coin.id);
+}
+
+/** Moedas que podem ser escolhidas na rig (salas normais). */
+export function miningCoinsSelectableOnRig(coins: MiningCoin[]): MiningCoin[] {
+  return coins.filter((c) => !isNftRoomExclusiveMiningCoin(c));
+}
+
+/** USDT, cbBTC, DAI, GHO, GEMT — selector admin e listagens NFT. */
+export function filterNftRoomExclusiveMiningCoins(coins: MiningCoin[]): MiningCoin[] {
+  return coins.filter((c) => isNftRoomExclusiveMiningCoin(c));
+}
+
+export function isNftRoomStableUsdCoin(
+  coin: Pick<MiningCoin, 'id' | 'symbol'> | string | null | undefined
+): boolean {
+  if (coin == null) return false;
+  const sym =
+    typeof coin === 'string'
+      ? normalizeMiningCoinSymbolKey(coin)
+      : normalizeMiningCoinSymbolKey(coin.symbol) ||
+        (isNftRoomExclusiveMiningCoin(coin.id) ? normalizeMiningCoinSymbolKey(coin.id) : '');
+  return (NFT_ROOM_STABLE_USD_SYMBOLS as readonly string[]).includes(sym);
+}
+
+/** Taxa USD para payback/estimativas NFT (stables → $1; cbBTC exige taxa no admin). */
+export function resolveNftRoomCoinUsdRate(coin: MiningCoin | undefined): number {
+  if (!coin) return 0;
+  const usdc = Number(coin.usdcRate);
+  if (Number.isFinite(usdc) && usdc > 0) return usdc;
+  const px = Number(coin.priceUSD);
+  if (Number.isFinite(px) && px > 0) return px;
+  if (isNftRoomStableUsdCoin(coin)) return 1;
+  return 0;
+}
 
 export function normalizeRigRoomPolicyNameKey(name: string | null | undefined): string {
   return String(name || '').toLowerCase().trim().replace(/\s+/g, ' ');
@@ -98,6 +262,8 @@ export interface PlacedRack {
   id: string;
   itemId: string; // The upgrade ID (e.g., 'rack_10u')
   slots: (string | null)[]; // Variable size based on rack type
+  /** UUID de lease por slot (ASIC com validade). */
+  slotLeaseIds?: (string | null)[];
   roomId: string;
   slotIndex: number;
 
@@ -242,6 +408,12 @@ export interface GameState {
   placedRacks: PlacedRack[];
   playerListings: MarketListing[]; // Items the player is selling
   coinBalances?: Record<string, number>;
+  /** USD recuperado por mineração de ASICs na Sala NFT (servidor). */
+  nftAsicMinedUsdTotal?: number;
+  /** Resumo de ASICs com validade (stock/equipados + expiração mais próxima). */
+  asicLeases?: AsicLeaseSummary[];
+  /** Leases activos (para tempo restante por slot). */
+  asicLeaseDetails?: AsicLeaseDetail[];
 
   // Referral State
   claimedReferrals: number;
@@ -292,6 +464,8 @@ export interface User {
   lastActiveAt?: number;
   isNewRegistration?: boolean;
   isImpersonating?: boolean;
+  emailVerified?: boolean;
+  emailVerificationRequired?: boolean;
   id?: string;
   adminPermissions?: string[];
   /** Não persistido no utilizador; só enviado no body de login/registo. */
@@ -306,7 +480,18 @@ export interface Web3Settings {
   depositTokenContractBase?: string;
   withdrawTokenName: string;
   withdrawTokenContract: string;
-  withdrawTokens?: Array<{ name: string; contract: string; payoutWallet: string; minAmount?: number; minWithdrawalUsdc?: number; feePercent?: number; disabled?: boolean }>;
+  withdrawTokens?: Array<{
+    name: string;
+    symbol?: string;
+    coinId?: string;
+    network?: 'polygon' | 'bnb' | 'base';
+    contract: string;
+    payoutWallet: string;
+    minAmount?: number;
+    minWithdrawalUsdc?: number;
+    feePercent?: number;
+    disabled?: boolean;
+  }>;
   minDepositUsdc?: number;
   depositPolygonDisabled?: boolean;
   depositBnbDisabled?: boolean;
@@ -475,6 +660,43 @@ export interface HistoryMultiAccountInfo {
   emails: string[];
 }
 
+export interface SharedIpUserInfo {
+  id: number;
+  username: string;
+  email: string;
+  registrationIp?: string | null;
+  lastUsedAt?: number | null;
+  isBlocked?: boolean;
+}
+
+export interface SharedRegistrationIpGroup {
+  ip: string;
+  userCount: number;
+  users: SharedIpUserInfo[];
+}
+
+export interface SharedDeviceIpGroup {
+  ip: string;
+  userCount: number;
+  lastSeenAt?: number | null;
+  users: SharedIpUserInfo[];
+}
+
+export interface SharedFingerprintUserInfo {
+  id: number;
+  username: string;
+  email: string;
+  lastIp?: string | null;
+  lastSeenAt?: number | null;
+}
+
+export interface SharedFingerprintGroup {
+  fingerprintHash: string;
+  userCount: number;
+  lastSeenAt?: number | null;
+  users: SharedFingerprintUserInfo[];
+}
+
 export interface SuspectedAutoReferral {
   referrer_id: number;
   referrer_username: string;
@@ -509,12 +731,24 @@ export interface BlacklistEntry {
   linkedUsers?: BlacklistLinkedUser[];
 }
 
+export interface BlockedUserEntry {
+  id: number;
+  username: string;
+  email: string;
+  registrationIp?: string | null;
+  blockedAt?: number | null;
+}
+
 export interface SecurityStats {
   multiAccounts: MultiAccountInfo[];
   historyMultiAccounts: HistoryMultiAccountInfo[];
+  sharedRegistrationIps: SharedRegistrationIpGroup[];
+  sharedDeviceIps: SharedDeviceIpGroup[];
+  sharedFingerprints: SharedFingerprintGroup[];
   suspectedAutoReferrals: SuspectedAutoReferral[];
   accessLogs: AccessLog[];
   blacklist: BlacklistEntry[];
+  blockedUsers: BlockedUserEntry[];
 }
 
 /** Linha de atividade de jogo (MongoDB `game_activity_logs`; id = ObjectId em string). */

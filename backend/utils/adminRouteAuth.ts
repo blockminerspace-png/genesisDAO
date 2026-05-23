@@ -68,7 +68,8 @@ export function resolveAdminRouteRequirement(method: string, rawPath: string): A
   const p = String(rawPath || '').split('?')[0];
 
   if (p === '/api/admin/update-permissions') return { kind: 'super' };
-  if (p === '/api/admin/impersonate') return { kind: 'super' };
+  /** Personificar jogador (Acessar Conta) — alinhado com Gestão de Utilizadores. */
+  if (p === '/api/admin/impersonate' && method.toUpperCase() === 'POST') return { kind: 'tab', tab: 'users' };
   if (p === '/api/admin/bulk-delete') return { kind: 'super' };
   if (p === '/api/admin/recall-all-players-items') return { kind: 'super' };
   if (p === '/api/admin/restore') return { kind: 'super' };
@@ -86,6 +87,7 @@ export function resolveAdminRouteRequirement(method: string, rawPath: string): A
   if (p === '/api/admin/upload-ad') return { kind: 'anyOf', tabs: ['partners', 'settings:news'] };
 
   if (p.startsWith('/api/admin/support-tickets')) return { kind: 'tab', tab: 'support' };
+  if (p.startsWith('/api/admin/support/')) return { kind: 'tab', tab: 'support' };
   if (p === '/api/admin/device-fingerprints') return { kind: 'tab', tab: 'security' };
   if (p.startsWith('/api/admin/security/')) return { kind: 'tab', tab: 'security' };
 
@@ -140,6 +142,19 @@ export function resolveAdminRouteRequirement(method: string, rawPath: string): A
 
   if (p === '/api/admin/ranking') return { kind: 'tab', tab: 'users' };
   if (p === '/api/admin/accounts-dormant-mining') return { kind: 'tab', tab: 'users' };
+  /** Gravar estado do jogo a partir da Gestão de Utilizadores — antes caía no catch-all `/api/admin/*` → `super`. */
+  if (method.toUpperCase() === 'POST' && /^\/api\/admin\/users\/[^/]+\/save-game-override$/.test(p)) {
+    return { kind: 'tab', tab: 'users' };
+  }
+  if (method.toUpperCase() === 'GET' && /^\/api\/admin\/users\/[^/]+\/wallet-history$/.test(p)) {
+    return { kind: 'tab', tab: 'users' };
+  }
+  if (
+    method.toUpperCase() === 'GET' &&
+    (p === '/api/admin/users/suspicious-emails' || p === '/api/admin/users/suspicious-emails/export.csv')
+  ) {
+    return { kind: 'tab', tab: 'users' };
+  }
   if (p.startsWith('/api/admin/economy-stats')) return { kind: 'tab', tab: 'reports' };
   if (p.startsWith('/api/admin/mining-runtime-summary')) return { kind: 'tab', tab: 'reports' };
   if (p.startsWith('/api/admin/etherscan/')) return { kind: 'tab', tab: 'reports' };

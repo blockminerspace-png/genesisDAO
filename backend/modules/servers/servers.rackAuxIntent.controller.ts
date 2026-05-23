@@ -28,11 +28,23 @@ import {
   placeRackIntentFingerprint,
   rackBatteryCatalogHintsFromPlacedRacks,
   type RackAuxApplyFn,
+  type RackAuxApplyResult,
   type RackAuxEquipInput,
   type RackAuxUnequipInput,
   type RackAuxUpgradeRow,
   type StoredBatteryRowLite
 } from './servers.rackAuxIntent.service.js';
+import {
+  expireUserAsicLeases,
+  finalizeTimedMinerEquip,
+  isTimedAsicDuration,
+  loadAsicDurationConfig,
+  normalizeAsicDurationConfig,
+  purgeEquippedLeasesOnRack,
+  releaseEquippedAsicLease,
+  releaseEquippedAsicLeaseById,
+  applyTimedStockQtyToSnapshot
+} from '../../lib/asicLease.js';
 
 const RACK_ID_RE = /^[a-zA-Z0-9_.-]{1,200}$/;
 
@@ -142,10 +154,19 @@ async function runRackAuxMutation(
     clientStateVersion: number | null;
     requestFingerprint?: string | null;
     apply: RackAuxApplyFn;
+    postApply?: (
+      client: import('pg').PoolClient,
+      ctx: {
+        prev: { stock: Record<string, number>; storedBatteries: StoredBatteryRowLite[]; placedRacks: PlacedRackLoaded[] };
+        out: RackAuxApplyResult & { ok: true };
+        upgrades: RackAuxUpgradeRow[];
+        nowMs: number;
+      }
+    ) => Promise<RackAuxApplyResult | void>;
   }
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const { pool, prisma, appendGameActivityLog, validatePlacedRacksForSave, sanitizePlacedRacksNftAutoRoom } = deps;
-  const { userId, rackId, idem, scope, clientStateVersion, requestFingerprint, apply } = args;
+  const { userId, rackId, idem, scope, clientStateVersion, requestFingerprint, apply, postApply } = args;
 
   const replay = await readIdempotencyReplay(prisma, userId, scope, idem);
   if (replay) {
@@ -230,6 +251,9 @@ async function runRackAuxMutation(
       );
     }
 
+    const nowMs = Date.now();
+    await expireUserAsicLeases(client, userId, nowMs);
+
     // Same `pg` client: não usar Promise.all — queries em paralelo corrompem o fluxo do driver.
     const stock = await loadUserStock(client, userId);
     const storedBatteries = await loadUserStoredBatteries(client, userId);
@@ -240,13 +264,17 @@ async function runRackAuxMutation(
       id: u.id,
       type: u.type,
       category: u.category,
+      nftMiningCoinId: u.nftMiningCoinId ?? null,
       powerCapacity: u.powerCapacity,
       name: u.name ?? null,
       image: null,
       slotsCapacity: u.slotsCapacity,
       aiSlotsCapacity: u.aiSlotsCapacity,
       isActive: u.isActive,
-      compatibleRacks: Array.isArray(u.compatibleRacks) ? u.compatibleRacks : []
+      compatibleRacks: Array.isArray(u.compatibleRacks) ? u.compatibleRacks : [],
+      asicDurationAmount: Number(u.asicDurationAmount) || 0,
+      asicDurationUnit: u.asicDurationUnit ?? null,
+      asicDurationKind: u.asicDurationKind ?? null
     }));
 
     const prevForBulk = {
@@ -282,10 +310,18 @@ async function runRackAuxMutation(
         })
       );
     }
-    const out = apply(prev, upgrades, rackHints);
+    let out = apply(prev, upgrades, rackHints);
     if (!out.ok) {
       await client.query('ROLLBACK');
       return { status: 400, body: { ok: false, error: out.error } };
+    }
+    if (postApply) {
+      const post = await postApply(client, { prev, out, upgrades, nowMs });
+      if (post && !post.ok) {
+        await client.query('ROLLBACK');
+        return { status: 400, body: { ok: false, error: post.error } };
+      }
+      if (post && post.ok) out = post;
     }
     if (process.env.GPU_DUP_DEBUG === '1') {
       const rackOut = out.placedRacks.find((r) => r.id === rackId);
@@ -477,7 +513,10 @@ export function registerServersRackAuxIntentRoutes(app: Application, deps: Serve
         idem,
         scope: `srv_remove_rack:${rackId}`,
         clientStateVersion,
-        apply: (prev, upgrades, rackHints) => applyRemoveRackToStock(prev, rackId, upgrades, rackHints)
+        apply: (prev, upgrades, rackHints) => applyRemoveRackToStock(prev, rackId, upgrades, rackHints),
+        postApply: async (client, { nowMs }) => {
+          await purgeEquippedLeasesOnRack(client, userId, rackId, nowMs);
+        }
       });
       return res.status(r.status).json(r.body);
     } catch (e) {
@@ -510,7 +549,22 @@ export function registerServersRackAuxIntentRoutes(app: Application, deps: Serve
         idem,
         scope: `rack_miner_equip:${rackId}:${Math.floor(slotIndex)}`,
         clientStateVersion,
-        apply: (prev, upgrades) => applyRackMinerEquip(prev, rackId, slotIndex, catalogItemId, upgrades)
+        apply: (prev, upgrades) => applyRackMinerEquip(prev, rackId, slotIndex, catalogItemId, upgrades),
+        postApply: async (client, { out, nowMs }) => {
+          const cfg = await loadAsicDurationConfig(client, catalogItemId);
+          if (!isTimedAsicDuration(cfg)) return;
+          const fin = await finalizeTimedMinerEquip(
+            client,
+            userId,
+            rackId,
+            Math.floor(slotIndex),
+            catalogItemId,
+            out.placedRacks,
+            out.stock,
+            nowMs
+          );
+          if (!fin.ok) return fin;
+        }
       });
       return res.status(r.status).json(r.body);
     } catch (e) {
@@ -540,7 +594,23 @@ export function registerServersRackAuxIntentRoutes(app: Application, deps: Serve
         idem,
         scope: `rack_miner_unequip:${rackId}:${Math.floor(slotIndex)}`,
         clientStateVersion,
-        apply: (prev) => applyRackMinerUnequip(prev, rackId, slotIndex)
+        apply: (prev, upgrades) => applyRackMinerUnequip(prev, rackId, slotIndex, upgrades),
+        postApply: async (client, { prev: prevSnap, out, nowMs }) => {
+          const si = Math.floor(slotIndex);
+          const rackPrev = prevSnap.placedRacks.find((r) => r.id === rackId);
+          const itemId =
+            rackPrev?.slots?.[si] != null ? String(rackPrev.slots[si]).trim() : '';
+          const leaseId =
+            rackPrev?.slotLeaseIds?.[si] != null ? String(rackPrev.slotLeaseIds[si]).trim() : '';
+          if (leaseId) {
+            await releaseEquippedAsicLeaseById(client, userId, leaseId, itemId, nowMs);
+          } else if (itemId) {
+            await releaseEquippedAsicLease(client, userId, rackId, si, nowMs);
+          }
+          if (itemId && isTimedAsicDuration(await loadAsicDurationConfig(client, itemId))) {
+            await applyTimedStockQtyToSnapshot(client, userId, out.stock, itemId, nowMs);
+          }
+        }
       });
       return res.status(r.status).json(r.body);
     } catch (e) {

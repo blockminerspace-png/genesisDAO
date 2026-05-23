@@ -28,6 +28,7 @@ import {
   type StoredBatteryRowSnap
 } from '../modules/batteries/batteries.repository.js';
 import { normalizeKnown1000WhBatteryCatalogId } from '../modules/batteries/batteries.catalog.js';
+import { reconcileTimedAsicStockLeases } from './asicLease.js';
 
 export { loadUserStoredBatteries, normalizePlacedRackRoomId };
 
@@ -45,6 +46,8 @@ export type PlacedRackLoaded = {
   id: string;
   itemId: string;
   slots: string[];
+  /** UUID de `player_asic_leases` por slot de GPU (paralelo a `slots`). */
+  slotLeaseIds?: string[];
   multiplierSlots: string[];
   wiringId: string | null;
   batteryId: string | null;
@@ -66,7 +69,7 @@ export async function loadUserPlacedRacksWithSlots(client: PoolClient, uid: numb
   const rackIds = rackRows.map((r) => String(r.id));
   const [slotsRes, multipliersRes] = await Promise.all([
     client.query(
-      'SELECT rack_id, slot_index, machine_item_id FROM rack_slots WHERE rack_id = ANY($1) ORDER BY slot_index',
+      'SELECT rack_id, slot_index, machine_item_id, machine_lease_id FROM rack_slots WHERE rack_id = ANY($1) ORDER BY slot_index',
       [rackIds]
     ),
     client.query(
@@ -76,12 +79,26 @@ export async function loadUserPlacedRacksWithSlots(client: PoolClient, uid: numb
   ]);
 
   const slotsMap = new Map<string, string[]>();
+  const slotLeaseMap = new Map<string, string[]>();
   const multipliersMap = new Map<string, string[]>();
 
-  slotsRes.rows.forEach((s: { rack_id: string; slot_index: number; machine_item_id: string }) => {
-    if (!slotsMap.has(s.rack_id)) slotsMap.set(s.rack_id, []);
+  slotsRes.rows.forEach((s: {
+    rack_id: string;
+    slot_index: number;
+    machine_item_id: string | null;
+    machine_lease_id?: string | null;
+  }) => {
+    if (!slotsMap.has(s.rack_id)) {
+      slotsMap.set(s.rack_id, []);
+      slotLeaseMap.set(s.rack_id, []);
+    }
     const arr = slotsMap.get(s.rack_id)!;
-    arr[s.slot_index] = s.machine_item_id;
+    const leaseArr = slotLeaseMap.get(s.rack_id)!;
+    arr[s.slot_index] = s.machine_item_id != null ? String(s.machine_item_id) : '';
+    leaseArr[s.slot_index] =
+      s.machine_lease_id != null && String(s.machine_lease_id).trim()
+        ? String(s.machine_lease_id).trim()
+        : '';
   });
 
   multipliersRes.rows.forEach((m: { rack_id: string; slot_index: number; multiplier_item_id: string }) => {
@@ -97,6 +114,7 @@ export async function loadUserPlacedRacksWithSlots(client: PoolClient, uid: numb
       id,
       itemId: String(r.item_id ?? ''),
       slots: slotsMap.get(id) || [],
+      slotLeaseIds: slotLeaseMap.get(id) || [],
       multiplierSlots: multipliersMap.get(id) || [],
       wiringId: (r.wiring_id as string | null) ?? null,
       batteryId: (r.battery_id as string | null) ?? null,
@@ -130,6 +148,10 @@ export type UpgradeWithCompat = {
   compatibleRacks: string[];
   /** 0 = inativo no catálogo (não colocar nova rig). */
   isActive?: number;
+  nftMiningCoinId?: string | null;
+  asicDurationKind?: string | null;
+  asicDurationAmount?: number;
+  asicDurationUnit?: string | null;
 };
 
 export async function loadUpgradesWithCompat(client: PoolClient): Promise<UpgradeWithCompat[]> {
@@ -156,7 +178,20 @@ export async function loadUpgradesWithCompat(client: PoolClient): Promise<Upgrad
     description: String(r.description ?? ''),
     icon: String(r.icon ?? ''),
     status: String(r.status ?? ''),
-    compatibleRacks: compatMap[String(r.id)] || []
+    compatibleRacks: compatMap[String(r.id)] || [],
+    nftMiningCoinId:
+      r.nft_mining_coin_id != null && String(r.nft_mining_coin_id).trim()
+        ? String(r.nft_mining_coin_id).trim()
+        : null,
+    asicDurationKind:
+      r.asic_duration_kind != null && String(r.asic_duration_kind).trim()
+        ? String(r.asic_duration_kind).trim()
+        : 'none',
+    asicDurationAmount: Math.max(0, Math.floor(Number(r.asic_duration_amount) || 0)),
+    asicDurationUnit:
+      r.asic_duration_unit != null && String(r.asic_duration_unit).trim()
+        ? String(r.asic_duration_unit).trim()
+        : null
   }));
 }
 
@@ -395,6 +430,24 @@ export async function persistStockStoredBatteriesPlacedRacks(
           ON CONFLICT (user_id, item_id) DO UPDATE SET qty = EXCLUDED.qty`,
         [uid, itemIds, qtys]
       );
+    }
+
+    const nowMs = Date.now();
+    const userIdNum = Number(uid);
+    for (const [itemId, qty] of stockNorm.entries()) {
+      await reconcileTimedAsicStockLeases(client, userIdNum, itemId, qty, nowMs);
+    }
+    if (stockMode === 'snapshot') {
+      const leaseItems = await client.query(
+        `SELECT DISTINCT item_id FROM player_asic_leases WHERE user_id = $1`,
+        [uid]
+      );
+      for (const row of leaseItems.rows as { item_id: string }[]) {
+        const id = String(row.item_id || '').trim();
+        if (id && !stockNorm.has(id)) {
+          await reconcileTimedAsicStockLeases(client, userIdNum, id, 0, nowMs);
+        }
+      }
     }
   }
 
@@ -658,6 +711,7 @@ export async function persistStockStoredBatteriesPlacedRacks(
       const allSlotsRackId: string[] = [];
       const allSlotsIdx: number[] = [];
       const allSlotsItem: string[] = [];
+      const allSlotsLease: (string | null)[] = [];
 
       const allMultiRackId: string[] = [];
       const allMultiIdx: number[] = [];
@@ -665,11 +719,14 @@ export async function persistStockStoredBatteriesPlacedRacks(
 
       for (const r of placedRacks) {
         if (r.slots) {
+          const leases = r.slotLeaseIds || [];
           for (let i = 0; i < r.slots.length; i++) {
             if (r.slots[i]) {
               allSlotsRackId.push(r.id);
               allSlotsIdx.push(i);
               allSlotsItem.push(String(r.slots[i]));
+              const leaseRaw = leases[i] != null ? String(leases[i]).trim() : '';
+              allSlotsLease.push(leaseRaw || null);
             }
           }
         }
@@ -686,8 +743,9 @@ export async function persistStockStoredBatteriesPlacedRacks(
 
       if (allSlotsRackId.length > 0) {
         await client.query(
-          `INSERT INTO rack_slots (rack_id, slot_index, machine_item_id) SELECT unnest($1::text[]), unnest($2::int[]), unnest($3::text[])`,
-          [allSlotsRackId, allSlotsIdx, allSlotsItem]
+          `INSERT INTO rack_slots (rack_id, slot_index, machine_item_id, machine_lease_id)
+           SELECT unnest($1::text[]), unnest($2::int[]), unnest($3::text[]), unnest($4::uuid[])`,
+          [allSlotsRackId, allSlotsIdx, allSlotsItem, allSlotsLease]
         );
       }
       if (allMultiRackId.length > 0) {

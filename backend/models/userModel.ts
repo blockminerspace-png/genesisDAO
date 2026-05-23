@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { resolveRegistrationIp } from '../utils/clientIp.js';
 import { assertPublicSignupEmailAllowed } from './registrationValidation.js';
 import { generateReferralCode } from './signupPolicy.js';
 import { prisma } from '../config/prisma.js';
@@ -14,12 +15,9 @@ export class EmailPolicyError extends Error {
 }
 
 export class IpLimitError extends Error {
-  readonly existingAccounts: { username: string; email: string }[];
-
-  constructor(message: string, accounts: { username: string; email: string }[]) {
+  constructor(message: string) {
     super(message);
     this.name = 'IpLimitError';
-    this.existingAccounts = accounts;
   }
 }
 
@@ -73,15 +71,11 @@ export async function getUserIdByEmail(
         throw new EmailPolicyError(policy.error);
       }
     }
-    if (ip) {
-      const count = await prisma.users.count({ where: { registration_ip: ip } });
+    const registrationIp = resolveRegistrationIp(ip);
+    if (registrationIp) {
+      const count = await prisma.users.count({ where: { registration_ip: registrationIp } });
       if (count >= 3) {
-        const existingRows = await prisma.users.findMany({
-          where: { registration_ip: ip },
-          take: 3,
-          select: { username: true, email: true }
-        });
-        throw new IpLimitError('Limite de 3 contas por IP atingido.', existingRows);
+        throw new IpLimitError('Não foi possível concluir o cadastro a partir desta ligação. Tente novamente mais tarde.');
       }
     }
 
@@ -92,7 +86,7 @@ export async function getUserIdByEmail(
         referral_code: code,
         is_admin: 0,
         is_blocked: 0,
-        registration_ip: ip
+        registration_ip: registrationIp
       },
       select: { id: true }
     });
@@ -100,9 +94,9 @@ export async function getUserIdByEmail(
     const now = Date.now();
     const nowBig = BigInt(now);
 
-    if (ip) {
+    if (registrationIp) {
       await prisma.user_history_ips.createMany({
-        data: [{ user_id: newUid, ip, last_used_at: nowBig }],
+        data: [{ user_id: newUid, ip: registrationIp, last_used_at: nowBig }],
         skipDuplicates: true
       });
     }

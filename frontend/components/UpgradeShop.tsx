@@ -306,6 +306,7 @@ export const UpgradeShop: React.FC<UpgradeShopProps> = ({
 
   const formatProduction = (val: number) => {
     if (val < 0.0001) return val.toFixed(8);
+    if (val < 1) return val.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
     return Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(val);
   };
 

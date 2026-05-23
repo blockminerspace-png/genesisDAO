@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg';
 import { stableIntentFingerprint } from '../../lib/gameIntentIdempotencyPrisma.js';
+import { resolveMiningCoinUsdRate } from '../../lib/nftRoomMining.js';
 import { RoletaAppError } from '../../validation/roletaValidation.js';
 import { walletAdvisoryLockKey64 } from './walletLocks.js';
 
@@ -136,11 +137,13 @@ export async function runExchangeLiquidation(
     const coinRes = await client.query<{
       id: string;
       name: string;
+      symbol: string;
       usdc_rate: string;
+      price_usd: string;
       sx: number;
       is_active: number;
     }>(
-      `SELECT id, name, usdc_rate::text, COALESCE(show_in_exchange, 1) AS sx, is_active
+      `SELECT id, name, symbol, usdc_rate::text, price_usd::text, COALESCE(show_in_exchange, 1) AS sx, is_active
        FROM mining_coins WHERE id = $1`,
       [coinId]
     );
@@ -152,7 +155,12 @@ export async function runExchangeLiquidation(
       throw new RoletaAppError('Esta moeda não está disponível no desk de câmbio.', 422);
     }
 
-    const rate = Number(coinDef.usdc_rate);
+    const rate = resolveMiningCoinUsdRate({
+      id: coinDef.id,
+      symbol: coinDef.symbol,
+      usdc_rate: coinDef.usdc_rate,
+      price_usd: coinDef.price_usd
+    });
     if (!Number.isFinite(rate) || rate <= 0) {
       throw new RoletaAppError('Taxa USDC da moeda indisponível.', 500);
     }

@@ -13,6 +13,10 @@ interface ConfigViewProps {
   onSave: () => void;
   gameUpgrades: Upgrade[];
   loading?: boolean;
+  paidWheelEnabled: boolean;
+  onPaidWheelEnabledChange: (v: boolean) => void;
+  paidSpinPriceUsdc: number;
+  onPaidSpinPriceUsdcChange: (v: number) => void;
 }
 
 interface Player {
@@ -20,7 +24,17 @@ interface Player {
   added_at: number;
 }
 
-const ConfigView: React.FC<ConfigViewProps> = ({ items, setItems, onSave, gameUpgrades, loading }) => {
+const ConfigView: React.FC<ConfigViewProps> = ({
+  items,
+  setItems,
+  onSave,
+  gameUpgrades,
+  loading,
+  paidWheelEnabled,
+  onPaidWheelEnabledChange,
+  paidSpinPriceUsdc,
+  onPaidSpinPriceUsdcChange
+}) => {
   const [selectedItemId, setSelectedItemId] = useState('');
   const [newItemWeight, setNewItemWeight] = useState(10);
 
@@ -142,6 +156,57 @@ const ConfigView: React.FC<ConfigViewProps> = ({ items, setItems, onSave, gameUp
           >
             Fixar 100%
           </button>
+        </div>
+
+        <div className="mb-8 rounded-2xl border border-emerald-600/35 bg-slate-900/80 p-5 shadow-inner">
+          <p className="text-[10px] font-black uppercase tracking-widest text-emerald-400/90">Roleta paga (USDC)</p>
+          <p className="mt-1 text-xs text-slate-500">
+            Giro debitado no saldo USDC do jogo — não afeta a roleta por código promocional.
+          </p>
+          <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div className="flex flex-col gap-2">
+              <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Estado</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={paidWheelEnabled}
+                onClick={() => onPaidWheelEnabledChange(!paidWheelEnabled)}
+                className={`relative inline-flex h-9 w-[3.25rem] shrink-0 items-center rounded-full border-2 transition-colors ${
+                  paidWheelEnabled
+                    ? 'border-emerald-500/60 bg-emerald-600/30'
+                    : 'border-slate-600 bg-slate-800'
+                }`}
+              >
+                <span
+                  className={`inline-block h-6 w-6 transform rounded-full bg-white shadow transition-transform ${
+                    paidWheelEnabled ? 'translate-x-5' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+              <span className="text-xs font-bold text-slate-300">{paidWheelEnabled ? 'Ativa' : 'Desativada'}</span>
+            </div>
+            <div className="flex-1 sm:max-w-[12rem]">
+              <label className="block text-[10px] font-black text-slate-500 mb-2 ml-1 uppercase tracking-widest">
+                Preço por giro (USDC)
+              </label>
+              <input
+                type="number"
+                min={0.1}
+                step={0.01}
+                value={paidSpinPriceUsdc}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (!Number.isFinite(v)) {
+                    onPaidSpinPriceUsdcChange(0.1);
+                    return;
+                  }
+                  onPaidSpinPriceUsdcChange(Math.round(Math.max(0.1, v) * 100) / 100);
+                }}
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-white font-bold font-mono"
+              />
+              <p className="mt-1 text-[10px] text-slate-600">Mínimo 0,10 USDC (servidor).</p>
+            </div>
+          </div>
         </div>
 
         <form onSubmit={addItem} className="flex flex-col gap-3 mb-8 bg-slate-900 p-5 rounded-2xl border border-slate-700 shadow-inner">

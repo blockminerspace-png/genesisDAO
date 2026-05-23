@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Upgrade, StoredBattery } from '../types';
+import { Upgrade, StoredBattery, type AsicLeaseSummary } from '../types';
 import type { InventoryStackableCategoryApi } from '../services/api';
 import { Package, Zap, Battery, Activity, Save, Hexagon } from 'lucide-react';
 import { normalizePublicAssetUrl } from '../utils/publicUrl';
@@ -11,6 +11,7 @@ interface InventoryViewProps {
     upgrades: Upgrade[];
     /** Quando definido (GET `/api/inventory/state`), categorias e linhas vêm do servidor — sem recalcular stock no cliente. */
     inventoryStackableCategories?: InventoryStackableCategoryApi[] | null;
+    asicLeases?: AsicLeaseSummary[] | null;
 }
 
 /** Placeholder legacy-temp: mostrar o item real se o id original existir na lista de upgrades. */
@@ -44,7 +45,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     stock,
     storedBatteries = [],
     upgrades,
-    inventoryStackableCategories = null
+    inventoryStackableCategories = null,
+    asicLeases: _asicLeases = null
 }) => {
     // Filter items that we actually have in stock
     const ownedItems = (Object.entries(stock) as [string, number][])
@@ -74,6 +76,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
     const formatProduction = (val: number) => {
         if (val < 0.0001) return val.toFixed(8);
+        if (val < 1) return val.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
         return Intl.NumberFormat('en-US', { notation: "compact", maximumFractionDigits: 1 }).format(val);
     }
 
@@ -201,7 +204,6 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                                         row.displayQuantity !== row.availableQuantity
                                             ? `${row.availableQuantity}/${row.displayQuantity}`
                                             : String(row.displayQuantity);
-
                                     const containerAspectRatio = isRack
                                         ? 'aspect-[5/6]'
                                         : isMachine

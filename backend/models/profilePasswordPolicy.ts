@@ -20,10 +20,7 @@ export type ProfilePasswordStrength = { ok: true } | { ok: false; error: string 
 /**
  * Regra de perfil: mais forte que o cadastro legado (mínimo + letras e números + não comum + diferente da atual).
  */
-export async function validateProfileNewPasswordStrength(
-  newPassword: string,
-  currentHash: string | null | undefined
-): Promise<ProfilePasswordStrength> {
+export function validatePasswordStrengthPolicy(newPassword: string): ProfilePasswordStrength {
   const p = String(newPassword || '');
   if (p.length < 10) {
     return { ok: false, error: 'A nova palavra-passe deve ter pelo menos 10 caracteres.' };
@@ -40,6 +37,16 @@ export async function validateProfileNewPasswordStrength(
   if (COMMON_WEAK.has(lower)) {
     return { ok: false, error: 'Esta palavra-passe é demasiado comum. Escolha outra.' };
   }
+  return { ok: true };
+}
+
+export async function validateProfileNewPasswordStrength(
+  newPassword: string,
+  currentHash: string | null | undefined
+): Promise<ProfilePasswordStrength> {
+  const base = validatePasswordStrengthPolicy(newPassword);
+  if (!base.ok) return base;
+  const p = String(newPassword || '');
   if (currentHash && (await bcrypt.compare(p, currentHash))) {
     return { ok: false, error: 'A nova palavra-passe não pode ser igual à atual.' };
   }

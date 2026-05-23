@@ -127,6 +127,7 @@ export function registerWheelPlayerRoutes(app: Express, deps: WheelPlayerDeps): 
       return res.json({
         ok: true,
         config: cfg,
+        paidWheelEnabled: cfg.isEnabled,
         spinPriceUsdc: cfg.spinPriceUsdc,
         usdcBalance: usdc,
         legacyPaidPending,

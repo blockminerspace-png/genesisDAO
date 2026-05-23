@@ -1,4 +1,11 @@
 import { prisma } from '../config/db.js';
+import { normalizePlacedRackRoomId } from '../modules/batteries/batteries.validation.js';
+import {
+  listSlotMiningCredits,
+  NFT_AUTO_POLICY_ROOM_NAME_KEYS,
+  NFT_AUTO_ROOM_ID,
+  type UpgradeMiningRow
+} from './nftRoomMining.js';
 
 type CoinLite = { id: string; name: string; symbol: string };
 
@@ -12,17 +19,114 @@ type AdminRankingUser = PublicRankingUser & {
   balances: Record<string, number>;
 };
 
-function groupByRackId<T extends { rack_id: string }>(rows: T[]): Map<string, T[]> {
-  const m = new Map<string, T[]>();
+function normalizeRigRoomPolicyNameKey(name: unknown): string {
+  return String(name ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+async function loadNftMiningRoomIds(): Promise<Set<string>> {
+  const rows = await prisma.rig_rooms.findMany({ select: { id: true, name: true } });
+  const policyKeys = new Set<string>(NFT_AUTO_POLICY_ROOM_NAME_KEYS);
+  const ids = new Set<string>();
+  const canonical = normalizePlacedRackRoomId(NFT_AUTO_ROOM_ID);
   for (const r of rows) {
-    const k = r.rack_id;
-    if (!m.has(k)) m.set(k, []);
-    m.get(k)!.push(r);
+    const id = normalizePlacedRackRoomId(r.id);
+    if (id === canonical || policyKeys.has(normalizeRigRoomPolicyNameKey(r.name))) ids.add(id);
+  }
+  ids.add(canonical);
+  return ids;
+}
+
+function buildUpgradesMiningMap(
+  upgrades: Array<{
+    id: string;
+    type: string;
+    category: string;
+    base_production: number;
+    multiplier: number | null;
+    nft_mining_coin_id: string | null;
+  }>
+): Map<string, UpgradeMiningRow> {
+  const m = new Map<string, UpgradeMiningRow>();
+  for (const u of upgrades) {
+    m.set(u.id, {
+      id: u.id,
+      type: u.type,
+      category: u.category,
+      base_production: u.base_production,
+      multiplier: u.multiplier,
+      nft_mining_coin_id: u.nft_mining_coin_id
+    });
   }
   return m;
 }
 
-/** Ranking público: poder por moeda por utilizador (mesmas regras que o SQL anterior). */
+function slotIdsFromRows(rows: Array<{ machine_item_id: string | null }>): string[] {
+  const out: string[] = [];
+  for (const s of rows) {
+    if (s.machine_item_id) out.push(String(s.machine_item_id));
+  }
+  return out;
+}
+
+function multIdsFromRows(rows: Array<{ multiplier_item_id: string | null }>): string[] {
+  const out: string[] = [];
+  for (const m of rows) {
+    if (m.multiplier_item_id) out.push(String(m.multiplier_item_id));
+  }
+  return out;
+}
+
+/** Poder por moeda (alinhado com `listSlotMiningCredits` / header do jogo). */
+async function accumulateRankingPowerFromRacks(
+  rankingData: Map<number, PublicRankingUser>,
+  racks: Array<{
+    id: string;
+    user_id: number;
+    selected_coin_id: string | null;
+    room_id: string | null;
+  }>,
+  slotsByRack: Map<string, Array<{ machine_item_id: string | null }>>,
+  multByRack: Map<string, Array<{ multiplier_item_id: string | null }>>,
+  upgradesMining: Map<string, UpgradeMiningRow>,
+  nftRoomIds: Set<string>,
+  usernameById: Map<number, string>
+): Promise<void> {
+  for (const rack of racks) {
+    const uname = usernameById.get(rack.user_id);
+    if (uname == null) continue;
+
+    const slots = slotIdsFromRows(slotsByRack.get(rack.id) || []);
+    const multSlots = multIdsFromRows(multByRack.get(rack.id) || []);
+    const selectedCoinId = rack.selected_coin_id ? String(rack.selected_coin_id).trim() : '';
+    const credits = listSlotMiningCredits(
+      rack.room_id != null ? String(rack.room_id) : null,
+      slots,
+      multSlots,
+      upgradesMining,
+      selectedCoinId,
+      nftRoomIds
+    );
+    if (credits.length === 0) continue;
+
+    if (!rankingData.has(rack.user_id)) {
+      rankingData.set(rack.user_id, {
+        user_id: rack.user_id,
+        username: uname,
+        coins: {}
+      });
+    }
+    const uData = rankingData.get(rack.user_id)!;
+    for (const sc of credits) {
+      if (!Number.isFinite(sc.effectiveBaseProd) || sc.effectiveBaseProd <= 0) continue;
+      uData.coins[sc.coinId] = (uData.coins[sc.coinId] || 0) + sc.effectiveBaseProd;
+    }
+  }
+}
+
+/** Ranking público: poder por moeda por utilizador (mesmas regras que o jogo). */
 export async function getPublicMiningRankingPayload(): Promise<{
   timestamp: number;
   ranking: PublicRankingUser[];
@@ -31,10 +135,19 @@ export async function getPublicMiningRankingPayload(): Promise<{
   const coins = await prisma.mining_coins.findMany({
     select: { id: true, name: true, symbol: true }
   });
-  const coinsMap = new Map(coins.map((c) => [c.id, c]));
 
-  const upgrades = await prisma.upgrades.findMany();
-  const upgradesMap = new Map(upgrades.map((u) => [u.id, u]));
+  const upgrades = await prisma.upgrades.findMany({
+    select: {
+      id: true,
+      type: true,
+      category: true,
+      base_production: true,
+      multiplier: true,
+      nft_mining_coin_id: true
+    }
+  });
+  const upgradesMining = buildUpgradesMiningMap(upgrades);
+  const nftRoomIds = await loadNftMiningRoomIds();
 
   const eligibleUsers = await prisma.users.findMany({
     where: { is_blocked: 0, ranking_excluded: 0 },
@@ -52,6 +165,12 @@ export async function getPublicMiningRankingPayload(): Promise<{
             user_id: { in: eligibleIds },
             wiring_id: { not: null },
             battery_id: { not: null }
+          },
+          select: {
+            id: true,
+            user_id: true,
+            selected_coin_id: true,
+            room_id: true
           }
         });
 
@@ -70,56 +189,35 @@ export async function getPublicMiningRankingPayload(): Promise<{
           where: { rack_id: { in: rackIds } },
           select: { rack_id: true, multiplier_item_id: true }
         });
-  const slotsByRack = groupByRackId(allSlots);
-  const multByRack = groupByRackId(allMult);
+
+  const slotsByRack = new Map<string, Array<{ machine_item_id: string | null }>>();
+  for (const s of allSlots) {
+    const k = s.rack_id;
+    if (!slotsByRack.has(k)) slotsByRack.set(k, []);
+    slotsByRack.get(k)!.push(s);
+  }
+  const multByRack = new Map<string, Array<{ multiplier_item_id: string | null }>>();
+  for (const m of allMult) {
+    const k = m.rack_id;
+    if (!multByRack.has(k)) multByRack.set(k, []);
+    multByRack.get(k)!.push(m);
+  }
 
   const rankingData = new Map<number, PublicRankingUser>();
-
-  for (const rack of racks) {
-    if (!rack.selected_coin_id) continue;
-    const coinId = rack.selected_coin_id;
-    if (!coinsMap.has(coinId)) continue;
-
-    // Baterias são instâncias UUID infinitas: rig opera se já passou os filtros (is_on=1, wiring_id, battery_id).
-    const slots = slotsByRack.get(rack.id) || [];
-    let rackBaseProd = 0;
-    for (const s of slots) {
-      if (s.machine_item_id) {
-        const up = upgradesMap.get(s.machine_item_id);
-        if (up && up.base_production) rackBaseProd += up.base_production;
-      }
-    }
-    if (rackBaseProd === 0) continue;
-
-    const mults = multByRack.get(rack.id) || [];
-    let multiplierFactor = 1;
-    for (const m of mults) {
-      if (m.multiplier_item_id) {
-        const up = upgradesMap.get(m.multiplier_item_id);
-        if (up && up.multiplier) multiplierFactor += up.multiplier;
-      }
-    }
-
-    const totalPower = rackBaseProd * multiplierFactor;
-    const uname = usernameById.get(rack.user_id);
-    if (uname == null) continue;
-
-    if (!rankingData.has(rack.user_id)) {
-      rankingData.set(rack.user_id, {
-        user_id: rack.user_id,
-        username: uname,
-        coins: {}
-      });
-    }
-    const uData = rankingData.get(rack.user_id)!;
-    if (!uData.coins[coinId]) uData.coins[coinId] = 0;
-    uData.coins[coinId] += totalPower;
-  }
+  await accumulateRankingPowerFromRacks(
+    rankingData,
+    racks,
+    slotsByRack,
+    multByRack,
+    upgradesMining,
+    nftRoomIds,
+    usernameById
+  );
 
   return {
     timestamp: Date.now(),
     ranking: Array.from(rankingData.values()),
-    coins: Array.from(coinsMap.values())
+    coins: coins.map((c) => ({ id: c.id, name: c.name, symbol: c.symbol }))
   };
 }
 
@@ -134,8 +232,18 @@ export async function getAdminMiningRankingPayload(): Promise<{
   });
   const coinsMap = new Map(coins.map((c) => [c.id, c]));
 
-  const upgrades = await prisma.upgrades.findMany();
-  const upgradesMap = new Map(upgrades.map((u) => [u.id, u]));
+  const upgrades = await prisma.upgrades.findMany({
+    select: {
+      id: true,
+      type: true,
+      category: true,
+      base_production: true,
+      multiplier: true,
+      nft_mining_coin_id: true
+    }
+  });
+  const upgradesMining = buildUpgradesMiningMap(upgrades);
+  const nftRoomIds = await loadNftMiningRoomIds();
 
   const eligibleUsers = await prisma.users.findMany({
     where: { is_blocked: 0, ranking_excluded: 0 },
@@ -162,6 +270,12 @@ export async function getAdminMiningRankingPayload(): Promise<{
             user_id: { in: eligibleIds },
             wiring_id: { not: null },
             battery_id: { not: null }
+          },
+          select: {
+            id: true,
+            user_id: true,
+            selected_coin_id: true,
+            room_id: true
           }
         });
 
@@ -180,39 +294,29 @@ export async function getAdminMiningRankingPayload(): Promise<{
           where: { rack_id: { in: rackIds } },
           select: { rack_id: true, multiplier_item_id: true }
         });
-  const slotsByRack = groupByRackId(allSlots);
-  const multByRack = groupByRackId(allMult);
 
-  for (const rack of racks) {
-    if (!rack.selected_coin_id || !coinsMap.has(rack.selected_coin_id)) continue;
-
-    // Baterias são instâncias UUID infinitas: rig opera se já passou os filtros (is_on=1, wiring_id, battery_id).
-    const slots = slotsByRack.get(rack.id) || [];
-    let rackBaseProd = 0;
-    for (const s of slots) {
-      if (s.machine_item_id) {
-        const up = upgradesMap.get(s.machine_item_id);
-        if (up && up.base_production) rackBaseProd += up.base_production;
-      }
-    }
-    if (rackBaseProd === 0) continue;
-
-    const mults = multByRack.get(rack.id) || [];
-    let multiplierFactor = 1;
-    for (const m of mults) {
-      if (m.multiplier_item_id) {
-        const up = upgradesMap.get(m.multiplier_item_id);
-        if (up && up.multiplier) multiplierFactor += up.multiplier;
-      }
-    }
-
-    const totalRackPower = rackBaseProd * multiplierFactor;
-    const userEntry = rankingData.get(rack.user_id);
-    if (userEntry) {
-      const cid = rack.selected_coin_id;
-      userEntry.coins[cid] = (userEntry.coins[cid] || 0) + totalRackPower;
-    }
+  const slotsByRack = new Map<string, Array<{ machine_item_id: string | null }>>();
+  for (const s of allSlots) {
+    const k = s.rack_id;
+    if (!slotsByRack.has(k)) slotsByRack.set(k, []);
+    slotsByRack.get(k)!.push(s);
   }
+  const multByRack = new Map<string, Array<{ multiplier_item_id: string | null }>>();
+  for (const m of allMult) {
+    const k = m.rack_id;
+    if (!multByRack.has(k)) multByRack.set(k, []);
+    multByRack.get(k)!.push(m);
+  }
+
+  await accumulateRankingPowerFromRacks(
+    rankingData,
+    racks,
+    slotsByRack,
+    multByRack,
+    upgradesMining,
+    nftRoomIds,
+    new Map(eligibleUsers.map((u) => [u.id, u.username]))
+  );
 
   const coinIdsForBalances = Array.from(coinsMap.keys());
   if (coinIdsForBalances.length > 0) {

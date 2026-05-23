@@ -67,9 +67,21 @@ export function DailyCheckinBanner({ saveLoaded, onRewardGranted }: Props) {
           setToast('Ganhou 1 bateria Estelar pela sequência de 7 dias!');
           onRewardGranted?.();
         } else if (out.data.performed) {
-          setToast('Check-in registado. A mineração volta a contar a partir deste momento.');
+          const earlyPerformed =
+            out.data.lastCheckinAtMs != null && out.data.lastCheckinAtMs > Date.now();
+          setToast(
+            earlyPerformed
+              ? 'Check-in antecipado registado — a mineração segue sem pausa até ao próximo ciclo (21:00 Brasília).'
+              : 'Check-in registado. A mineração volta a contar a partir deste momento.'
+          );
         } else {
-          setToast('Já tinha feito check-in hoje.');
+          const alreadyEarly =
+            out.data.lastCheckinAtMs != null && out.data.lastCheckinAtMs > Date.now();
+          setToast(
+            alreadyEarly
+              ? 'Já tinha feito check-in antecipado para o próximo ciclo.'
+              : 'Já tinha feito check-in neste ciclo (desde as 21:00 BRT).'
+          );
         }
       } else if ('error' in out) {
         setToast(out.error);
@@ -101,20 +113,25 @@ export function DailyCheckinBanner({ saveLoaded, onRewardGranted }: Props) {
               <>
                 <p className="font-bold text-slate-100">
                   {status.frozen
-                    ? 'Mineração congelada — faça o check-in para voltar a farmar nas próximas 24h.'
-                    : `Check-in activo — mineração corre por mais ~${formatResetCountdown(status.nextResetMs)}.`}
+                    ? 'Mineração congelada — faça o check-in para voltar a farmar (ciclo diário: 21:00→21:00 Brasília).'
+                    : `Check-in activo — mineração corre até ~${formatResetCountdown(status.nextResetMs)} (próximo 21:00 Brasília).`}
                 </p>
                 <p className="text-slate-400">
                   Sequência: <span className="text-amber-300 font-mono">{status.streak}</span> dia(s) ·{' '}
                   {status.frozen
                     ? 'Janela actual expirada.'
                     : `Próxima janela em ~${formatResetCountdown(status.nextResetMs)}.`}{' '}
+                  {status.canEarlyCheckin ? (
+                    <>
+                      · Pode fazer check-in antecipado (últimas 4h antes das 21:00 Brasília).
+                    </>
+                  ) : null}{' '}
                   · Ciclo prémio:{' '}
                   <span className="text-amber-200/90">
                     {status.rewardCycleProgress}/{status.rewardCycleSize}
                   </span>{' '}
                   <Trophy className="inline align-text-bottom text-amber-500/90" size={14} aria-hidden /> a cada 7
-                  check-ins seguidos (1 por 24h) ganha 1 Estelar.
+                  check-ins em ciclos seguidos (1 por dia, 21:00→21:00 BRT) ganha 1 Estelar.
                 </p>
               </>
             ) : null}
@@ -127,17 +144,19 @@ export function DailyCheckinBanner({ saveLoaded, onRewardGranted }: Props) {
           <button
             type="button"
             onClick={() => void handleCheckin()}
-            disabled={submitting || loading || !status}
+            disabled={submitting || loading || !status || (status.todayCheckedIn && !status.canEarlyCheckin && !status.frozen)}
             className="rounded-lg border border-amber-500/50 bg-amber-600/25 px-3 py-1.5 text-xs sm:text-sm font-bold text-amber-100 hover:bg-amber-600/35 disabled:opacity-50 disabled:cursor-not-allowed transition whitespace-nowrap"
           >
             {submitting ? (
               <span className="inline-flex items-center gap-2">
                 <Loader2 className="animate-spin" size={14} /> A registar…
               </span>
-            ) : status?.todayCheckedIn ? (
+            ) : status?.canEarlyCheckin ? (
+              `Check-in antecipado · ${formatResetCountdown(status.nextResetMs)}`
+            ) : status?.todayCheckedIn && !status.frozen ? (
               `Check-in activo · ${formatResetCountdown(status.nextResetMs)}`
             ) : (
-              'Fazer check-in (vale 24h)'
+              'Fazer check-in'
             )}
           </button>
         </div>

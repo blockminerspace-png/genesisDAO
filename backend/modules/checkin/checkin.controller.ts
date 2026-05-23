@@ -2,7 +2,7 @@
  * Rotas do check-in diário (`/api/checkin/...`).
  *
  *  - GET  `/api/checkin/status` → snapshot (idempotente).
- *  - POST `/api/checkin`        → tenta aplicar check-in para hoje BRT.
+ *  - POST `/api/checkin`        → tenta aplicar check-in no ciclo BRT actual (21:00→21:00).
  *
  * Segue o mesmo padrão dos outros módulos (Dashboard, Profile):
  *  - middleware `authenticateToken` recebido por dependency injection;

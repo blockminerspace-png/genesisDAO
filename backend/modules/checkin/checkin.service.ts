@@ -2,20 +2,23 @@
  * Check-in diário (substitui carregamento de baterias).
  *
  * Regras (servidor é a fonte de verdade):
- *  - Cada check-in inicia uma janela rolante de 24 horas (`CHECKIN_WINDOW_MS`).
- *    Enquanto `now - last_checkin_at_ms < 24h`, a mineração permanece activa
- *    e novos cliques no botão são idempotentes (não consomem streak nem
- *    concedem recompensa adicional).
- *  - Quando a janela expira (>= 24h), as rigs ficam "frozen" e o cron de
- *    mineração não credita produção até o próximo check-in.
+ *  - O dia de check-in segue o calendário America/Sao_Paulo com fronteira às
+ *    `CHECKIN_CYCLE_HOUR_BRT` (21:00): cada ciclo é [21:00 D, 21:00 D+1).
+ *    Enquanto o último check-in cair no mesmo ciclo que `now`, a mineração
+ *    permanece activa e novos cliques são idempotentes.
+ *  - Ao mudar de ciclo (passou das 21:00 BRT sem novo check-in), as rigs
+ *    ficam "frozen" até o próximo check-in.
+ *  - Com check-in já feito no ciclo actual, nas últimas
+ *    `CHECKIN_EARLY_WINDOW_MS` (4h) antes das 21:00 BRT pode registar o
+ *    ciclo seguinte antecipadamente (mineração continua sem pausa na fronteira).
  *  - Streak:
- *      - check-in entre 24h e 48h após o anterior  → `streak += 1`;
- *      - check-in 48h+ após o anterior (ou primeiro de sempre) → `streak = 1`.
+ *      - check-in no ciclo imediatamente a seguir ao do anterior → `streak += 1`;
+ *      - caso contrário (ou primeiro de sempre) → `streak = 1`.
  *  - Sempre que `streak` atinge um múltiplo de 7 (7, 14, 21, …), o jogador
  *    ganha 1 instância UUID de `battery_estelar` em `stored_batteries`.
- *  - `last_checkin_day` é mantido por compatibilidade/diagnóstico (dia
- *    America/Sao_Paulo do último check-in), mas as decisões de freeze/streak
- *    usam apenas `last_checkin_at_ms`.
+ *  - `last_checkin_day` é mantido por compatibilidade/diagnóstico (dia civil
+ *    BRT do instante do check-in). Freeze/streak usam `last_checkin_at_ms` +
+ *    fronteira 21:00 BRT.
  */
 
 import crypto from 'node:crypto';
@@ -25,10 +28,12 @@ import db from '../../config/db.js';
 export const CHECKIN_TIMEZONE = 'America/Sao_Paulo';
 export const CHECKIN_REWARD_ITEM_ID = 'battery_estelar';
 export const CHECKIN_REWARD_EVERY_DAYS = 7;
-/** Duração da janela de validade de cada check-in (24h em ms). */
+/** Hora local (BRT) em que abre um novo ciclo de check-in / mineração. */
+export const CHECKIN_CYCLE_HOUR_BRT = 21;
+/** Duração nominal de um ciclo (24h em ms) — usado em streak e UI. */
 export const CHECKIN_WINDOW_MS = 24 * 60 * 60 * 1000;
-/** Limite para considerar a sequência preservada (até 48h após o anterior). */
-export const CHECKIN_STREAK_GRACE_MS = 2 * CHECKIN_WINDOW_MS;
+/** Antecipação permitida antes do fim do ciclo (4h antes das 21:00 BRT). */
+export const CHECKIN_EARLY_WINDOW_MS = 4 * 60 * 60 * 1000;
 
 export type CheckinStatus = {
   today: string;
@@ -37,9 +42,10 @@ export type CheckinStatus = {
   lastCheckinAtMs: number | null;
   streak: number;
   todayCheckedIn: boolean;
+  /** True nas últimas 4h do ciclo actual, com check-in feito, antes do próximo 21:00 BRT. */
+  canEarlyCheckin: boolean;
   frozen: boolean;
-  /** Próximo instante (ms epoch) em que a janela actual expira; igual a
-   *  `lastCheckinAtMs + 24h`. Quando nunca houve check-in, devolve `nowMs`. */
+  /** Próximo fim de ciclo BRT (21:00→21:00) em relação ao último check-in. */
   nextResetMs: number;
   /** Quantos ms restam na janela actual (0 quando frozen). */
   windowRemainingMs: number;
@@ -92,10 +98,96 @@ export function previousBrtDay(day: string): string {
   return `${yy}-${mm}-${dd}`;
 }
 
+/** `YYYY-MM-DD` que se segue ao dia recebido (aritmética civil +1 dia). */
+export function nextBrtDay(day: string): string {
+  if (!DAY_REGEX.test(day)) return day;
+  const [y, m, d] = day.split('-').map((p) => parseInt(p, 10));
+  const base = Date.UTC(y, m - 1, d);
+  const nxt = new Date(base + 24 * 3600 * 1000);
+  const yy = nxt.getUTCFullYear();
+  const mm = String(nxt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(nxt.getUTCDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+}
+
+/**
+ * Instante UTC (ms epoch) em que o relógio de America/Sao_Paulo marca
+ * `hour:minute:second` no dia civil `ymd` (YYYY-MM-DD).
+ * Usa o deslocamento fixo UTC−3 (BRT), coerente com America/Sao_Paulo
+ * sem horário de verão.
+ */
+export function brtYmdAtWallTimeMs(ymd: string, hour: number, minute = 0, second = 0): number {
+  if (!DAY_REGEX.test(ymd)) return NaN;
+  const [ys, mo, ds] = ymd.split('-').map((x) => parseInt(x, 10));
+  if (!Number.isFinite(ys) || !Number.isFinite(mo) || !Number.isFinite(ds)) return NaN;
+  const BRT_OFFSET_H = 3;
+  return Date.UTC(ys, mo - 1, ds, hour + BRT_OFFSET_H, minute, second);
+}
+
+/**
+ * Início do ciclo de check-in [21:00 D, 21:00 D+1) em BRT que contém `nowMs`.
+ */
+export function brtCheckinPeriodStartMs(nowMs: number): number {
+  const safe = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const ymd = brtDayFromMs(safe);
+  const boundaryToday = brtYmdAtWallTimeMs(ymd, CHECKIN_CYCLE_HOUR_BRT, 0, 0);
+  if (safe >= boundaryToday) return boundaryToday;
+  return brtYmdAtWallTimeMs(previousBrtDay(ymd), CHECKIN_CYCLE_HOUR_BRT, 0, 0);
+}
+
+/** Fim do ciclo que começa em `periodStartMs` (próximo 21:00 BRT). */
+export function nextCheckinPeriodEndMs(periodStartMs: number): number {
+  const anchor = brtDayFromMs(periodStartMs);
+  return brtYmdAtWallTimeMs(nextBrtDay(anchor), CHECKIN_CYCLE_HOUR_BRT, 0, 0);
+}
+
+/** Início do próximo ciclo BRT [21:00→21:00) em relação a `nowMs`. */
+export function nextCheckinPeriodStartMs(nowMs: number): number {
+  return nextCheckinPeriodEndMs(brtCheckinPeriodStartMs(nowMs));
+}
+
+/** Check-in gravado antecipadamente para o ciclo que abre no próximo 21:00 BRT. */
+export function isEarlyCheckinTimestamp(lastCheckinAtMs: number, nowMs: number): boolean {
+  const nowPeriod = brtCheckinPeriodStartMs(nowMs);
+  const lastPeriod = brtCheckinPeriodStartMs(lastCheckinAtMs);
+  const upcomingStart = nextCheckinPeriodStartMs(nowMs);
+  return (
+    lastPeriod === upcomingStart &&
+    lastCheckinAtMs >= upcomingStart - CHECKIN_EARLY_WINDOW_MS
+  );
+}
+
+/** Mineração activa: mesmo ciclo ou check-in antecipado do ciclo seguinte. */
+export function isWithinActiveCheckinWindow(
+  lastCheckinAtMs: number | null | undefined,
+  nowMs: number
+): boolean {
+  const at = lastCheckinAtMsNumber(lastCheckinAtMs);
+  if (at == null) return false;
+  const nowPeriod = brtCheckinPeriodStartMs(nowMs);
+  const lastPeriod = brtCheckinPeriodStartMs(at);
+  if (lastPeriod === nowPeriod) return true;
+  return isEarlyCheckinTimestamp(at, nowMs);
+}
+
+/** Pode registar o próximo ciclo até 4h antes das 21:00 BRT (já fez check-in no ciclo actual). */
+export function canEarlyCheckinForNextPeriod(
+  lastCheckinAtMs: number | null | undefined,
+  nowMs: number
+): boolean {
+  const at = lastCheckinAtMsNumber(lastCheckinAtMs);
+  if (at == null) return false;
+  if (isEarlyCheckinTimestamp(at, nowMs)) return false;
+  const nowPeriod = brtCheckinPeriodStartMs(nowMs);
+  const lastPeriod = brtCheckinPeriodStartMs(at);
+  if (lastPeriod !== nowPeriod) return false;
+  const nextEnd = nextCheckinPeriodEndMs(nowPeriod);
+  return nowMs >= nextEnd - CHECKIN_EARLY_WINDOW_MS;
+}
+
 /**
  * Próximo "midnight America/Sao_Paulo" estritamente após `nowMs` (em ms epoch).
- * Mantido para uso em logs/telemetria; o `nextResetMs` exposto pelo serviço
- * passa a corresponder a `lastCheckinAtMs + 24h` (janela rolante).
+ * Mantido para uso em logs/telemetria.
  */
 export function nextBrtMidnightMs(nowMs: number): number {
   const startDay = brtDayFromMs(nowMs);
@@ -154,11 +246,17 @@ function buildStatus(
   streak: number,
   nowMs: number
 ): CheckinStatus {
-  const elapsed = lastCheckinAtMs == null ? Number.POSITIVE_INFINITY : nowMs - lastCheckinAtMs;
-  const withinWindow = elapsed >= 0 && elapsed < CHECKIN_WINDOW_MS;
+  const nowPeriodStart = brtCheckinPeriodStartMs(nowMs);
+  const lastPeriodStart =
+    lastCheckinAtMs == null ? null : brtCheckinPeriodStartMs(lastCheckinAtMs);
+  const withinWindow = isWithinActiveCheckinWindow(lastCheckinAtMs, nowMs);
+  const canEarlyCheckin = canEarlyCheckinForNextPeriod(lastCheckinAtMs, nowMs);
   const frozen = !withinWindow;
-  const nextResetMs = lastCheckinAtMs != null ? lastCheckinAtMs + CHECKIN_WINDOW_MS : nowMs;
-  const windowRemainingMs = withinWindow ? Math.max(0, CHECKIN_WINDOW_MS - elapsed) : 0;
+  const nextResetMs =
+    lastPeriodStart != null
+      ? nextCheckinPeriodEndMs(lastPeriodStart)
+      : nextCheckinPeriodEndMs(brtCheckinPeriodStartMs(nowMs));
+  const windowRemainingMs = withinWindow ? Math.max(0, nextResetMs - nowMs) : 0;
   const cycleSize = CHECKIN_REWARD_EVERY_DAYS;
   const cycleProgress = streak === 0 ? 0 : streak % cycleSize === 0 ? cycleSize : streak % cycleSize;
   return {
@@ -168,6 +266,7 @@ function buildStatus(
     lastCheckinAtMs,
     streak,
     todayCheckedIn: withinWindow,
+    canEarlyCheckin,
     frozen,
     nextResetMs,
     windowRemainingMs,
@@ -199,9 +298,8 @@ export async function getCheckinStatus(userId: number, nowMs: number = Date.now(
 }
 
 /**
- * Aplica um check-in para o utilizador. Idempotente enquanto a janela
- * rolante de 24h ainda estiver aberta. Devolve o estado pós-aplicação
- * (mesmo quando idempotente).
+ * Aplica um check-in para o utilizador. Idempotente dentro do mesmo ciclo
+ * BRT 21:00→21:00. Devolve o estado pós-aplicação (mesmo quando idempotente).
  */
 export async function performCheckin(userId: number, nowMs: number = Date.now()): Promise<CheckinResult> {
   const today = brtDayFromMs(nowMs);
@@ -210,6 +308,22 @@ export async function performCheckin(userId: number, nowMs: number = Date.now())
   try {
     await client.query('BEGIN');
     await client.query("SET statement_timeout = '5s'");
+
+    await client.query(
+      `INSERT INTO game_states (
+          user_id,
+          usdc,
+          start_time,
+          claimed_referrals,
+          referral_bonus_claimed,
+          last_updated_at,
+          server_updated_at,
+          black_market_balance
+        )
+        VALUES ($1, 0, $2, 0, 0, $2, $2, 0)
+        ON CONFLICT (user_id) DO NOTHING`,
+      [userId, nowMs]
+    );
 
     const row = await readGameStateForCheckin(client, userId, true);
     if (!row) {
@@ -221,17 +335,33 @@ export async function performCheckin(userId: number, nowMs: number = Date.now())
     const prevAtMs = lastCheckinAtMsNumber(row.last_checkin_at_ms);
     const prevDay = row.last_checkin_day;
 
-    if (prevAtMs != null && nowMs - prevAtMs < CHECKIN_WINDOW_MS) {
-      // Janela ainda aberta — clique idempotente.
+    const nowPeriod = brtCheckinPeriodStartMs(nowMs);
+    const prevPeriod = prevAtMs == null ? null : brtCheckinPeriodStartMs(prevAtMs);
+
+    if (prevAtMs != null && isEarlyCheckinTimestamp(prevAtMs, nowMs)) {
       await client.query('ROLLBACK');
       const status = buildStatus(today, prevDay, prevAtMs, prevStreak, nowMs);
       return { ...status, performed: false, rewardGranted: 0, streakReset: false };
     }
 
+    let checkinAtMs = nowMs;
+    let streakAnchorPeriod = nowPeriod;
+
+    if (prevAtMs != null && prevPeriod === nowPeriod) {
+      const nextPeriodStart = nextCheckinPeriodStartMs(nowMs);
+      const nextEnd = nextCheckinPeriodEndMs(nowPeriod);
+      if (nowMs < nextEnd - CHECKIN_EARLY_WINDOW_MS) {
+        await client.query('ROLLBACK');
+        const status = buildStatus(today, prevDay, prevAtMs, prevStreak, nowMs);
+        return { ...status, performed: false, rewardGranted: 0, streakReset: false };
+      }
+      checkinAtMs = nextPeriodStart;
+      streakAnchorPeriod = nextPeriodStart;
+    }
+
     let nextStreak: number;
     let streakReset = false;
-    if (prevAtMs != null && nowMs - prevAtMs < CHECKIN_STREAK_GRACE_MS) {
-      // Entre 24h e 48h após o último → continua a sequência.
+    if (prevPeriod != null && streakAnchorPeriod - prevPeriod === CHECKIN_WINDOW_MS) {
       nextStreak = prevStreak + 1;
     } else {
       nextStreak = 1;
@@ -239,6 +369,7 @@ export async function performCheckin(userId: number, nowMs: number = Date.now())
     }
 
     const grantsReward = nextStreak > 0 && nextStreak % CHECKIN_REWARD_EVERY_DAYS === 0;
+    const checkinDay = brtDayFromMs(checkinAtMs);
 
     await client.query(
       `UPDATE game_states
@@ -246,7 +377,7 @@ export async function performCheckin(userId: number, nowMs: number = Date.now())
               last_checkin_at_ms = $3,
               checkin_streak = $4
         WHERE user_id = $1`,
-      [userId, today, nowMs, nextStreak]
+      [userId, checkinDay, checkinAtMs, nextStreak]
     );
 
     let rewardGranted = 0;
@@ -267,7 +398,7 @@ export async function performCheckin(userId: number, nowMs: number = Date.now())
 
     await client.query('COMMIT');
 
-    const status = buildStatus(today, today, nowMs, nextStreak, nowMs);
+    const status = buildStatus(checkinDay, checkinDay, checkinAtMs, nextStreak, nowMs);
     return { ...status, performed: true, rewardGranted, streakReset };
   } catch (e) {
     try {
@@ -293,9 +424,7 @@ export async function isUserFrozenForToday(userId: number, nowMs: number = Date.
       [userId]
     );
     if (!r.rowCount) return true;
-    const at = lastCheckinAtMsNumber(r.rows[0].last_checkin_at_ms);
-    if (at == null) return true;
-    return nowMs - at >= CHECKIN_WINDOW_MS;
+    return isCheckinFrozenAtMs(lastCheckinAtMsNumber(r.rows[0].last_checkin_at_ms), nowMs);
   } finally {
     client.release();
   }
@@ -303,7 +432,5 @@ export async function isUserFrozenForToday(userId: number, nowMs: number = Date.
 
 /** Versão pura para reutilização em readers que já têm o valor lido (cron, snapshots). */
 export function isCheckinFrozenAtMs(lastCheckinAtMs: number | null | undefined, nowMs: number): boolean {
-  const at = lastCheckinAtMsNumber(lastCheckinAtMs);
-  if (at == null) return true;
-  return nowMs - at >= CHECKIN_WINDOW_MS;
+  return !isWithinActiveCheckinWindow(lastCheckinAtMs, nowMs);
 }

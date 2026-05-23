@@ -33,6 +33,8 @@ describe('gamePathRoutes', () => {
     expect(gamePathFromView('servers')).toBe('/servers');
     expect(gamePathFromView('inventory')).toBe('/inventory');
     expect(gamePathFromView('wallet')).toBe('/wallet');
+    expect(gamePathFromView('withdrawal_history')).toBe('/withdrawal-history');
+    expect(gameViewFromEnglishPathname('/withdrawal-history')).toBe('withdrawal_history');
     expect(gamePathFromView('profile')).toBe('/profile');
   });
 
