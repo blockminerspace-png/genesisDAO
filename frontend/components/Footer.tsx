@@ -94,6 +94,13 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate, showMarketNews = tru
                                 </button>
                                 <button
                                     type="button"
+                                    onClick={() => onNavigate?.('web3_risk')}
+                                    className="text-left hover:text-amber-500 transition-colors"
+                                >
+                                    Aviso de Risco Web3
+                                </button>
+                                <button
+                                    type="button"
                                     onClick={() => onNavigate?.('community')}
                                     className="text-left hover:text-amber-500 transition-colors"
                                 >
