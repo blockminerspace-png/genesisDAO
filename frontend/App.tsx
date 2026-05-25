@@ -1064,16 +1064,6 @@ export default function App() {
       if (typeof window === 'undefined' || resolvedView === 'game' || resolvedView === 'admin') return;
       const nextUrl = legalPathFromView(resolvedView);
       const currentUrl = `${window.location.pathname}${window.location.search}`;
-      const isPublicAnonymousNav =
-        !user &&
-        globalView !== 'game' &&
-        globalView !== 'admin';
-
-      if (isPublicAnonymousNav && currentUrl !== nextUrl) {
-        if (opts?.replace) window.location.replace(nextUrl);
-        else window.location.assign(nextUrl);
-        return;
-      }
 
       setGlobalView(resolvedView);
       if (currentUrl !== nextUrl) {
