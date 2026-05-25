@@ -6,7 +6,8 @@ import {
   type WalletHistoryAction
 } from '../modules/profile/profileWalletHistory.service.js';
 
-const DEFAULT_REFERRAL_RECEIVER_REWARD_USDC = 1;
+const DEFAULT_REFERRAL_SENDER_REWARD_USDC = 1;   // quem indicou recebe 1 USDC
+const DEFAULT_REFERRAL_RECEIVER_REWARD_USDC = 0; // indicado não recebe USDC (só a caixa inicial)
 
 export type UserPutCoreWalletAudit =
   | { kind: 'admin'; actorUserId: number; clientIp: string | null; userAgent: string | null }
@@ -93,12 +94,17 @@ export async function executeUserPutCoreTransaction(
       }
     | null = null;
 
+  // Lê o estado actual ANTES do update:
+  //   - referred_by: para evitar contar o mesmo referral múltiplas vezes em updates de perfil
+  //   - polygon_wallet: para registar histórico de alterações de carteira
+  const userBeforeUpdate = await tx.users.findUnique({
+    where: { id: uid },
+    select: { referred_by: true, polygon_wallet: true }
+  });
+  const referredByAlreadyBound = !!userBeforeUpdate?.referred_by;
+
   if (polygonForUpdate !== undefined && walletAudit) {
-    const cur = await tx.users.findUnique({
-      where: { id: uid },
-      select: { polygon_wallet: true }
-    });
-    const prevRaw = cur?.polygon_wallet != null ? String(cur.polygon_wallet).trim() : '';
+    const prevRaw = userBeforeUpdate?.polygon_wallet != null ? String(userBeforeUpdate.polygon_wallet).trim() : '';
     const nextRaw =
       polygonForUpdate == null || polygonForUpdate === '' ? '' : String(polygonForUpdate).trim();
     const prevKey = normalizeWalletCompareKey(prevRaw || null);
@@ -203,6 +209,10 @@ export async function executeUserPutCoreTransaction(
 
   if (!referredByForUpdate) return;
 
+  // Não criar referral se o utilizador já tinha referred_by antes deste update
+  // (evita duplicações ao actualizar perfil com o mesmo código já vinculado)
+  if (referredByAlreadyBound) return;
+
   const ref = await tx.users.findFirst({
     where: {
       referral_code: { equals: referredByForUpdate, mode: 'insensitive' }
@@ -264,10 +274,12 @@ export async function executeUserPutCoreTransaction(
   if (model) {
     console.log(`[Referral] Using Advanced Model: ${model.name} for Access Level: ${alId}`);
   }
-  const senderUsdc = model ? Number(model.sender_reward_usdc ?? 0) : 0;
+  const senderUsdc = model
+    ? Number(model.sender_reward_usdc ?? 0)
+    : DEFAULT_REFERRAL_SENDER_REWARD_USDC;   // padrão: quem indicou recebe 1 USDC
   const receiverUsdc = model
     ? Number(model.receiver_reward_usdc ?? 0)
-    : DEFAULT_REFERRAL_RECEIVER_REWARD_USDC;
+    : DEFAULT_REFERRAL_RECEIVER_REWARD_USDC; // padrão: indicado recebe 0 (só caixa inicial)
 
   await upsertGameStateCredit({
     userId: ref.id,
