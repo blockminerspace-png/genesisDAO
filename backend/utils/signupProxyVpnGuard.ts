@@ -40,7 +40,7 @@ export async function verifySignupIpNotProxyVpn(clientIpRaw: string): Promise<Si
   if (!clientIp || !isUsablePublicClientIp(clientIp)) return { ok: true };
 
   const apiKey = String(process.env.PROXYCHECK_API_KEY || '').trim();
-  const allowOnError = envEnabled('SIGNUP_ANTI_PROXY_VPN_ALLOW_ON_ERROR', '1');
+  const allowOnError = envEnabled('SIGNUP_ANTI_PROXY_VPN_ALLOW_ON_ERROR', '0');
 
   try {
     const qs = new URLSearchParams({
@@ -54,6 +54,19 @@ export async function verifySignupIpNotProxyVpn(clientIpRaw: string): Promise<Si
       headers: { Accept: 'application/json' }
     });
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      if (allowOnError) return { ok: true };
+      return {
+        ok: false,
+        status: 503,
+        code: 'SIGNUP_IP_INTEL_UNAVAILABLE',
+        error: 'Não foi possível validar a rede do cadastro agora. Tente novamente em instantes.',
+        details: {
+          clientIp,
+          httpStatus: res.status
+        }
+      };
+    }
     const row = (data?.[clientIp] && typeof data[clientIp] === 'object' ? data[clientIp] : {}) as Record<
       string,
       unknown
@@ -89,14 +102,37 @@ export async function verifySignupIpNotProxyVpn(clientIpRaw: string): Promise<Si
       };
     }
 
+    const verdictKnown =
+      Object.prototype.hasOwnProperty.call(row, 'proxy') ||
+      Object.prototype.hasOwnProperty.call(row, 'vpn') ||
+      Object.prototype.hasOwnProperty.call(row, 'type') ||
+      Object.prototype.hasOwnProperty.call(row, 'risk');
+    if (!verdictKnown) {
+      if (allowOnError) return { ok: true };
+      return {
+        ok: false,
+        status: 503,
+        code: 'SIGNUP_IP_INTEL_UNAVAILABLE',
+        error: 'Não foi possível validar a rede do cadastro agora. Tente novamente em instantes.',
+        details: {
+          clientIp,
+          proxycheckStatus: data?.status ?? null
+        }
+      };
+    }
+
     return { ok: true };
-  } catch {
+  } catch (error: unknown) {
     if (allowOnError) return { ok: true };
     return {
       ok: false,
       status: 503,
       code: 'SIGNUP_IP_INTEL_UNAVAILABLE',
-      error: 'Não foi possível validar a rede do cadastro agora. Tente novamente em instantes.'
+      error: 'Não foi possível validar a rede do cadastro agora. Tente novamente em instantes.',
+      details: {
+        clientIp,
+        message: error instanceof Error ? error.message : String(error)
+      }
     };
   }
 }

@@ -154,13 +154,117 @@ export async function verifyEmailTokenAndActivate(rawToken: string): Promise<{
     }
   }
 
-  await prisma.users.update({
-    where: { id: row.id },
-    data: {
-      email_verified: 1,
-      email_verification_required: 0,
-      email_verification_token_hash: null
+  await prisma.$transaction(async (tx) => {
+    const userRow = await tx.users.findUnique({
+      where: { id: row.id },
+      select: {
+        id: true,
+        username: true,
+        referred_by: true,
+        email_verified: true,
+        access_level_id: true
+      }
+    });
+
+    await tx.users.update({
+      where: { id: row.id },
+      data: {
+        email_verified: 1,
+        email_verification_required: 0,
+        email_verification_token_hash: null
+      }
+    });
+
+    const referredBy = String(userRow?.referred_by || '').trim();
+    const username = String(userRow?.username || '').trim();
+    if (!referredBy || !username) return;
+
+    const referrer = await tx.users.findFirst({
+      where: {
+        referral_code: { equals: referredBy, mode: 'insensitive' }
+      },
+      select: { id: true, access_level_id: true }
+    });
+    if (!referrer || referrer.id === row.id) return;
+
+    const referralRow = await tx.referrals.findFirst({
+      where: {
+        user_id: referrer.id,
+        referred_username: username
+      },
+      select: { id: true }
+    });
+    if (!referralRow) return;
+
+    const referredGameState = await tx.game_states.findUnique({
+      where: { user_id: row.id },
+      select: { referral_bonus_claimed: true }
+    });
+    if (Number(referredGameState?.referral_bonus_claimed || 0) === 1) return;
+
+    const alId = referrer.access_level_id || 'normal';
+    const link = await tx.access_level_referral_models.findUnique({
+      where: { access_level_id: alId }
+    });
+    const model =
+      link?.referral_model_id != null
+        ? await tx.referral_models.findFirst({
+            where: { id: link.referral_model_id, is_active: 1 }
+          })
+        : null;
+    const senderUsdc = model ? Number(model.sender_reward_usdc ?? 0) : 1;
+    if (!(senderUsdc > 0)) {
+      await tx.game_states.upsert({
+        where: { user_id: row.id },
+        update: {
+          referral_bonus_claimed: 1
+        },
+        create: {
+          user_id: row.id,
+          usdc: 0,
+          start_time: BigInt(Date.now()),
+          last_updated_at: BigInt(Date.now()),
+          claimed_referrals: 0,
+          referral_bonus_claimed: 1,
+          black_market_balance: 0
+        }
+      });
+      return;
     }
+
+    const now = BigInt(Date.now());
+    await tx.game_states.upsert({
+      where: { user_id: referrer.id },
+      update: {
+        usdc: { increment: senderUsdc },
+        last_updated_at: now
+      },
+      create: {
+        user_id: referrer.id,
+        usdc: senderUsdc,
+        start_time: now,
+        last_updated_at: now,
+        claimed_referrals: 0,
+        referral_bonus_claimed: 0,
+        black_market_balance: 0
+      }
+    });
+    await tx.game_states.upsert({
+      where: { user_id: row.id },
+      update: {
+        referral_bonus_claimed: 1,
+        last_updated_at: now
+      },
+      create: {
+        user_id: row.id,
+        usdc: 0,
+        start_time: now,
+        last_updated_at: now,
+        claimed_referrals: 0,
+        referral_bonus_claimed: 1,
+        black_market_balance: 0
+      }
+    });
   });
   return { ok: true, message: 'Email confirmado com sucesso. Já pode iniciar sessão.' };
 }

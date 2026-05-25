@@ -82,6 +82,70 @@ export async function executeUserPutCoreTransaction(
     });
   }
 
+  async function adjustExistingGameState(args: {
+    userId: number;
+    claimedReferralsDecrement?: number;
+    clearReferralBonusClaimed?: boolean;
+  }): Promise<void> {
+    const row = await tx.game_states.findUnique({
+      where: { user_id: args.userId },
+      select: { usdc: true, claimed_referrals: true, referral_bonus_claimed: true }
+    });
+    if (!row) return;
+
+    const nextClaimedReferralsDecrement = Math.max(
+      0,
+      Math.min(Number(row.claimed_referrals || 0), Number(args.claimedReferralsDecrement || 0))
+    );
+
+    if (
+      nextClaimedReferralsDecrement <= 0 &&
+      !args.clearReferralBonusClaimed
+    ) {
+      return;
+    }
+
+    await tx.game_states.update({
+      where: { user_id: args.userId },
+      data: {
+        ...(nextClaimedReferralsDecrement > 0
+          ? { claimed_referrals: { decrement: nextClaimedReferralsDecrement } }
+          : {}),
+        ...(args.clearReferralBonusClaimed ? { referral_bonus_claimed: 0 } : {}),
+        last_updated_at: now
+      }
+    });
+  }
+
+  async function resolveReferralModelRewards(accessLevelId: string | null | undefined): Promise<{
+    senderUsdc: number;
+    receiverUsdc: number;
+  }> {
+    const alId = accessLevelId || 'normal';
+    const link = await tx.access_level_referral_models.findUnique({
+      where: { access_level_id: alId }
+    });
+    const model =
+      link?.referral_model_id != null
+        ? await tx.referral_models.findFirst({
+            where: { id: link.referral_model_id, is_active: 1 }
+          })
+        : null;
+
+    if (model) {
+      console.log(`[Referral] Using Advanced Model: ${model.name} for Access Level: ${alId}`);
+    }
+
+    return {
+      senderUsdc: model
+        ? Number(model.sender_reward_usdc ?? 0)
+        : DEFAULT_REFERRAL_SENDER_REWARD_USDC,
+      receiverUsdc: model
+        ? Number(model.receiver_reward_usdc ?? 0)
+        : DEFAULT_REFERRAL_RECEIVER_REWARD_USDC
+    };
+  }
+
   let walletChange:
     | {
         prevDisp: string | null;
@@ -99,7 +163,7 @@ export async function executeUserPutCoreTransaction(
   //   - polygon_wallet: para registar histórico de alterações de carteira
   const userBeforeUpdate = await tx.users.findUnique({
     where: { id: uid },
-    select: { referred_by: true, polygon_wallet: true }
+    select: { referred_by: true, polygon_wallet: true, username: true }
   });
   const referredByAlreadyBound = !!userBeforeUpdate?.referred_by;
 
@@ -207,6 +271,57 @@ export async function executeUserPutCoreTransaction(
     }
   }
 
+  const previousReferralCode = String(userBeforeUpdate?.referred_by || '').trim();
+  const nextReferralCode = String(referredByForUpdate || '').trim();
+  if (
+    previousReferralCode &&
+    previousReferralCode.toLowerCase() !== nextReferralCode.toLowerCase()
+  ) {
+    const previousReferrer = await tx.users.findFirst({
+      where: {
+        referral_code: { equals: previousReferralCode, mode: 'insensitive' }
+      },
+      select: { id: true, access_level_id: true }
+    });
+
+    const referredUsernames = Array.from(
+      new Set(
+        [String(userBeforeUpdate?.username || '').trim(), String(usernameForUpdate || '').trim()].filter(
+          Boolean
+        )
+      )
+    );
+
+    let deletedReferralCount = 0;
+    if (previousReferrer && referredUsernames.length > 0) {
+      const deleted = await tx.referrals.deleteMany({
+        where: {
+          user_id: previousReferrer.id,
+          referred_username: { in: referredUsernames }
+        }
+      });
+      deletedReferralCount = Number(deleted.count || 0);
+    }
+
+    if (deletedReferralCount > 0 && previousReferrer) {
+      await adjustExistingGameState({
+        userId: previousReferrer.id,
+        claimedReferralsDecrement: 1
+      });
+
+      const referredState = await tx.game_states.findUnique({
+        where: { user_id: uid },
+        select: { referral_bonus_claimed: true }
+      });
+      if (Number(referredState?.referral_bonus_claimed || 0) === 1) {
+        await adjustExistingGameState({
+          userId: uid,
+          clearReferralBonusClaimed: true
+        });
+      }
+    }
+  }
+
   if (!referredByForUpdate) return;
 
   // Não criar referral se o utilizador já tinha referred_by antes deste update
@@ -259,36 +374,6 @@ export async function executeUserPutCoreTransaction(
     userId: ref.id,
     claimedReferralsIncrement: 1
   });
-
-  const alId = ref.access_level_id || 'normal';
-  const link = await tx.access_level_referral_models.findUnique({
-    where: { access_level_id: alId }
-  });
-  const model =
-    link?.referral_model_id != null
-      ? await tx.referral_models.findFirst({
-          where: { id: link.referral_model_id, is_active: 1 }
-        })
-      : null;
-
-  if (model) {
-    console.log(`[Referral] Using Advanced Model: ${model.name} for Access Level: ${alId}`);
-  }
-  const senderUsdc = model
-    ? Number(model.sender_reward_usdc ?? 0)
-    : DEFAULT_REFERRAL_SENDER_REWARD_USDC;   // padrão: quem indicou recebe 1 USDC
-  const receiverUsdc = model
-    ? Number(model.receiver_reward_usdc ?? 0)
-    : DEFAULT_REFERRAL_RECEIVER_REWARD_USDC; // padrão: indicado recebe 0 (só caixa inicial)
-
-  await upsertGameStateCredit({
-    userId: ref.id,
-    usdcIncrement: senderUsdc
-  });
-  await upsertGameStateCredit({
-    userId: uid,
-    usdcIncrement: receiverUsdc,
-    markReferralBonusClaimed: receiverUsdc > 0
-  });
-  // Comissão sobre depósitos do indicado: ver `creditDepositReferralCommissionPg` no crédito on-chain.
+  // O pagamento do indicador acontece apenas após verificação do email do indicado.
+  // O indicado não recebe USDC por referral; só mantém a caixa inicial / caixa de indicado.
 }

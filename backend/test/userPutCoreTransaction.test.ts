@@ -22,13 +22,16 @@ function makeTx() {
   const usersFindFirst = vi.fn().mockResolvedValue(null);
   const usersFindUnique = vi.fn().mockResolvedValue(null);
   const referralsCreate = vi.fn().mockResolvedValue(undefined);
+  const referralsDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
   const gameStatesUpsert = vi.fn().mockResolvedValue(undefined);
+  const gameStatesFindUnique = vi.fn().mockResolvedValue(null);
+  const gameStatesUpdate = vi.fn().mockResolvedValue(undefined);
   const accessLevelReferralModelsFindUnique = vi.fn().mockResolvedValue(null);
   const referralModelsFindFirst = vi.fn().mockResolvedValue(null);
   const tx = {
     users: { update: usersUpdate, findFirst: usersFindFirst, findUnique: usersFindUnique },
-    referrals: { create: referralsCreate },
-    game_states: { upsert: gameStatesUpsert },
+    referrals: { create: referralsCreate, deleteMany: referralsDeleteMany },
+    game_states: { upsert: gameStatesUpsert, findUnique: gameStatesFindUnique, update: gameStatesUpdate },
     access_level_referral_models: { findUnique: accessLevelReferralModelsFindUnique },
     referral_models: { findFirst: referralModelsFindFirst }
   } as unknown as Prisma.TransactionClient;
@@ -38,7 +41,10 @@ function makeTx() {
     usersFindFirst,
     usersFindUnique,
     referralsCreate,
+    referralsDeleteMany,
     gameStatesUpsert,
+    gameStatesFindUnique,
+    gameStatesUpdate,
     accessLevelReferralModelsFindUnique,
     referralModelsFindFirst
   };
@@ -92,7 +98,7 @@ describe('executeUserPutCoreTransaction', () => {
     expect(arg.data).not.toHaveProperty('polygon_wallet');
   });
 
-  it('incrementa referrals do indicador e dá 1 USDC ao indicado quando não há modelo avançado', async () => {
+  it('incrementa referrals do indicador e não paga USDC no cadastro antes da verificação do email', async () => {
     const {
       tx,
       usersFindFirst,
@@ -102,7 +108,9 @@ describe('executeUserPutCoreTransaction', () => {
       accessLevelReferralModelsFindUnique
     } = makeTx();
     usersFindFirst.mockResolvedValue({ id: 7, access_level_id: 'normal', referral_code: 'REF-AAA' });
-    usersFindUnique.mockResolvedValue({ referral_code: 'SELF-REF' });
+    usersFindUnique
+      .mockResolvedValueOnce({ referred_by: null, polygon_wallet: null, username: 'new-player' })
+      .mockResolvedValueOnce({ referral_code: 'SELF-REF' });
     accessLevelReferralModelsFindUnique.mockResolvedValue(null);
 
     await executeUserPutCoreTransaction(
@@ -130,10 +138,9 @@ describe('executeUserPutCoreTransaction', () => {
     expect(gameStatesUpsert).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        where: { user_id: 42 },
+        where: { user_id: 7 },
         update: expect.objectContaining({
-          usdc: { increment: 1 },
-          referral_bonus_claimed: 1
+          claimed_referrals: { increment: 1 }
         })
       })
     );
