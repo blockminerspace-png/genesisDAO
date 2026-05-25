@@ -1085,18 +1085,28 @@ export default function App() {
   );
 
   const handleExpiredSession = useCallback(async () => {
+    const currentPath =
+      typeof window !== 'undefined'
+        ? (window.location.pathname || '').toLowerCase().replace(/\/+$/, '') || '/'
+        : '/';
+    const isProtectedPath =
+      currentPath === '/admin' ||
+      currentPath.startsWith('/admin/') ||
+      gameViewFromEnglishPathname(currentPath) != null ||
+      isEnglishGameSpaPath(currentPath);
+
     rackBatteryFromStockCatalogRef.current.clear();
     setUser(null);
     setGameState(INITIAL_STATE);
     setSaveLoaded(false);
-    setGameStateLoadError('Sessão expirada. Faça login novamente.');
-    setGlobalView('login');
+    setGameStateLoadError(isProtectedPath ? 'Sessão expirada. Faça login novamente.' : null);
+    setGlobalView(isProtectedPath ? 'login' : (legalViewFromPath(currentPath) || 'home'));
     try {
       await apiLogout();
     } catch {
       /* ignore */
     }
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && isProtectedPath) {
       const nextUrl = legalPathFromView('login');
       const currentUrl = `${window.location.pathname}${window.location.search}`;
       if (currentUrl !== nextUrl) window.location.replace(nextUrl);
