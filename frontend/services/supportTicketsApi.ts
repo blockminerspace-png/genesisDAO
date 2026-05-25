@@ -3,6 +3,7 @@
  */
 const API_BASE = '/api';
 const SESSION_HINT_KEY = 'genesis_has_session';
+const AUTH_REQUIRED_EVENT = 'genesis:auth-required';
 
 const SUPPORT_PAYLOAD_TOO_LARGE_PT =
   'Os anexos excedem o limite permitido. Cada ficheiro pode ter até 12 MB (até 5 anexos). Tenta comprimir ou enviar menos ficheiros.';
@@ -33,6 +34,20 @@ function setSessionHint(enabled: boolean): void {
   }
 }
 
+function dispatchAuthRequired(url: string, status: number): void {
+  if (typeof window === 'undefined') return;
+  if (url.includes('/auth/refresh') || url.includes('/login') || url.includes('/logout')) return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent(AUTH_REQUIRED_EVENT, {
+        detail: { url, status }
+      })
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
 async function tryRefreshSessionOnce(): Promise<boolean> {
   if (!getSessionHint()) return false;
   if (refreshInFlight) return refreshInFlight;
@@ -58,6 +73,10 @@ async function apiFetch(url: string, options: RequestInit = {}, allowRefreshRetr
     if (refreshed) {
       return fetch(url, { ...options, credentials: 'include' });
     }
+  }
+  if (res.status === 401) {
+    setSessionHint(false);
+    dispatchAuthRequired(url, res.status);
   }
   return res;
 }

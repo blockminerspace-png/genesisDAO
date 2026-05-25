@@ -4,6 +4,7 @@ import type { DashboardState, DashboardStateResult } from '../types/dashboard';
 
 const base = '/api';
 const SESSION_HINT_KEY = 'genesis_has_session';
+const AUTH_REQUIRED_EVENT = 'genesis:auth-required';
 
 let refreshInFlight: Promise<boolean> | null = null;
 
@@ -58,6 +59,20 @@ function shouldSkipAuthRefreshRetry(url: string): boolean {
   );
 }
 
+function dispatchAuthRequired(url: string, status: number): void {
+  if (typeof window === 'undefined') return;
+  if (shouldSkipAuthRefreshRetry(url)) return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent(AUTH_REQUIRED_EVENT, {
+        detail: { url, status }
+      })
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
 async function apiFetch(url: string, options: RequestInit = {}, allowRefreshRetry = true): Promise<Response> {
   const res = await fetch(url, {
     ...options,
@@ -68,6 +83,10 @@ async function apiFetch(url: string, options: RequestInit = {}, allowRefreshRetr
     if (refreshed) {
       return fetch(url, { ...options, credentials: 'include' });
     }
+  }
+  if (res.status === 401) {
+    setSessionHint(false);
+    dispatchAuthRequired(url, res.status);
   }
   return res;
 }

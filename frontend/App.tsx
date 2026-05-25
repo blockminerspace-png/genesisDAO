@@ -115,6 +115,7 @@ const AdminRanking = lazyWithReload(() => import('./components/AdminRanking').th
 const RewardLoadingScreen = lazyWithReload(() =>
   import('./components/RewardLoadingScreen').then((m) => ({ default: m.RewardLoadingScreen }))
 );
+const AUTH_REQUIRED_EVENT = 'genesis:auth-required';
 
 function LazyRouteFallback() {
   return (
@@ -1083,6 +1084,25 @@ export default function App() {
     [globalView, user]
   );
 
+  const handleExpiredSession = useCallback(async () => {
+    rackBatteryFromStockCatalogRef.current.clear();
+    setUser(null);
+    setGameState(INITIAL_STATE);
+    setSaveLoaded(false);
+    setGameStateLoadError('Sessão expirada. Faça login novamente.');
+    setGlobalView('login');
+    try {
+      await apiLogout();
+    } catch {
+      /* ignore */
+    }
+    if (typeof window !== 'undefined') {
+      const nextUrl = legalPathFromView('login');
+      const currentUrl = `${window.location.pathname}${window.location.search}`;
+      if (currentUrl !== nextUrl) window.location.replace(nextUrl);
+    }
+  }, []);
+
   type GameNavSectionKey = 'operacao' | 'economia' | 'hub';
   type GameNavItem = {
     key: View;
@@ -1205,6 +1225,22 @@ export default function App() {
   useEffect(() => {
     document.documentElement.classList.add('dark');
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let handling = false;
+    const onAuthRequired = () => {
+      if (handling) return;
+      handling = true;
+      void handleExpiredSession().finally(() => {
+        handling = false;
+      });
+    };
+    window.addEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
+    return () => {
+      window.removeEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
+    };
+  }, [handleExpiredSession]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1473,6 +1509,10 @@ export default function App() {
             setGameStateLoadError(null);
           }
         } else {
+          if (status === 401) {
+            await handleExpiredSession();
+            return;
+          }
           const hint =
             errBody ||
             (status === 401
@@ -1492,7 +1532,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [gameSaveLoadKey, gameSaveLoadIsAdmin, gameStateReloadNonce, gameStateProcessLabel]);
+  }, [gameSaveLoadKey, gameSaveLoadIsAdmin, gameStateReloadNonce, gameStateProcessLabel, handleExpiredSession]);
 
   // INTRO PRESENTATION (CMD STYLE)
   // Trigger on every fresh login (session start)
