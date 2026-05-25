@@ -155,10 +155,22 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [], 
         }
         const ref = params.get('ref');
         if (ref) {
-            setReferralInput(ref.slice(0, AUTH_REFERRAL_MAX));
+            const trimmed = ref.slice(0, AUTH_REFERRAL_MAX);
+            setReferralInput(trimmed);
+            // Persiste na sessão para que o código seja mantido mesmo que o utilizador
+            // navegue para /registro sem o parâmetro ?ref= na URL
+            try { sessionStorage.setItem('genesis_ref', trimmed); } catch { /* ignore */ }
             setActiveTab('register');
             return;
         }
+        // Recupera código de indicação guardado na sessão (caso o utilizador tenha aberto
+        // o link de referral e depois navegado para /registro directamente)
+        try {
+            const savedRef = sessionStorage.getItem('genesis_ref');
+            if (savedRef) {
+                setReferralInput(savedRef.slice(0, AUTH_REFERRAL_MAX));
+            }
+        } catch { /* ignore */ }
         const authMode = params.get('auth');
         if (window.location.pathname.toLowerCase().includes('/registro') || authMode === 'register' || initialMode === 'register') {
             setActiveTab('register');
@@ -405,6 +417,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [], 
                 return;
             }
 
+            // Limpa o código de referral da sessão após registo bem-sucedido
+            try { sessionStorage.removeItem('genesis_ref'); } catch { /* ignore */ }
             setSuccessMessage(result.message || 'Cadastro concluído. Verifique o email para ativar a sua conta.');
             navigateAuthMode('login');
             setPassword('');
