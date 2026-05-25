@@ -556,9 +556,13 @@ export const AdminLootBoxes: React.FC<AdminLootBoxesProps> = ({ lootBoxes, onUpd
                             {boxForm.trigger !== 'roleta_code' && (
                                 <div className="border-t border-slate-700 pt-4">
                                     <h4 className="font-bold text-orange-400 mb-2">Conteúdo da Caixa</h4>
-                                    {boxForm.trigger === 'registration' && (
+                                    {boxForm.trigger === 'registration' ? (
                                         <p className="text-xs text-slate-400 mb-3 leading-relaxed border-l-2 border-emerald-600/80 pl-3">
-                                            <strong className="text-slate-200">Cadastro:</strong> cada abertura entrega <strong className="text-slate-200">todas</strong> as linhas com valor &gt; 0 (quantidade aleatória entre min e max). Noutros gatilhos, o número é <strong className="text-slate-200">peso</strong> num sorteio de <strong className="text-slate-200">um único</strong> prémio.
+                                            <strong className="text-slate-200">Cadastro:</strong> cada abertura entrega <strong className="text-slate-200">todas</strong> as linhas com valor &gt; 0 (quantidade aleatória entre min e max).
+                                        </p>
+                                    ) : (
+                                        <p className="text-xs text-slate-400 mb-3 leading-relaxed border-l-2 border-amber-600/80 pl-3">
+                                            <strong className="text-slate-200">% Chance independente:</strong> cada item tem a sua própria hipótese de sair. <strong className="text-emerald-400">100% = sempre entregue (garantido)</strong>. Podes ter vários itens a 100% e <strong className="text-slate-200">todos serão dados</strong>. Valores &lt; 100 têm essa % de hipótese individualmente.
                                         </p>
                                     )}
                                     <div className="bg-slate-900 rounded p-3 mb-4 space-y-2">
@@ -572,7 +576,7 @@ export const AdminLootBoxes: React.FC<AdminLootBoxesProps> = ({ lootBoxes, onUpd
                                                     <span className="text-yellow-500 font-mono">
                                                         {boxForm.trigger === 'registration'
                                                             ? (Number(item.probability) > 0 ? 'No pacote' : '—')
-                                                            : `${item.probability}% peso`}
+                                                            : (Number(item.probability) >= 100 ? '100% garantido' : `${item.probability}% chance`)}
                                                     </span>
                                                     <button onClick={() => removeBoxItem(idx)} className="text-red-500 hover:text-red-400"><Trash2 size={14} /></button>
                                                 </div>
@@ -618,7 +622,7 @@ export const AdminLootBoxes: React.FC<AdminLootBoxesProps> = ({ lootBoxes, onUpd
                                         </div>
                                         <div className="col-span-2">
                                             <label className="text-[10px] text-slate-500 font-bold block mb-1">
-                                                {boxForm.trigger === 'registration' ? 'Ativo (> 0)' : 'Peso %'}
+                                                {boxForm.trigger === 'registration' ? 'Ativo (> 0)' : '% Chance'}
                                             </label>
                                             <input type="number" min="1" max="100" step="any" value={Number.isFinite(newItemForm.probability as number) ? newItemForm.probability : 0} onChange={e => { const v = parseFloat(e.target.value); setNewItemForm({ ...newItemForm, probability: Number.isFinite(v) ? v : 0 }); }} className="w-full bg-slate-800 border border-slate-600 rounded p-1 text-white text-xs" />
                                         </div>

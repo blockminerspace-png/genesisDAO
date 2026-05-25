@@ -68,8 +68,8 @@ export const EMAIL_ADDRESS_MAX_LENGTH = 50;
 
 export const USERNAME_MIN = 3;
 export const USERNAME_MAX = 50;
-/** Política pública: senha sem mínimo de comprimento; teto 50 (cadastro, login, recuperação, perfil). */
-export const PASSWORD_MAX = 50;
+/** Política pública: senha sem mínimo de comprimento; teto 128 — bcrypt limita a 72 bytes, 128 chars é suficiente para passphrases. */
+export const PASSWORD_MAX = 128;
 /** Código de indicação introduzido no registo (outro utilizador). */
 export const REFERRAL_CODE_MAX = 50;
 

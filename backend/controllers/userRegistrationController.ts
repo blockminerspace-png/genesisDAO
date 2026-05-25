@@ -22,6 +22,8 @@ import { EmailPolicyError, getUserIdByEmail, IpLimitError } from '../models/user
 import { insertDeviceFingerprintLog, sanitizeDeviceFingerprint } from '../models/deviceFingerprintModel.js';
 import { logUserAction } from '../lib/mongoLogs.js';
 import { respondIfHttpControlledError, sendInternalErrorSafeMessageOrPrisma } from '../utils/apiErrorResponse.js';
+import { verifyTurnstileToken } from '../utils/cloudflareTurnstile.js';
+import { verifySignupIpNotProxyVpn } from '../utils/signupProxyVpnGuard.js';
 
 export type UserRegistrationDeps = {
   bcrypt: typeof bcryptjs;
@@ -188,6 +190,22 @@ export function registerUserRoutes(app: Express, deps: UserRegistrationDeps): vo
         }
 
       } else {
+        const turnstile = await verifyTurnstileToken(req, u.turnstileToken);
+        if (!turnstile.ok) {
+          return res.status(turnstile.status).json({ error: turnstile.error, code: 'TURNSTILE_FAILED' });
+        }
+        const signupIpGuard = await verifySignupIpNotProxyVpn(getClientIp(req));
+        if (!signupIpGuard.ok) {
+          logUserAction(null, 'signup_blocked_proxy_vpn', {
+            clientIp: getClientIp(req),
+            email: normalizedEmail || null,
+            ...(signupIpGuard.details || {})
+          });
+          return res.status(signupIpGuard.status).json({
+            error: signupIpGuard.error,
+            code: signupIpGuard.code
+          });
+        }
         if (!u.email) {
           return res.status(400).json({ error: 'Email é obrigatório para o registro.' });
         }
@@ -316,7 +334,7 @@ export function registerUserRoutes(app: Express, deps: UserRegistrationDeps): vo
         }
       }
 
-      const passwordHash = hasPassword ? await bcrypt.hash(u.password as string, 10) : null;
+      const passwordHash = hasPassword ? await bcrypt.hash(u.password as string, 12) : null;
       const clientIp = getClientIp(req);
 
       await prisma.$transaction(async (tx) => {

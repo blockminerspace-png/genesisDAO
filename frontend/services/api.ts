@@ -1854,7 +1854,7 @@ export async function toggleUserBlocked(
   }
 }
 
-export async function updateUser(user: User & { newReferralFor?: string }): Promise<{ ok: boolean; error?: string; code?: string; requiresEmailVerification?: boolean; message?: string }> {
+export async function updateUser(user: User & { newReferralFor?: string; turnstileToken?: string }): Promise<{ ok: boolean; error?: string; code?: string; requiresEmailVerification?: boolean; message?: string }> {
   try {
     const res = await apiFetch(`${base}/user`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(user) });
     const data = await res.json().catch(() => ({}));
@@ -3682,10 +3682,16 @@ export async function sendNft(payload: { contract: string; tokenId: string; from
   await apiFetch(`${base}/nfts/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
 }
 
-export async function login(email: string, password: string, deviceFingerprint?: DeviceFingerprintPayload): Promise<any> {
+export async function login(
+  email: string,
+  password: string,
+  deviceFingerprint?: DeviceFingerprintPayload,
+  turnstileToken?: string
+): Promise<any> {
   try {
     const body: Record<string, unknown> = { email, password };
     if (deviceFingerprint) body.deviceFingerprint = deviceFingerprint;
+    if (turnstileToken) body.turnstileToken = turnstileToken;
     const res = await apiFetch(`${base}/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const data = await res.json();
     if (res.ok) setSessionHint(true);

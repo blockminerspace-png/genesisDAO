@@ -45,6 +45,11 @@ model users {
   admin_permissions    String?
   email_verification_required Int @default(0)
   email_verified     Int     @default(0)
+  password_reset_token_hash       String?
+  password_reset_token_expires_at BigInt?
+  login_failure_count             Int     @default(0)
+  login_locked_until              BigInt?
+  email_verification_token_hash   String?
 
   @@map("users")
 }
@@ -1167,4 +1172,40 @@ model wallet_ledger_entries {
 
   @@index([user_id, created_at(sort: Desc)])
   @@map("wallet_ledger_entries")
+}
+
+// --- Email Marketing ---
+
+model email_campaigns {
+  id                Int     @id @default(autoincrement())
+  title             String  @db.VarChar(255)
+  subject           String  @db.VarChar(255)
+  body_html         String
+  image_url         String? @db.VarChar(500)
+  status            String  @default("draft") @db.VarChar(50)
+  daily_limit       Int     @default(750)
+  total_recipients  Int     @default(0)
+  total_sent        Int     @default(0)
+  total_failed      Int     @default(0)
+  created_by        Int?
+  created_at        BigInt  @default(0)
+  activated_at      BigInt?
+  completed_at      BigInt?
+  notes             String?
+
+  @@map("email_campaigns")
+}
+
+model email_campaign_deliveries {
+  id            Int     @id @default(autoincrement())
+  campaign_id   Int
+  user_id       Int
+  email         String  @db.VarChar(255)
+  status        String  @default("pending") @db.VarChar(50)
+  sent_at       BigInt?
+  error_message String? @db.VarChar(500)
+
+  @@unique([campaign_id, user_id])
+  @@index([campaign_id, status])
+  @@map("email_campaign_deliveries")
 }

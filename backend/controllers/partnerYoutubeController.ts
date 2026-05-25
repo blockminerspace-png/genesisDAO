@@ -457,9 +457,8 @@ export function registerPartnerYoutubeRoutes(app: Express, deps: PartnerYoutubeD
       const mergedRows = [...basePartnerRows, ...extraRows].sort((a, b) =>
         String(a.username || '').localeCompare(String(b.username || ''), 'pt-PT', { sensitivity: 'base' })
       );
-      const activeRoomRows = mergedRows.filter((row) => nftRoomActiveUserIds.has(Number(row.user_id) || 0));
       res.json({
-        partners: activeRoomRows.map((row) => ({
+        partners: mergedRows.map((row) => ({
           ...(function () {
             const hasNftRoom = nftRoomActiveUserIds.has(Number(row.user_id) || 0);
             const compliance = buildPartnerRoomCompliance(
@@ -778,16 +777,10 @@ export function registerPartnerYoutubeRoutes(app: Express, deps: PartnerYoutubeD
              WHERE pr.user_id = u.id
                AND COALESCE(NULLIF(BTRIM(pr.room_id::text), ''), 'room_initial') = $2
           )
-          OR EXISTS (
-            SELECT 1 FROM user_access_levels ual
-             WHERE ual.user_id = u.id
-               AND LOWER(BTRIM(ual.access_level_id::text)) = ANY($3::text[])
-          )
-          OR LOWER(BTRIM(u.access_level_id::text)) = ANY($3::text[])
         )
         ORDER BY u.id ASC
       `;
-      const r = await db.query(sql, [overdueThresholdMs, STREAMER_ROOM_ID_CONST, STREAMER_LEVEL_IDS]);
+      const r = await db.query(sql, [overdueThresholdMs, STREAMER_ROOM_ID_CONST]);
       const users = r.rows.map((row) => {
         const lastApprovedAt = row.last_approved_at != null ? Number(row.last_approved_at) : null;
         const approvedLast60d = parseInt(String(row.approved_last_60d || '0'), 10);

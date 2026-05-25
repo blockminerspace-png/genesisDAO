@@ -82,14 +82,14 @@ export function registerAuthRoutes(app: Express, deps: AuthControllerDeps): void
       let u = await findUserByEmail(normalizedEmail);
 
       if (!u) {
-        await bcrypt.compare(passwordStr, '$2b$10$abcdefghijklmnopqrstuvwxyz123456');
+        await bcrypt.compare(passwordStr, '$2b$12$LZUbIvLtEnFKPqXhUGXwkuszLtVDFW9AcE/OeIQH.9y17O/wIFUIC').catch(() => false);
         return res.status(401).json({ error: 'E-mail ou palavra-passe incorretos.' });
       }
 
       if (u.is_blocked) return res.status(403).json({ error: 'Este usuário está bloqueado.' });
 
       if (!u.password) {
-        const hashedPassword = await bcrypt.hash(passwordStr, 10);
+        const hashedPassword = await bcrypt.hash(passwordStr, 12);
         await updateUserPasswordHash(u.id as string | number, hashedPassword);
         u = { ...u, password: hashedPassword };
       }
@@ -104,7 +104,7 @@ export function registerAuthRoutes(app: Express, deps: AuthControllerDeps): void
         }
       } else if (pwd === passwordStr) {
         isMatch = true;
-        const hashedPassword = await bcrypt.hash(passwordStr, 10);
+        const hashedPassword = await bcrypt.hash(passwordStr, 12);
         await updateUserPasswordHash(u.id as string | number, hashedPassword);
       }
 

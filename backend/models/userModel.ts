@@ -73,7 +73,14 @@ export async function getUserIdByEmail(
     }
     const registrationIp = resolveRegistrationIp(ip);
     if (registrationIp) {
-      const count = await prisma.users.count({ where: { registration_ip: registrationIp } });
+      // M4: janela temporal de 90 dias — impede que IPs antigos fiquem bloqueados para sempre
+      const windowMs = BigInt(Date.now() - 90 * 24 * 60 * 60 * 1000);
+      const count = await prisma.users.count({
+        where: {
+          registration_ip: registrationIp,
+          last_active_at: { gte: windowMs }
+        }
+      });
       if (count >= 3) {
         throw new IpLimitError('Não foi possível concluir o cadastro a partir desta ligação. Tente novamente mais tarde.');
       }

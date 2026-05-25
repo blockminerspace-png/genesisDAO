@@ -97,6 +97,8 @@ import {
 } from './dist/utils/securityThreatObserver.js';
 import { initDb } from './dist/config/initDb.js';
 import { sendResetEmail } from './dist/utils/mailer.js';
+import { getAuthFlowTokenSecret } from './dist/utils/authFlowSecret.js';
+import { verifyTurnstileToken } from './dist/utils/cloudflareTurnstile.js';
 import {
   COOKIE_ACCESS,
   getJwtAuthConfig,
@@ -198,6 +200,8 @@ import { registerDashboardModuleRoutes } from './dist/modules/dashboard/dashboar
 import { registerCheckinModuleRoutes } from './dist/modules/checkin/checkin.controller.js';
 import { registerEmailVerificationModuleRoutes } from './dist/modules/email-verification/emailVerification.controller.js';
 import { registerAuthLoginModuleRoutes } from './dist/modules/auth-login/index.js';
+import { registerEmailCampaignRoutes } from './dist/modules/email-campaigns/emailCampaigns.controller.js';
+import { startEmailCampaignCron } from './dist/cron/emailCampaignCron.js';
 import { registerAuthRegisterModuleRoutes } from './dist/modules/auth-register/index.js';
 import { registerInventoryRoutes } from './dist/controllers/inventoryController.js';
 import { registerInventoryModuleRoutes } from './dist/modules/inventory/inventory.controller.js';
@@ -1476,7 +1480,7 @@ const parseRateLimit = (raw, fallback, min, max) => {
 // Limite global /api por IP. O SPA faz várias chamadas em paralelo a cada 10–15s; IPs partilhados (CGNAT, café,
 // escritório) somam no mesmo bucket — piso baixo (ex.: 200) bloqueava utilizadores “do nada”. Ajuste API_RATE_LIMIT_MAX.
 const apiRateLimitMax = parseRateLimit(process.env.API_RATE_LIMIT_MAX, 20000, 5000, 250000);
-const authRateLimitMax = parseRateLimit(process.env.AUTH_RATE_LIMIT_MAX, 40, 5, 1000);
+const authRateLimitMax = parseRateLimit(process.env.AUTH_RATE_LIMIT_MAX, 15, 5, 1000);
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -1604,7 +1608,17 @@ attachSecurityThreatResponseObserver(app, {
   getClientIp
 });
 
-app.use(express.json({ limit: '5mb' })); // Reduzido o limite para 5MB por segurança
+// A2: body limit reduzido (2 KB) para rotas de autenticação — previne abuso de memória/ReDoS
+const authBodyLimit = express.json({ limit: '2kb' });
+app.use('/api/login', authBodyLimit);
+app.use('/api/user', authBodyLimit);
+app.use('/api/request-password-reset', authBodyLimit);
+app.use('/api/reset-password-secure', authBodyLimit);
+app.use('/api/verify-recovery-wallet', authBodyLimit);
+app.use('/api/request-email-verification', authBodyLimit);
+app.use('/api/verify-email', authBodyLimit);
+
+app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ limit: '5mb', extended: true }));
 
 const jwtAllowLegacySession =
@@ -1804,6 +1818,7 @@ registerEmailVerificationModuleRoutes(app, {
   verifyAttemptLimiter: verifyEmailAttemptLimiter,
   emailAddressMaxLength: EMAIL_ADDRESS_MAX_LENGTH
 });
+registerEmailCampaignRoutes(app, isAdmin);
 registerProfilePlayerRoutes(app, {
   authenticateToken,
   getClientIp,
@@ -1904,6 +1919,9 @@ app.post('/api/player-activity-log', async (req, res) => {
 
 // --- Ranking / hashrates: um único tick em miningYieldCron + getGlobalNetworkStats() ---
 startMiningYieldCron(db);
+
+// --- Email marketing: lote diário automático ---
+startEmailCampaignCron();
 
 // Sistema de carregamento de baterias descontinuado em 20260516180000:
 // não há cron, rotas de workshop/recarga, daily-boost ou reward-ad. Baterias
@@ -5260,6 +5278,52 @@ app.get('/api/users', isAdmin, async (req, res) => {
       rooms: roomsRes.rows
     });
   } catch (e) { sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e); }
+});
+
+// B3: listar contas com lockout ativo
+app.get('/api/admin/locked-accounts', isAdmin, async (req, res) => {
+  try {
+    const now = BigInt(Date.now());
+    const rows = await prisma.users.findMany({
+      where: { login_locked_until: { gt: now } },
+      select: {
+        id: true,
+        username: true,
+        email: true,
+        login_failure_count: true,
+        login_locked_until: true
+      },
+      orderBy: { login_locked_until: 'desc' },
+      take: 200
+    });
+    res.json(rows.map(r => ({
+      id: r.id,
+      username: r.username,
+      email: r.email,
+      loginFailureCount: r.login_failure_count,
+      lockedUntilMs: r.login_locked_until != null ? Number(r.login_locked_until) : null,
+      secondsRemaining: r.login_locked_until != null
+        ? Math.max(0, Math.ceil((Number(r.login_locked_until) - Date.now()) / 1000))
+        : 0
+    })));
+  } catch (e: unknown) {
+    sendInternalErrorOrPrisma(res, req.originalUrl, e);
+  }
+});
+
+// B3: desbloquear conta manualmente
+app.post('/api/admin/users/:userId/unlock', isAdmin, async (req, res) => {
+  const uid = parseInt(String(req.params.userId), 10);
+  if (!uid || isNaN(uid)) return res.status(400).json({ error: 'userId inválido' });
+  try {
+    await prisma.users.update({
+      where: { id: uid },
+      data: { login_failure_count: 0, login_locked_until: null }
+    });
+    res.json({ ok: true, message: `Conta #${uid} desbloqueada.` });
+  } catch (e: unknown) {
+    sendInternalErrorOrPrisma(res, req.originalUrl, e);
+  }
 });
 
 app.get('/api/admin/users/map', isAdmin, async (req, res) => {
@@ -8955,34 +9019,47 @@ app.post('/api/request-password-reset', passwordResetRequestLimiter, async (req,
   try {
     const row = await prisma.users.findFirst({
       where: { email: { equals: raw, mode: 'insensitive' } },
-      select: { email: true }
+      select: { id: true, email: true }
     });
     if (!row) {
       return res.json(genericOk);
     }
     const email = row.email;
     const timestamp = Date.now();
-    const resetPayload = JSON.stringify({ email, expiry: timestamp + 60 * 60 * 1000, purpose: 'password_reset' });
-    const signature = crypto
-      .createHmac('sha256', process.env.AUTH_FLOW_TOKEN_SECRET || process.env.JWT_SECRET || 'secret')
-      .update(resetPayload)
-      .digest('hex');
+    const expiry = timestamp + 60 * 60 * 1000;
+    const resetPayload = JSON.stringify({ email, expiry, purpose: 'password_reset' });
+    // C2: sem fallback 'secret' — lança se variável ausente
+    const secret = getAuthFlowTokenSecret();
+    const signature = crypto.createHmac('sha256', secret).update(resetPayload).digest('hex');
     const resetToken = Buffer.from(resetPayload).toString('base64') + '.' + signature;
+    // C3: persistir hash do token no banco (uso único — invalidado ao ser usado)
+    const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+    await prisma.users.update({
+      where: { id: row.id },
+      data: {
+        password_reset_token_hash: tokenHash,
+        password_reset_token_expires_at: BigInt(expiry)
+      }
+    });
 
     void sendResetEmail(email, resetToken, { validityMinutes: 60 }).catch((mailErr: unknown) => {
       console.error('[request-password-reset] envio SMTP:', mailErr instanceof Error ? mailErr.message : mailErr);
     });
     return res.json(genericOk);
-  } catch (e) {
-    console.error('[request-password-reset]', e.message || e);
+  } catch (e: unknown) {
+    console.error('[request-password-reset]', e instanceof Error ? e.message : 'Erro interno');
     return res.json(genericOk);
   }
 });
 
 // PASSWORD RECOVERY BY WALLET (legado; o fluxo principal é por email)
 app.post('/api/verify-recovery-wallet', passwordResetRequestLimiter, async (req, res) => {
-  const { email, walletAddress } = req.body;
+  const { email, walletAddress, turnstileToken } = req.body || {};
   if (!email || !walletAddress) return res.status(400).json({ error: 'Dados incompletos' });
+
+  // A6: Turnstile no endpoint de recuperação por carteira
+  const tsResult = await verifyTurnstileToken(req, turnstileToken);
+  if (!tsResult.ok) return res.status(tsResult.status).json({ error: tsResult.error, code: 'TURNSTILE_FAILED' });
 
   const emailNorm = String(email).trim().toLowerCase();
   const emailCheck = validateLoginEmail(emailNorm);
@@ -9021,54 +9098,113 @@ app.post('/api/verify-recovery-wallet', passwordResetRequestLimiter, async (req,
       purpose: 'password_reset'
     });
     const signature = crypto
-      .createHmac('sha256', process.env.AUTH_FLOW_TOKEN_SECRET || process.env.JWT_SECRET || 'secret')
+      .createHmac('sha256', getAuthFlowTokenSecret())
       .update(resetPayload)
       .digest('hex');
     const resetToken = Buffer.from(resetPayload).toString('base64') + '.' + signature;
 
-    sendResetEmail(accountEmail, resetToken, { validityMinutes: 10 }).catch(err => {
-      console.error('[Mailer Error] Falha ao enviar e-mail:', err.message);
+    // C3: persistir hash do token no banco para uso único
+    const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+    await prisma.users.updateMany({
+      where: { email: { equals: accountEmail, mode: 'insensitive' } },
+      data: {
+        password_reset_token_hash: tokenHash,
+        password_reset_token_expires_at: BigInt(timestamp + 600000)
+      }
+    });
+
+    sendResetEmail(accountEmail, resetToken, { validityMinutes: 10 }).catch((err: unknown) => {
+      console.error('[Mailer Error] Falha ao enviar e-mail:', err instanceof Error ? err.message : err);
     });
     return res.json(genericOk);
 
-  } catch (e) {
-    console.error(e);
+  } catch (e: unknown) {
+    console.error('[verify-recovery-wallet]', e instanceof Error ? e.message : 'Erro interno');
     res.json(genericOk);
   }
 });
 
 app.post('/api/reset-password-secure', securePasswordResetLimiter, async (req, res) => {
-  const { resetToken, newPassword } = req.body;
-  if (!resetToken || !newPassword) return res.status(400).json({ error: 'Dados incompletos' });
+  const { resetToken, newPassword } = req.body || {};
+  if (!resetToken || !newPassword || typeof resetToken !== 'string' || typeof newPassword !== 'string') {
+    return res.status(400).json({ error: 'Dados incompletos' });
+  }
   const pv = validateSignupPassword(newPassword, true);
   if (!pv.ok) return res.status(400).json({ error: pv.error });
 
   try {
-    const [payloadB64, signature] = resetToken.split('.');
+    const parts = resetToken.split('.');
+    if (parts.length !== 2) return res.status(400).json({ error: 'Token inválido' });
+    const [payloadB64, signature] = parts;
     if (!payloadB64 || !signature) return res.status(400).json({ error: 'Token inválido' });
 
     const payloadRaw = Buffer.from(payloadB64, 'base64').toString();
-    const expectedSig = crypto
-      .createHmac('sha256', process.env.AUTH_FLOW_TOKEN_SECRET || process.env.JWT_SECRET || 'secret')
-      .update(payloadRaw)
-      .digest('hex');
-    if (signature !== expectedSig) return res.status(403).json({ error: 'Token manipulado ou inválido' });
+    // C2: sem fallback 'secret'
+    const secret = getAuthFlowTokenSecret();
+    const expectedSig = crypto.createHmac('sha256', secret).update(payloadRaw).digest('hex');
 
-    const payload = JSON.parse(payloadRaw);
-    if (Date.now() > payload.expiry) return res.status(403).json({ error: 'Sessão de recuperação expirada' });
-    if (payload.purpose !== 'password_reset') return res.status(400).json({ error: 'Token inválido' });
+    // C1: comparação em tempo constante para prevenir timing attacks
+    let sigOk = false;
+    try {
+      sigOk = crypto.timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expectedSig, 'hex'));
+    } catch { sigOk = false; }
+    if (!sigOk) return res.status(403).json({ error: 'Token manipulado ou inválido' });
 
-    const email = payload.email;
-    if (!email || typeof email !== 'string') {
+    // M5: validação de tipos explícita no payload
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(payloadRaw) as Record<string, unknown>;
+    } catch {
       return res.status(400).json({ error: 'Token inválido' });
     }
+    const expiry = typeof payload.expiry === 'number' ? payload.expiry : -1;
+    const purpose = typeof payload.purpose === 'string' ? payload.purpose : '';
+    const email = typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : '';
+    if (!email || purpose !== 'password_reset') return res.status(400).json({ error: 'Token inválido' });
+    if (Date.now() > expiry) return res.status(403).json({ error: 'Sessão de recuperação expirada' });
 
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await db.query('UPDATE users SET password = $1 WHERE lower(email) = lower($2)', [hashedPassword, email]);
+    // C3: verificar que o token não foi usado (hash persistido no banco)
+    const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+    const userRow = await prisma.users.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
+      select: { id: true, password_reset_token_hash: true, password_reset_token_expires_at: true }
+    });
+    if (!userRow) return res.status(400).json({ error: 'Conta não encontrada.' });
+
+    const storedHash = userRow.password_reset_token_hash;
+    const storedExpiry = userRow.password_reset_token_expires_at;
+
+    // Comparação em tempo constante do hash armazenado
+    let hashOk = false;
+    if (storedHash && storedHash.length === tokenHash.length) {
+      try {
+        hashOk = crypto.timingSafeEqual(Buffer.from(storedHash, 'hex'), Buffer.from(tokenHash, 'hex'));
+      } catch { hashOk = false; }
+    }
+    if (!hashOk) return res.status(403).json({ error: 'Link de recuperação já utilizado ou inválido.' });
+    if (storedExpiry && Date.now() > Number(storedExpiry)) {
+      return res.status(403).json({ error: 'Sessão de recuperação expirada.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    // C3: invalidar token após uso + A3: invalidar todas as sessões ativas
+    await prisma.$transaction([
+      prisma.users.update({
+        where: { id: userRow.id },
+        data: {
+          password: hashedPassword,
+          password_reset_token_hash: null,
+          password_reset_token_expires_at: null,
+          login_failure_count: 0,
+          login_locked_until: null
+        }
+      }),
+      prisma.sessions.deleteMany({ where: { user_id: userRow.id } })
+    ]);
+
     res.json({ ok: true });
-
-  } catch (e) {
-    console.error(e);
+  } catch (e: unknown) {
+    console.error('[reset-password-secure]', e instanceof Error ? e.message : 'Erro interno');
     res.status(500).json({ error: 'Erro ao redefinir senha.' });
   }
 });

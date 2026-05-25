@@ -42,6 +42,43 @@ export async function findUserById(id: number): Promise<DbUserRow | undefined> {
   return row ? userToRow(row) : undefined;
 }
 
+const LOGIN_MAX_FAILURES = 10;
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000; // 15 minutos
+
+export async function recordLoginFailure(userId: number): Promise<void> {
+  // Incremento atômico para evitar TOCTOU em requests concorrentes
+  const updated = await prisma.users.update({
+    where: { id: userId },
+    data: { login_failure_count: { increment: 1 } },
+    select: { login_failure_count: true }
+  });
+  if (updated.login_failure_count >= LOGIN_MAX_FAILURES) {
+    // Definir lockout apenas se o limiar for atingido; sobrescreve se já bloqueado (reset do timer)
+    await prisma.users.update({
+      where: { id: userId },
+      data: { login_locked_until: BigInt(Date.now() + LOGIN_LOCKOUT_MS) }
+    });
+  }
+}
+
+export async function clearLoginFailures(userId: number): Promise<void> {
+  await prisma.users.update({
+    where: { id: userId },
+    data: { login_failure_count: 0, login_locked_until: null }
+  });
+}
+
+export function isAccountLocked(user: DbUserRow): boolean {
+  const lockedUntil = user.login_locked_until != null ? Number(user.login_locked_until) : null;
+  return lockedUntil !== null && Date.now() < lockedUntil;
+}
+
+export function accountLockRemainingSeconds(user: DbUserRow): number {
+  const lockedUntil = user.login_locked_until != null ? Number(user.login_locked_until) : null;
+  if (!lockedUntil) return 0;
+  return Math.max(0, Math.ceil((lockedUntil - Date.now()) / 1000));
+}
+
 export async function updateUserPasswordHash(userId: string | number, hash: string): Promise<void> {
   await prisma.users.update({
     where: { id: Number(userId) },
@@ -100,6 +137,8 @@ export async function insertSession(
   });
 }
 
+const LAST_SEEN_UPDATE_INTERVAL_MS = 5 * 60 * 1000; // M3: atualizar last_seen_at no máximo 1x a cada 5 min
+
 export async function loadSessionUser(
   sessionId: string
 ): Promise<{ session: Record<string, unknown>; user: DbUserRow } | null> {
@@ -107,6 +146,17 @@ export async function loadSessionUser(
   if (!s || Number(s.expires_at) < Date.now()) return null;
   const u = await prisma.users.findUnique({ where: { id: s.user_id } });
   if (!u) return null;
+
+  // M3: atualizar last_seen_at lazily para detectar sessões inativas sem impacto em cada request
+  const now = BigInt(Date.now());
+  const lastSeen = s.last_seen_at != null ? Number(s.last_seen_at) : 0;
+  if (Date.now() - lastSeen > LAST_SEEN_UPDATE_INTERVAL_MS) {
+    void prisma.sessions.updateMany({
+      where: { session_id: sessionId },
+      data: { last_seen_at: now }
+    }).catch(() => { /* não bloqueia a requisição */ });
+  }
+
   return { session: sessionToRow(s), user: userToRow(u) };
 }
 

@@ -6,6 +6,8 @@ import {
   type WalletHistoryAction
 } from '../modules/profile/profileWalletHistory.service.js';
 
+const DEFAULT_REFERRAL_RECEIVER_REWARD_USDC = 1;
+
 export type UserPutCoreWalletAudit =
   | { kind: 'admin'; actorUserId: number; clientIp: string | null; userAgent: string | null }
   | { kind: 'registration'; clientIp: string | null; userAgent: string | null };
@@ -49,6 +51,35 @@ export async function executeUserPutCoreTransaction(
   } = input;
 
   const now = BigInt(Date.now());
+
+  async function upsertGameStateCredit(args: {
+    userId: number;
+    usdcIncrement?: number;
+    claimedReferralsIncrement?: number;
+    markReferralBonusClaimed?: boolean;
+  }): Promise<void> {
+    const usdcIncrement = Math.max(0, Number(args.usdcIncrement) || 0);
+    const claimedReferralsIncrement = Math.max(0, Number(args.claimedReferralsIncrement) || 0);
+    if (usdcIncrement <= 0 && claimedReferralsIncrement <= 0 && !args.markReferralBonusClaimed) return;
+    await tx.game_states.upsert({
+      where: { user_id: args.userId },
+      update: {
+        ...(usdcIncrement > 0 ? { usdc: { increment: usdcIncrement } } : {}),
+        ...(claimedReferralsIncrement > 0 ? { claimed_referrals: { increment: claimedReferralsIncrement } } : {}),
+        ...(args.markReferralBonusClaimed ? { referral_bonus_claimed: 1 } : {}),
+        last_updated_at: now
+      },
+      create: {
+        user_id: args.userId,
+        usdc: usdcIncrement,
+        start_time: now,
+        last_updated_at: now,
+        claimed_referrals: claimedReferralsIncrement,
+        referral_bonus_claimed: args.markReferralBonusClaimed ? 1 : 0,
+        black_market_balance: 0
+      }
+    });
+  }
 
   let walletChange:
     | {
@@ -214,6 +245,11 @@ export async function executeUserPutCoreTransaction(
 
   if (!insertedReferral) return;
 
+  await upsertGameStateCredit({
+    userId: ref.id,
+    claimedReferralsIncrement: 1
+  });
+
   const alId = ref.access_level_id || 'normal';
   const link = await tx.access_level_referral_models.findUnique({
     where: { access_level_id: alId }
@@ -227,22 +263,20 @@ export async function executeUserPutCoreTransaction(
 
   if (model) {
     console.log(`[Referral] Using Advanced Model: ${model.name} for Access Level: ${alId}`);
-
-    const senderUsdc = model.sender_reward_usdc ?? 0;
-    if (senderUsdc > 0) {
-      await tx.game_states.update({
-        where: { user_id: ref.id },
-        data: { usdc: { increment: senderUsdc } }
-      });
-    }
-
-    const receiverUsdc = model.receiver_reward_usdc ?? 0;
-    if (receiverUsdc > 0) {
-      await tx.game_states.update({
-        where: { user_id: uid },
-        data: { usdc: { increment: receiverUsdc } }
-      });
-    }
   }
+  const senderUsdc = model ? Number(model.sender_reward_usdc ?? 0) : 0;
+  const receiverUsdc = model
+    ? Number(model.receiver_reward_usdc ?? 0)
+    : DEFAULT_REFERRAL_RECEIVER_REWARD_USDC;
+
+  await upsertGameStateCredit({
+    userId: ref.id,
+    usdcIncrement: senderUsdc
+  });
+  await upsertGameStateCredit({
+    userId: uid,
+    usdcIncrement: receiverUsdc,
+    markReferralBonusClaimed: receiverUsdc > 0
+  });
   // Comissão sobre depósitos do indicado: ver `creditDepositReferralCommissionPg` no crédito on-chain.
 }

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'url';
 import crypto from 'node:crypto';
 import cors from 'cors';
 import helmet from 'helmet';
-import { rateLimit } from 'express-rate-limit';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { GoogleGenAI } from "@google/genai";
 import bcrypt from 'bcryptjs';
 const __filename = fileURLToPath(import.meta.url);
@@ -59,6 +59,8 @@ import { resolveIsSuperAdminFromUserRow, LEGACY_SUPER_ADMIN_EMAILS } from './dis
 import { attachSecurityThreatResponseObserver, startSecurityThreatObserverBackgroundScan } from './dist/utils/securityThreatObserver.js';
 import { initDb } from './dist/config/initDb.js';
 import { sendResetEmail } from './dist/utils/mailer.js';
+import { getAuthFlowTokenSecret } from './dist/utils/authFlowSecret.js';
+import { verifyTurnstileToken } from './dist/utils/cloudflareTurnstile.js';
 import { COOKIE_ACCESS, getJwtAuthConfig, createResolveAuthMiddleware, issueJwtAuthCookies, handleJwtRefresh, revokeJwtRefreshForUser, clearAuthCookies, verifyAccessToken } from './dist/src/auth/index.js';
 import { registerDeviceFingerprintAdminRoutes } from './dist/controllers/deviceFingerprintAdminController.js';
 import { registerAdminReferralRoutes } from './dist/controllers/adminReferralController.js';
@@ -107,6 +109,8 @@ import { registerDashboardModuleRoutes } from './dist/modules/dashboard/dashboar
 import { registerCheckinModuleRoutes } from './dist/modules/checkin/checkin.controller.js';
 import { registerEmailVerificationModuleRoutes } from './dist/modules/email-verification/emailVerification.controller.js';
 import { registerAuthLoginModuleRoutes } from './dist/modules/auth-login/index.js';
+import { registerEmailCampaignRoutes } from './dist/modules/email-campaigns/emailCampaigns.controller.js';
+import { startEmailCampaignCron } from './dist/cron/emailCampaignCron.js';
 import { registerAuthRegisterModuleRoutes } from './dist/modules/auth-register/index.js';
 import { registerInventoryRoutes } from './dist/controllers/inventoryController.js';
 import { registerInventoryModuleRoutes } from './dist/modules/inventory/inventory.controller.js';
@@ -128,7 +132,7 @@ import { registerProfilePlayerRoutes } from './dist/modules/profile/profilePlaye
 import { bindProfileReferralCode } from './dist/modules/profile/profileReferralBind.service.js';
 import { removeProfileWallet } from './dist/modules/profile/profileWallet.service.js';
 import { getUserIdByEmail } from './dist/models/userModel.js';
-import { listUserAccessLevelIds, findUserById, findSessionRow, findActiveSessionUserId, findSessionUserIdIgnoringExpiry, deleteSessionBySessionId, updateUserPolygonAndAccess } from './dist/models/authModel.js';
+import { listUserAccessLevelIds, findUserById, findActiveSessionUserId, findSessionUserIdIgnoringExpiry, deleteSessionBySessionId, updateUserPolygonAndAccess } from './dist/models/authModel.js';
 import { fetchAdminWalletHistoryReport } from './dist/modules/profile/profileWalletHistory.service.js';
 import { getEmailVerificationFlags } from './dist/modules/email-verification/emailVerification.service.js';
 // Global Error Handlers to prevent silent crashes
@@ -1115,9 +1119,11 @@ async function resolveUserIdFromAccessCookieOrSid(req) {
                 return uid;
         }
         catch {
-            /* continuar para sid */
+            /* access inválido */
         }
     }
+    if (!jwtAllowLegacySession)
+        return null;
     const sid = parseCookies(req).sid;
     if (!sid)
         return null;
@@ -1207,6 +1213,8 @@ if (enforceHttpsRedirect) {
     });
 }
 const cspUpgradeInsecure = process.env.NODE_ENV === 'production' && String(process.env.CSP_UPGRADE_INSECURE ?? '1') !== '0';
+const cspAllowUnsafeEval = process.env.CSP_ALLOW_UNSAFE_EVAL === '1';
+const cspAllowUnsafeInlineStyles = process.env.CSP_ALLOW_UNSAFE_INLINE_STYLES !== '0';
 app.use(helmet({
     contentSecurityPolicy: {
         useDefaults: true,
@@ -1214,8 +1222,6 @@ app.use(helmet({
             "default-src": ["'self'"],
             "script-src": [
                 "'self'",
-                "'unsafe-inline'",
-                "'unsafe-eval'",
                 "https://cdn.applixir.com",
                 "https://static.cloudflareinsights.com",
                 "https://ajax.cloudflare.com",
@@ -1223,7 +1229,7 @@ app.use(helmet({
                 "https://www.googletagmanager.com",
                 "https://www.google-analytics.com",
                 "https://*.googletagmanager.com"
-            ],
+            ].concat(cspAllowUnsafeEval ? ["'unsafe-eval'"] : []),
             "connect-src": [
                 "'self'",
                 "https://cdn.applixir.com",
@@ -1237,7 +1243,7 @@ app.use(helmet({
                 "https://cloudflareinsights.com"
             ],
             "img-src": ["'self'", "data:", "https:", "http:"],
-            "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+            "style-src": ["'self'", "https://fonts.googleapis.com"].concat(cspAllowUnsafeInlineStyles ? ["'unsafe-inline'"] : []),
             "font-src": ["'self'", "https://fonts.gstatic.com"],
             "frame-src": ["'self'", "https://cdn.applixir.com", "https://challenges.cloudflare.com"],
             "object-src": ["'none'"],
@@ -1284,7 +1290,7 @@ const parseRateLimit = (raw, fallback, min, max) => {
 // Limite global /api por IP. O SPA faz várias chamadas em paralelo a cada 10–15s; IPs partilhados (CGNAT, café,
 // escritório) somam no mesmo bucket — piso baixo (ex.: 200) bloqueava utilizadores “do nada”. Ajuste API_RATE_LIMIT_MAX.
 const apiRateLimitMax = parseRateLimit(process.env.API_RATE_LIMIT_MAX, 20000, 5000, 250000);
-const authRateLimitMax = parseRateLimit(process.env.AUTH_RATE_LIMIT_MAX, 40, 5, 1000);
+const authRateLimitMax = parseRateLimit(process.env.AUTH_RATE_LIMIT_MAX, 15, 5, 1000);
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: apiRateLimitMax,
@@ -1303,7 +1309,7 @@ const authLimiter = rateLimit({
     max: authRateLimitMax,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => getClientIp(req),
+    keyGenerator: (req) => ipKeyGenerator(getClientIp(req)),
     skip: (req) => {
         const ip = getClientIp(req);
         return ip === '::1' || ip === '127.0.0.1' || ip === '::ffff:127.0.0.1';
@@ -1317,12 +1323,68 @@ const passwordResetRequestLimiter = rateLimit({
     max: parseRateLimit(process.env.PASSWORD_RESET_EMAIL_MAX_PER_HOUR, 8, 3, 30),
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => getClientIp(req),
+    keyGenerator: (req) => ipKeyGenerator(getClientIp(req)),
     skip: (req) => {
         const ip = getClientIp(req);
         return ip === '::1' || ip === '127.0.0.1' || ip === '::ffff:127.0.0.1';
     },
     message: { error: 'Muitos pedidos de redefinição a partir deste IP. Tente novamente mais tarde.' },
+    validate: { trustProxy: true }
+});
+const signupLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: parseRateLimit(process.env.SIGNUP_MAX_PER_HOUR, 8, 3, 30),
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(getClientIp(req)),
+    skip: (req) => {
+        const ip = getClientIp(req);
+        return ip === '::1' || ip === '127.0.0.1' || ip === '::ffff:127.0.0.1';
+    },
+    message: { error: 'Muitas tentativas de cadastro. Tente novamente mais tarde.' },
+    validate: { trustProxy: true }
+});
+const verifyEmailAttemptLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: parseRateLimit(process.env.EMAIL_VERIFY_MAX_PER_15M, 20, 5, 80),
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(getClientIp(req)),
+    skip: (req) => {
+        const ip = getClientIp(req);
+        return ip === '::1' || ip === '127.0.0.1' || ip === '::ffff:127.0.0.1';
+    },
+    message: { error: 'Muitas tentativas de verificação. Tente novamente mais tarde.' },
+    validate: { trustProxy: true }
+});
+const securePasswordResetLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: parseRateLimit(process.env.PASSWORD_RESET_CONFIRM_MAX_PER_HOUR, 12, 3, 40),
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => {
+        const token = req.body && typeof req.body.resetToken === 'string' ? req.body.resetToken : '';
+        const tail = token ? crypto.createHash('sha256').update(token).digest('hex').slice(0, 16) : 'no-token';
+        return `${ipKeyGenerator(getClientIp(req))}:${tail}`;
+    },
+    skip: (req) => {
+        const ip = getClientIp(req);
+        return ip === '::1' || ip === '127.0.0.1' || ip === '::ffff:127.0.0.1';
+    },
+    message: { error: 'Muitas tentativas de redefinição. Tente novamente mais tarde.' },
+    validate: { trustProxy: true }
+});
+const refreshLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: parseRateLimit(process.env.AUTH_REFRESH_MAX_PER_15M, 60, 10, 240),
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(getClientIp(req)),
+    skip: (req) => {
+        const ip = getClientIp(req);
+        return ip === '::1' || ip === '127.0.0.1' || ip === '::ffff:127.0.0.1';
+    },
+    message: { error: 'Muitas renovações de sessão. Tente novamente mais tarde.' },
     validate: { trustProxy: true }
 });
 /** Vincular código / rotas legacy de referral — bucket por IP + utilizador autenticado. */
@@ -1345,10 +1407,19 @@ attachSecurityThreatResponseObserver(app, {
     backupModel,
     getClientIp
 });
-app.use(express.json({ limit: '5mb' })); // Reduzido o limite para 5MB por segurança
+// A2: body limit reduzido (2 KB) para rotas de autenticação — previne abuso de memória/ReDoS
+const authBodyLimit = express.json({ limit: '2kb' });
+app.use('/api/login', authBodyLimit);
+app.use('/api/user', authBodyLimit);
+app.use('/api/request-password-reset', authBodyLimit);
+app.use('/api/reset-password-secure', authBodyLimit);
+app.use('/api/verify-recovery-wallet', authBodyLimit);
+app.use('/api/request-email-verification', authBodyLimit);
+app.use('/api/verify-email', authBodyLimit);
+app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ limit: '5mb', extended: true }));
-const jwtAllowLegacySession = process.env.JWT_ALLOW_LEGACY_SESSION !== '0' &&
-    process.env.JWT_ALLOW_LEGACY_SID !== '0';
+const jwtAllowLegacySession = process.env.JWT_ALLOW_LEGACY_SESSION === '1' &&
+    process.env.JWT_ALLOW_LEGACY_SID === '1';
 app.use(createResolveAuthMiddleware({ parseCookies, allowLegacySession: jwtAllowLegacySession }));
 app.use((req, res, next) => {
     const url = req.url || '';
@@ -1527,7 +1598,8 @@ registerSupportTicketRoutes(app, {
 registerPartnerYoutubeRoutes(app, {
     authenticateToken,
     isAdmin,
-    appendGameActivityLog
+    appendGameActivityLog,
+    db
 });
 registerPartnersPlayerRoutes(app, {
     authenticateToken,
@@ -1537,8 +1609,10 @@ registerDashboardModuleRoutes(app, { authenticateToken });
 registerCheckinModuleRoutes(app, { authenticateToken });
 registerEmailVerificationModuleRoutes(app, {
     emailRequestLimiter: passwordResetRequestLimiter,
+    verifyAttemptLimiter: verifyEmailAttemptLimiter,
     emailAddressMaxLength: EMAIL_ADDRESS_MAX_LENGTH
 });
+registerEmailCampaignRoutes(app, isAdmin);
 registerProfilePlayerRoutes(app, {
     authenticateToken,
     getClientIp,
@@ -1652,6 +1726,8 @@ app.post('/api/player-activity-log', async (req, res) => {
 // CACHE REMOVIDO CONFORME SOLICITADO
 // --- Ranking / hashrates: um único tick em miningYieldCron + getGlobalNetworkStats() ---
 startMiningYieldCron(db);
+// --- Email marketing: lote diário automático ---
+startEmailCampaignCron();
 // Sistema de carregamento de baterias descontinuado em 20260516180000:
 // não há cron, rotas de workshop/recarga, daily-boost ou reward-ad. Baterias
 // são instâncias UUID infinitas, vivem em stored_batteries / placed_racks.
@@ -4742,6 +4818,7 @@ app.get('/api/users', isAdmin, async (req, res) => {
         const sortDir = req.query.sortDir === 'desc' ? 'DESC' : 'ASC';
         const filterStatus = req.query.filterStatus || 'all';
         const filterLevel = req.query.filterLevel || 'all';
+        const filterRoom = String(req.query.filterRoom || 'all').trim();
         const filterAdminsRaw = req.query.filterAdmins;
         const filterAdminsOnly = filterAdminsRaw === '1' || String(filterAdminsRaw || '').toLowerCase() === 'true';
         const offset = (page - 1) * limit;
@@ -4758,9 +4835,53 @@ app.get('/api/users', isAdmin, async (req, res) => {
             paramIdx++;
         }
         // Access Level Filter
-        if (filterLevel !== 'all') {
+        if (filterLevel !== 'all' && filterRoom === 'all') {
             whereConditions.push(`u.access_level_id = $${paramIdx}`);
             params.push(filterLevel);
+            paramIdx++;
+        }
+        if (filterRoom !== 'all') {
+            whereConditions.push(`(
+        EXISTS (
+          SELECT 1
+          FROM user_rig_rooms urr
+          WHERE urr.user_id = u.id
+            AND urr.room_id = $${paramIdx}
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM placed_racks pr
+          WHERE pr.user_id = u.id
+            AND COALESCE(NULLIF(BTRIM(pr.room_id::text), ''), 'room_initial') = $${paramIdx}
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM rig_rooms rr
+          WHERE rr.id = $${paramIdx}
+            AND COALESCE(rr.is_active, 1) = 1
+            AND (
+              COALESCE(NULLIF(BTRIM(rr.allowed_levels), ''), '[]') = '[]'
+              OR EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements_text(COALESCE(NULLIF(BTRIM(rr.allowed_levels), ''), '[]')::jsonb) AS room_lvl(level_id)
+                WHERE LOWER(BTRIM(room_lvl.level_id)) IN (
+                  SELECT lvl.level_id
+                  FROM (
+                    SELECT LOWER(BTRIM(u.access_level_id::text)) AS level_id
+                    WHERE u.access_level_id IS NOT NULL AND BTRIM(u.access_level_id::text) <> ''
+                    UNION
+                    SELECT LOWER(BTRIM(ual.access_level_id::text)) AS level_id
+                    FROM user_access_levels ual
+                    WHERE ual.user_id = u.id
+                      AND ual.access_level_id IS NOT NULL
+                      AND BTRIM(ual.access_level_id::text) <> ''
+                  ) lvl
+                )
+              )
+            )
+        )
+      )`);
+            params.push(filterRoom);
             paramIdx++;
         }
         // Status Filter (Online/Offline)
@@ -4806,8 +4927,20 @@ app.get('/api/users', isAdmin, async (req, res) => {
         const uRes = await db.query(query, [...params, limit, offset]);
         const userIds = uRes.rows.map(u => u.id);
         const lvRes = await db.query('SELECT id,name FROM access_levels');
+        const roomsRes = await db.query(`
+      SELECT id, name
+      FROM rig_rooms
+      WHERE COALESCE(is_active, 1) = 1
+      ORDER BY sort_order ASC, name ASC
+    `);
         if (userIds.length === 0) {
-            return res.json({ users: [], total, pages: Math.ceil(total / limit), levels: lvRes.rows });
+            return res.json({
+                users: [],
+                total,
+                pages: Math.ceil(total / limit),
+                levels: lvRes.rows,
+                rooms: roomsRes.rows
+            });
         }
         const refRes = await db.query('SELECT user_id, referred_username FROM referrals WHERE user_id = ANY($1)', [userIds]);
         const gsRes = await db.query('SELECT user_id, last_updated_at, total_usdc_deposited, total_crypto_withdrawn, black_market_balance FROM game_states WHERE user_id = ANY($1)', [userIds]);
@@ -4877,10 +5010,63 @@ app.get('/api/users', isAdmin, async (req, res) => {
                 return normalizeAdminPermissionsForApi(true, ap);
             })()
         }));
-        res.json({ users, total, pages: Math.ceil(total / limit), levels: lvRes.rows });
+        res.json({
+            users,
+            total,
+            pages: Math.ceil(total / limit),
+            levels: lvRes.rows,
+            rooms: roomsRes.rows
+        });
     }
     catch (e) {
         sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e);
+    }
+});
+// B3: listar contas com lockout ativo
+app.get('/api/admin/locked-accounts', isAdmin, async (req, res) => {
+    try {
+        const now = BigInt(Date.now());
+        const rows = await prisma.users.findMany({
+            where: { login_locked_until: { gt: now } },
+            select: {
+                id: true,
+                username: true,
+                email: true,
+                login_failure_count: true,
+                login_locked_until: true
+            },
+            orderBy: { login_locked_until: 'desc' },
+            take: 200
+        });
+        res.json(rows.map(r => ({
+            id: r.id,
+            username: r.username,
+            email: r.email,
+            loginFailureCount: r.login_failure_count,
+            lockedUntilMs: r.login_locked_until != null ? Number(r.login_locked_until) : null,
+            secondsRemaining: r.login_locked_until != null
+                ? Math.max(0, Math.ceil((Number(r.login_locked_until) - Date.now()) / 1000))
+                : 0
+        })));
+    }
+    catch (e) {
+        sendInternalErrorOrPrisma(res, req.originalUrl, e);
+    }
+});
+// B3: desbloquear conta manualmente
+app.post('/api/admin/users/:userId/unlock', isAdmin, async (req, res) => {
+    const uid = parseInt(String(req.params.userId), 10);
+    if (!uid || isNaN(uid))
+        return res.status(400).json({ error: 'userId inválido' });
+    try {
+        await prisma.users.update({
+            where: { id: uid },
+            data: { login_failure_count: 0, login_locked_until: null }
+        });
+        res.json({ ok: true, message: `Conta #${uid} desbloqueada.` });
+    }
+    catch (e) {
+        sendInternalErrorOrPrisma(res, req.originalUrl, e);
     }
 });
 app.get('/api/admin/users/map', isAdmin, async (req, res) => {
@@ -5531,19 +5717,15 @@ app.post('/api/admin/mining-coins/sync-live-prices', isAdmin, async (req, res) =
 });
 registerAuthLoginModuleRoutes(app, { bcrypt, getClientIp });
 app.get('/api/session', async (req, res) => {
-    const cookies = parseCookies(req);
-    const sid = cookies.sid;
     let isImpersonating = false;
     let targetUserId = req.userId;
     try {
-        let sidSession = null;
-        if (sid) {
-            const s = await findSessionRow(sid);
-            if (s && Number(s.expires_at) >= Date.now()) {
-                sidSession = s;
-                isImpersonating = !!s.original_user_id;
-                if (!targetUserId)
-                    targetUserId = s.user_id;
+        if (!targetUserId) {
+            const sid = parseCookies(req).sid;
+            if (sid) {
+                const sidUserId = await findActiveSessionUserId(sid);
+                if (sidUserId)
+                    targetUserId = sidUserId;
             }
         }
         if (!targetUserId)
@@ -5554,21 +5736,8 @@ app.get('/api/session', async (req, res) => {
         };
         let uid = parsePositiveUserId(targetUserId);
         let u = uid != null ? await findUserById(uid) : undefined;
-        /** JWT pode apontar para um id órfão após restore/migração; cookie `sid` pode ainda refletir outro utilizador válido. */
-        if (!u && sidSession) {
-            const sidUid = parsePositiveUserId(sidSession.user_id);
-            if (sidUid != null && sidUid !== uid) {
-                const u2 = await findUserById(sidUid);
-                if (u2) {
-                    u = u2;
-                    uid = sidUid;
-                }
-            }
-        }
         if (!u) {
             clearAuthCookies(res);
-            const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
-            res.append('Set-Cookie', `sid=; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=0`);
             return res.status(401).json({
                 error: 'Sessão inválida ou conta já não existe. Inicie sessão novamente.',
                 code: 'USER_NOT_FOUND'
@@ -5609,7 +5778,7 @@ app.get('/api/session', async (req, res) => {
         sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e);
     }
 });
-app.post('/api/auth/refresh', async (req, res) => handleJwtRefresh(req, res, parseCookies));
+app.post('/api/auth/refresh', refreshLimiter, async (req, res) => handleJwtRefresh(req, res, parseCookies));
 app.post('/api/logout', async (req, res) => {
     const sid = parseCookies(req).sid;
     let uid = req.userId;
@@ -5810,7 +5979,7 @@ app.put('/api/users/block', isAdmin, async (req, res) => {
         sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e);
     }
 });
-registerAuthRegisterModuleRoutes(app, { bcrypt, getClientIp });
+registerAuthRegisterModuleRoutes(app, { bcrypt, getClientIp, publicSignupLimiter: signupLimiter });
 async function deleteUserByEmail(email, client) {
     const dbClient = client || await db.connect();
     const wasOwner = !client;
@@ -8335,31 +8504,47 @@ app.post('/api/request-password-reset', passwordResetRequestLimiter, async (req,
     try {
         const row = await prisma.users.findFirst({
             where: { email: { equals: raw, mode: 'insensitive' } },
-            select: { email: true }
+            select: { id: true, email: true }
         });
         if (!row) {
             return res.json(genericOk);
         }
         const email = row.email;
         const timestamp = Date.now();
-        const resetPayload = JSON.stringify({ email, expiry: timestamp + 60 * 60 * 1000 });
-        const signature = crypto.createHmac('sha256', process.env.JWT_SECRET || 'secret').update(resetPayload).digest('hex');
+        const expiry = timestamp + 60 * 60 * 1000;
+        const resetPayload = JSON.stringify({ email, expiry, purpose: 'password_reset' });
+        // C2: sem fallback 'secret' — lança se variável ausente
+        const secret = getAuthFlowTokenSecret();
+        const signature = crypto.createHmac('sha256', secret).update(resetPayload).digest('hex');
         const resetToken = Buffer.from(resetPayload).toString('base64') + '.' + signature;
+        // C3: persistir hash do token no banco (uso único — invalidado ao ser usado)
+        const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+        await prisma.users.update({
+            where: { id: row.id },
+            data: {
+                password_reset_token_hash: tokenHash,
+                password_reset_token_expires_at: BigInt(expiry)
+            }
+        });
         void sendResetEmail(email, resetToken, { validityMinutes: 60 }).catch((mailErr) => {
             console.error('[request-password-reset] envio SMTP:', mailErr instanceof Error ? mailErr.message : mailErr);
         });
         return res.json(genericOk);
     }
     catch (e) {
-        console.error('[request-password-reset]', e.message || e);
+        console.error('[request-password-reset]', e instanceof Error ? e.message : 'Erro interno');
         return res.json(genericOk);
     }
 });
 // PASSWORD RECOVERY BY WALLET (legado; o fluxo principal é por email)
 app.post('/api/verify-recovery-wallet', passwordResetRequestLimiter, async (req, res) => {
-    const { email, walletAddress } = req.body;
+    const { email, walletAddress, turnstileToken } = req.body || {};
     if (!email || !walletAddress)
         return res.status(400).json({ error: 'Dados incompletos' });
+    // A6: Turnstile no endpoint de recuperação por carteira
+    const tsResult = await verifyTurnstileToken(req, turnstileToken);
+    if (!tsResult.ok)
+        return res.status(tsResult.status).json({ error: tsResult.error, code: 'TURNSTILE_FAILED' });
     const emailNorm = String(email).trim().toLowerCase();
     const emailCheck = validateLoginEmail(emailNorm);
     if (!emailCheck.ok) {
@@ -8370,67 +8555,141 @@ app.post('/api/verify-recovery-wallet', passwordResetRequestLimiter, async (req,
     if (wv && typeof wv === 'object' && 'error' in wv) {
         return res.status(400).json({ error: wv.error });
     }
-    /** Resposta uniforme — evita enumeração de emails / estado da conta. */
-    const recoveryDenied = {
-        ok: false,
-        error: 'Não foi possível verificar a recuperação com os dados indicados.'
+    const genericOk = {
+        ok: true,
+        message: 'Se os dados corresponderem a uma conta elegível, enviaremos instruções de recuperação para o email registado.'
     };
     try {
         const r = await db.query('SELECT email, username, polygon_wallet FROM users WHERE lower(email) = lower($1)', [emailNorm]);
         if (r.rows.length === 0)
-            return res.status(403).json(recoveryDenied);
+            return res.json(genericOk);
         const user = r.rows[0];
         const accountEmail = String(user.email || emailNorm);
         const storedWallet = user.polygon_wallet;
-        if (!storedWallet) {
-            return res.status(403).json(recoveryDenied);
-        }
+        if (!storedWallet)
+            return res.json(genericOk);
         // Case-insensitive comparison
-        if (storedWallet.toLowerCase() !== walletStr.toLowerCase()) {
-            return res.status(403).json(recoveryDenied);
-        }
-        // Success - Generate simple temporary token
+        if (storedWallet.toLowerCase() !== walletStr.toLowerCase())
+            return res.json(genericOk);
         const timestamp = Date.now();
-        const resetPayload = JSON.stringify({ email: accountEmail, walletAddress: walletStr, expiry: timestamp + 600000 }); // 10 mins
-        const signature = crypto.createHmac('sha256', process.env.JWT_SECRET || 'secret').update(resetPayload).digest('hex');
-        const resetToken = Buffer.from(resetPayload).toString('base64') + '.' + signature;
-        res.json({ ok: true, resetToken });
-        sendResetEmail(accountEmail, resetToken, { validityMinutes: 10 }).catch(err => {
-            console.error('[Mailer Error] Falha ao enviar e-mail:', err.message);
+        const resetPayload = JSON.stringify({
+            email: accountEmail,
+            walletAddress: walletStr,
+            expiry: timestamp + 600000,
+            purpose: 'password_reset'
         });
+        const signature = crypto
+            .createHmac('sha256', getAuthFlowTokenSecret())
+            .update(resetPayload)
+            .digest('hex');
+        const resetToken = Buffer.from(resetPayload).toString('base64') + '.' + signature;
+        // C3: persistir hash do token no banco para uso único
+        const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+        await prisma.users.updateMany({
+            where: { email: { equals: accountEmail, mode: 'insensitive' } },
+            data: {
+                password_reset_token_hash: tokenHash,
+                password_reset_token_expires_at: BigInt(timestamp + 600000)
+            }
+        });
+        sendResetEmail(accountEmail, resetToken, { validityMinutes: 10 }).catch((err) => {
+            console.error('[Mailer Error] Falha ao enviar e-mail:', err instanceof Error ? err.message : err);
+        });
+        return res.json(genericOk);
     }
     catch (e) {
-        console.error(e);
-        res.status(500).json({ error: 'Erro interno.' });
+        console.error('[verify-recovery-wallet]', e instanceof Error ? e.message : 'Erro interno');
+        res.json(genericOk);
     }
 });
-app.post('/api/reset-password-secure', async (req, res) => {
-    const { resetToken, newPassword } = req.body;
-    if (!resetToken || !newPassword)
+app.post('/api/reset-password-secure', securePasswordResetLimiter, async (req, res) => {
+    const { resetToken, newPassword } = req.body || {};
+    if (!resetToken || !newPassword || typeof resetToken !== 'string' || typeof newPassword !== 'string') {
         return res.status(400).json({ error: 'Dados incompletos' });
+    }
     const pv = validateSignupPassword(newPassword, true);
     if (!pv.ok)
         return res.status(400).json({ error: pv.error });
     try {
-        const [payloadB64, signature] = resetToken.split('.');
+        const parts = resetToken.split('.');
+        if (parts.length !== 2)
+            return res.status(400).json({ error: 'Token inválido' });
+        const [payloadB64, signature] = parts;
         if (!payloadB64 || !signature)
             return res.status(400).json({ error: 'Token inválido' });
-        const expectedSig = crypto.createHmac('sha256', process.env.JWT_SECRET || 'secret').update(Buffer.from(payloadB64, 'base64').toString()).digest('hex');
-        if (signature !== expectedSig)
+        const payloadRaw = Buffer.from(payloadB64, 'base64').toString();
+        // C2: sem fallback 'secret'
+        const secret = getAuthFlowTokenSecret();
+        const expectedSig = crypto.createHmac('sha256', secret).update(payloadRaw).digest('hex');
+        // C1: comparação em tempo constante para prevenir timing attacks
+        let sigOk = false;
+        try {
+            sigOk = crypto.timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expectedSig, 'hex'));
+        }
+        catch {
+            sigOk = false;
+        }
+        if (!sigOk)
             return res.status(403).json({ error: 'Token manipulado ou inválido' });
-        const payload = JSON.parse(Buffer.from(payloadB64, 'base64').toString());
-        if (Date.now() > payload.expiry)
-            return res.status(403).json({ error: 'Sessão de recuperação expirada' });
-        const email = payload.email;
-        if (!email || typeof email !== 'string') {
+        // M5: validação de tipos explícita no payload
+        let payload;
+        try {
+            payload = JSON.parse(payloadRaw);
+        }
+        catch {
             return res.status(400).json({ error: 'Token inválido' });
         }
-        const hashedPassword = await bcrypt.hash(newPassword, 10);
-        await db.query('UPDATE users SET password = $1 WHERE lower(email) = lower($2)', [hashedPassword, email]);
+        const expiry = typeof payload.expiry === 'number' ? payload.expiry : -1;
+        const purpose = typeof payload.purpose === 'string' ? payload.purpose : '';
+        const email = typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : '';
+        if (!email || purpose !== 'password_reset')
+            return res.status(400).json({ error: 'Token inválido' });
+        if (Date.now() > expiry)
+            return res.status(403).json({ error: 'Sessão de recuperação expirada' });
+        // C3: verificar que o token não foi usado (hash persistido no banco)
+        const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+        const userRow = await prisma.users.findFirst({
+            where: { email: { equals: email, mode: 'insensitive' } },
+            select: { id: true, password_reset_token_hash: true, password_reset_token_expires_at: true }
+        });
+        if (!userRow)
+            return res.status(400).json({ error: 'Conta não encontrada.' });
+        const storedHash = userRow.password_reset_token_hash;
+        const storedExpiry = userRow.password_reset_token_expires_at;
+        // Comparação em tempo constante do hash armazenado
+        let hashOk = false;
+        if (storedHash && storedHash.length === tokenHash.length) {
+            try {
+                hashOk = crypto.timingSafeEqual(Buffer.from(storedHash, 'hex'), Buffer.from(tokenHash, 'hex'));
+            }
+            catch {
+                hashOk = false;
+            }
+        }
+        if (!hashOk)
+            return res.status(403).json({ error: 'Link de recuperação já utilizado ou inválido.' });
+        if (storedExpiry && Date.now() > Number(storedExpiry)) {
+            return res.status(403).json({ error: 'Sessão de recuperação expirada.' });
+        }
+        const hashedPassword = await bcrypt.hash(newPassword, 12);
+        // C3: invalidar token após uso + A3: invalidar todas as sessões ativas
+        await prisma.$transaction([
+            prisma.users.update({
+                where: { id: userRow.id },
+                data: {
+                    password: hashedPassword,
+                    password_reset_token_hash: null,
+                    password_reset_token_expires_at: null,
+                    login_failure_count: 0,
+                    login_locked_until: null
+                }
+            }),
+            prisma.sessions.deleteMany({ where: { user_id: userRow.id } })
+        ]);
         res.json({ ok: true });
     }
     catch (e) {
-        console.error(e);
+        console.error('[reset-password-secure]', e instanceof Error ? e.message : 'Erro interno');
         res.status(500).json({ error: 'Erro ao redefinir senha.' });
     }
 });

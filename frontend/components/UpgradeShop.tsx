@@ -196,14 +196,6 @@ export const UpgradeShop: React.FC<UpgradeShopProps> = ({
 
   const handleAddToCart = (id: string, delta: number) => {
     const u = displayUpgrades.find((x) => x.id === id);
-    if (u?.isNft) {
-      onShopNotice?.({
-        variant: 'info',
-        title: 'Lojinha Miner',
-        message: 'Itens NFT não são compráveis com USDC aqui. Usa a Carteira / Web3 do jogo para obter ou gerir NFTs.'
-      });
-      return;
-    }
     const current = qtyOnLines(cartLines, id);
     const newAmount = Math.max(0, current + delta);
     if (u && u.status === 'limited' && newAmount > 0) {
@@ -573,21 +565,12 @@ export const UpgradeShop: React.FC<UpgradeShopProps> = ({
                         )}
                         {isNftRow && (
                           <p className="text-[10px] text-orange-600/90 dark:text-orange-400/90 mt-1 leading-snug max-w-[14rem]">
-                            NFT: obtido via Carteira / fluxos Web3 — não é possível adicionar ao carrinho com USDC.
+                            Item marcado como NFT no catálogo, mas disponível para compra na Lojinha se estiver à venda.
                           </p>
                         )}
                       </div>
 
-                      {isNftRow ? (
-                        <div
-                          className="flex flex-col items-end justify-end shrink-0 max-w-[7.5rem] text-right text-[10px] text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-2 bg-slate-50 dark:bg-slate-900/80"
-                          title="Itens NFT não são compráveis na Lojinha com USDC."
-                        >
-                          <Hexagon size={14} className="text-orange-500 mx-auto mb-1" />
-                          <span className="font-bold uppercase text-[9px] text-orange-600 dark:text-orange-400">Só Web3</span>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-950 rounded-lg p-1 border border-slate-200 dark:border-slate-800">
+                      <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-950 rounded-lg p-1 border border-slate-200 dark:border-slate-800">
                           <button
                             type="button"
                             onClick={() => handleAddToCart(upgrade.id, -1)}
@@ -624,7 +607,6 @@ export const UpgradeShop: React.FC<UpgradeShopProps> = ({
                             <Plus size={12} />
                           </button>
                         </div>
-                      )}
                     </div>
                   </div>
                 </div>

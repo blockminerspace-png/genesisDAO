@@ -4,7 +4,7 @@ import type { ShopProductDto } from './shop.types.js';
 
 /**
  * Catálogo alinhado a `GET /api/upgrades` + filtros da Lojinha (mercado hardware).
- * Itens NFT entram na listagem para o jogador filtrar / consultar; checkout USDC continua bloqueado no API.
+ * Itens NFT / exclusivos de fluxo NFT não aparecem como compráveis na Lojinha.
  */
 export async function loadHardwareShopProducts(isAdminUser: boolean): Promise<ShopProductDto[]> {
   const rows = await prisma.upgrades.findMany({
@@ -64,12 +64,9 @@ export function filterProductsForMinerShop(products: ShopProductDto[]): ShopProd
     if (!u.isActive) return false;
     return true;
   });
-  const nonNft = base.filter((u) => !u.isNft);
-  const explicitHardware = nonNft.filter((u) => u.sellInHardwareMarket);
-  const core = explicitHardware.length > 0 ? explicitHardware : nonNft;
-  const nftRows = base.filter((u) => u.isNft);
+  const explicitHardware = base.filter((u) => u.sellInHardwareMarket);
+  const core = explicitHardware.length > 0 ? explicitHardware : base;
   const byId = new Map<string, ShopProductDto>();
   for (const p of core) byId.set(p.id, p);
-  for (const p of nftRows) byId.set(p.id, p);
   return Array.from(byId.values());
 }

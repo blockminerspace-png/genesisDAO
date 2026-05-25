@@ -512,7 +512,7 @@ export const AdminPartnerVideos: React.FC = () => {
               <UserPlus size={14} /> Adicionar parceiro
             </button>
             <span className="text-[11px] text-slate-500">
-              Esta lista mostra todos os usuários com sala STREAMER ativa (níveis tester/creator). «Remover da lista» tira só a entrada manual.
+              Esta lista é da vitrine/manual: mostra parceiros com vídeo aprovado ou adicionados manualmente. A sala STREAMER fica na aba separada `Streamers`.
             </span>
           </div>
           {partnersErr && <div className="text-sm text-red-400">{partnersErr}</div>}

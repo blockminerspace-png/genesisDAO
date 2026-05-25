@@ -68,13 +68,13 @@ function headerFirst(req: IpRequestLike, name: string): string | null {
 
 /**
  * IP do cliente para rate-limit, registo e referral.
- * Prioriza cabeçalhos Cloudflare quando `TRUST_CF_CONNECTING_IP=1` ou pedido tem `cf-ray`.
+ * Prioriza cabeçalhos Cloudflare APENAS quando `TRUST_CF_CONNECTING_IP=1` (env var explícita).
+ * Nunca infere confiança pelo header `cf-ray` — esse header é totalmente controlável pelo cliente
+ * e seria um vetor trivial de bypass de todos os rate-limiters baseados em IP.
  * Se `req.ip` for privado (proxy mal configurado), tenta o primeiro IP público em XFF / X-Real-IP.
  */
 export function getClientIpFromRequest(req: IpRequestLike): string {
-  const trustCf = String(process.env.TRUST_CF_CONNECTING_IP || '').trim() === '1';
-  const cfRay = headerFirst(req, 'cf-ray');
-  const behindCloudflare = trustCf || (cfRay != null && cfRay.length > 0);
+  const behindCloudflare = String(process.env.TRUST_CF_CONNECTING_IP || '').trim() === '1';
 
   const candidates: string[] = [];
   const push = (raw: string | null | undefined) => {

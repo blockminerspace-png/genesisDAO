@@ -7,7 +7,11 @@ import {
 
 /**
  * Sorteio de loot box:
- * - Padrão (`rollLootBoxOnce`): um único prémio; `probability` é peso relativo na roleta.
+ * - Padrão (`rollLootBoxIndependent`): cada item é avaliado de forma independente.
+ *   `probability` é a percentagem de hipótese de sair (0–100).
+ *   100 = sempre entregue; 50 = 50% de hipótese; 0 = nunca entregue (só decorativo).
+ *   Se nenhum item ganhar o roll (todos < 100% e todos falharam), o item de maior
+ *   probabilidade é entregue como fallback (a caixa nunca devolve vazia).
  * - Cadastro (`rollLootBoxGrantAll`): concede cada linha com `probability` > 0 (quantidade min–max por linha).
  */
 
@@ -76,34 +80,43 @@ function appendLootLineGrant(payload: RolledLootPayload, chosen: LootBoxItemRow)
   }
 }
 
-export function rollLootBoxOnce(items: LootBoxItemRow[]): RolledLootPayload {
+/**
+ * Sorteio independente por item: cada linha é avaliada separadamente.
+ * probability=100 → sempre entregue; probability=50 → 50% de chance; probability=0 → ignorado.
+ * Se nenhum item ganhar (todos < 100% e todos falharam), faz fallback para o item de maior
+ * probabilidade para garantir que a caixa nunca devolve vazia.
+ */
+export function rollLootBoxIndependent(items: LootBoxItemRow[]): RolledLootPayload {
   const payload = emptyRolledLootPayload();
 
-  const weighted = items
-    .map((it) => ({
-      it,
-      w: Math.max(0, Number(it.probability) || 0)
-    }))
-    .filter((x) => x.w > 0);
+  const eligible = items.filter((it) => Math.max(0, Number(it.probability) || 0) > 0);
+  if (eligible.length === 0) return payload;
 
-  const sumW = weighted.reduce((a, x) => a + x.w, 0);
-  if (!Number.isFinite(sumW) || sumW <= 0) {
-    return payload;
-  }
-
-  const r = Math.random() * sumW;
-  let cum = 0;
-  let chosen = weighted[weighted.length - 1]!.it;
-  for (const row of weighted) {
-    cum += row.w;
-    if (r < cum) {
-      chosen = row.it;
-      break;
+  const won: LootBoxItemRow[] = [];
+  for (const it of eligible) {
+    const prob = Math.min(100, Math.max(0, Number(it.probability) || 0));
+    if (Math.random() * 100 < prob) {
+      won.push(it);
     }
   }
 
-  appendLootLineGrant(payload, chosen);
+  // Fallback: se nenhum item ganhou, entrega o de maior probabilidade
+  if (won.length === 0) {
+    const best = eligible.reduce((a, b) =>
+      (Number(b.probability) || 0) > (Number(a.probability) || 0) ? b : a
+    );
+    won.push(best);
+  }
+
+  for (const it of won) {
+    appendLootLineGrant(payload, it);
+  }
   return payload;
+}
+
+/** @deprecated Use rollLootBoxIndependent. Mantido para compatibilidade. */
+export function rollLootBoxOnce(items: LootBoxItemRow[]): RolledLootPayload {
+  return rollLootBoxIndependent(items);
 }
 
 /** Caixa de cadastro: todas as linhas com probabilidade > 0 entram no pacote (uma vez cada). */
@@ -323,14 +336,15 @@ export async function executeLootBoxOpenInTransaction(
 
   /**
    * `registration` (caixa inicial) e `upgrade_package` (compra em /upgrades) entregam
-   * TODOS os items configurados, não sorteiam apenas um. As linhas com `probability=0`
-   * existem apenas para display no card e são ignoradas pelo `rollLootBoxGrantAll`.
+   * TODOS os itens configurados (rollLootBoxGrantAll).
+   * Todos os outros gatilhos usam rollLootBoxIndependent: cada item tem probabilidade
+   * independente (100% = sempre entregue; < 100% = avaliado separadamente).
    */
   const trig = String(boxDef.trigger || '');
   const useGrantAll = trig === 'registration' || trig === 'upgrade_package';
   const { rewards, gainedUsdc, gainedItems, gainedCoins, gainedBundles } = useGrantAll
     ? rollLootBoxGrantAll(items)
-    : rollLootBoxOnce(items);
+    : rollLootBoxIndependent(items);
 
   if (boxCount.qty <= 1) {
     await tx.unopened_boxes.delete({

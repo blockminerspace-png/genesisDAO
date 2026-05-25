@@ -14,6 +14,16 @@ import {
 } from '../constants/authLimits';
 import { Lock, Mail, User as UserIcon, ArrowRight, AlertCircle, CheckCircle2, CreditCard, Wallet, Share2, ShieldCheck, Key, Eye, EyeOff, ArrowLeft } from 'lucide-react';
 
+declare global {
+    interface Window {
+        turnstile?: {
+            render: (container: HTMLElement, options: Record<string, unknown>) => string;
+            remove?: (widgetId: string) => void;
+            reset?: (widgetId?: string) => void;
+        };
+    }
+}
+
 interface AuthPageProps {
     onLogin: (user: User) => void;
     accessLevels?: AccessLevel[];
@@ -21,7 +31,14 @@ interface AuthPageProps {
 }
 
 function sanitizeAuthTextInput(value: string): string {
-    return value.replace(/[<>'"`\\;]/g, '');
+    // Decodificar URL-encoding antes de checar (evita %3Cscript%3E etc.)
+    let v = value;
+    try { v = decodeURIComponent(v.replace(/\+/g, ' ')); } catch { /* manter original se inválido */ }
+    // Remover caracteres de controle e zero-width invisíveis
+    v = v.replace(/[\u0000-\u001F\u007F\u200B-\u200D\uFEFF\u2060]/g, '');
+    // Remover chars perigosos para XSS/injection
+    v = v.replace(/[<>'"`\\;{}()[\]]/g, '');
+    return v;
 }
 
 function passwordFieldBorder(hasValue: boolean, matches: boolean | null): string {
@@ -58,6 +75,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [], 
     const [showRecoveryPassword, setShowRecoveryPassword] = useState(false);
     const [showRecoveryConfirmPassword, setShowRecoveryConfirmPassword] = useState(false);
     const [showResendActivationCta, setShowResendActivationCta] = useState(false);
+    const [turnstileSiteKey, setTurnstileSiteKey] = useState('');
+    const [turnstileToken, setTurnstileToken] = useState('');
 
     const navigateAuthMode = (mode: 'login' | 'register') => {
         try {
@@ -67,6 +86,26 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [], 
         }
         setActiveTab(mode);
     };
+
+    useEffect(() => {
+        let cancelled = false;
+        void fetch('/api/security/turnstile-config', { credentials: 'include' })
+            .then((res) => res.json().catch(() => ({})))
+            .then((data: { enabled?: boolean; siteKey?: string }) => {
+                if (cancelled) return;
+                if (data.enabled && typeof data.siteKey === 'string') {
+                    setTurnstileSiteKey(data.siteKey.trim());
+                } else {
+                    setTurnstileSiteKey('');
+                }
+            })
+            .catch(() => {
+                if (!cancelled) setTurnstileSiteKey('');
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
@@ -130,6 +169,63 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [], 
         }
     }, [initialMode]);
 
+    useEffect(() => {
+        const turnstileEnabled = activeTab === 'login' || activeTab === 'register' || (activeTab === 'special' && !!selectedLevelId);
+        if (!turnstileSiteKey || !turnstileEnabled) return;
+        if (document.querySelector('script[data-cf-turnstile-script="1"]')) return;
+        const script = document.createElement('script');
+        script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+        script.async = true;
+        script.defer = true;
+        script.setAttribute('data-cf-turnstile-script', '1');
+        document.head.appendChild(script);
+    }, [activeTab, selectedLevelId, turnstileSiteKey]);
+
+    useEffect(() => {
+        const turnstileEnabled = activeTab === 'login' || activeTab === 'register' || (activeTab === 'special' && !!selectedLevelId);
+        if (!turnstileSiteKey || !turnstileEnabled) return;
+        let cancelled = false;
+        let widgetId: string | null = null;
+        const containerId = activeTab === 'login' ? 'cf-turnstile-login' : 'cf-turnstile-register';
+
+        const renderWidget = () => {
+            if (cancelled) return;
+            const container = document.getElementById(containerId);
+            if (!container || !window.turnstile) return;
+            container.innerHTML = '';
+            setTurnstileToken('');
+            widgetId = window.turnstile.render(container, {
+                sitekey: turnstileSiteKey,
+                theme: 'dark',
+                callback: (token: string) => setTurnstileToken(token),
+                'expired-callback': () => setTurnstileToken(''),
+                'error-callback': () => setTurnstileToken('')
+            });
+        };
+
+        const tryRender = () => {
+            if (cancelled) return;
+            if (window.turnstile) {
+                renderWidget();
+                return;
+            }
+            window.setTimeout(tryRender, 200);
+        };
+
+        tryRender();
+        return () => {
+            cancelled = true;
+            setTurnstileToken('');
+            if (widgetId && window.turnstile?.remove) {
+                try {
+                    window.turnstile.remove(widgetId);
+                } catch {
+                    /* ignore */
+                }
+            }
+        };
+    }, [activeTab, selectedLevelId, turnstileSiteKey]);
+
     const resetForm = (opts?: { keepSuccess?: boolean }) => {
         setEmail(''); setPassword(''); setUsername(''); setConfirmPassword(''); setError(null);
         setAcceptedTerms(false);
@@ -139,6 +235,12 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [], 
         setShowConfirmPassword(false);
         setShowRecoveryPassword(false);
         setShowRecoveryConfirmPassword(false);
+        setTurnstileToken('');
+        try {
+            window.turnstile?.reset?.();
+        } catch {
+            /* ignore */
+        }
         if (!opts?.keepSuccess) setSuccessMessage(null);
     };
 
@@ -229,6 +331,10 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [], 
                 setError("As senhas não coincidem.");
                 return;
             }
+            if (turnstileSiteKey && !turnstileToken) {
+                setError('Confirme o captcha antes de continuar.');
+                return;
+            }
             if (activeTab === 'register' && !acceptedTerms) {
                 setError('Você precisa concordar com os Termos de Uso e a Política de Privacidade para concluir o cadastro.');
                 return;
@@ -281,9 +387,20 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [], 
                 referrals: []
             };
 
-            const result = await updateUser({ ...newUser, newReferralFor: u, ...(deviceFingerprint ? { deviceFingerprint } : {}) });
+            const result = await updateUser({
+                ...newUser,
+                newReferralFor: u,
+                ...(deviceFingerprint ? { deviceFingerprint } : {}),
+                ...(turnstileToken ? { turnstileToken } : {})
+            });
 
             if (!result.ok) {
+                setTurnstileToken('');
+                try {
+                    window.turnstile?.reset?.();
+                } catch {
+                    /* ignore */
+                }
                 setError(result.error || "Falha ao processar cadastro.");
                 return;
             }
@@ -318,7 +435,11 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [], 
                 setError(`Palavra-passe demasiado longa (máximo ${AUTH_PASSWORD_MAX} caracteres).`);
                 return;
             }
-            const sessionUser = await login(em, pwd, deviceFingerprint);
+            if (turnstileSiteKey && !turnstileToken) {
+                setError('Confirme o captcha antes de continuar.');
+                return;
+            }
+            const sessionUser = await login(em, pwd, deviceFingerprint, turnstileToken);
             if (sessionUser && !sessionUser.error) {
                 if (sessionUser.isBlocked) {
                     setError("Esta conta foi bloqueada pela administração.");
@@ -334,6 +455,12 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [], 
 
                 onLogin(sessionUser);
             } else {
+                setTurnstileToken('');
+                try {
+                    window.turnstile?.reset?.();
+                } catch {
+                    /* ignore */
+                }
                 const needsVerification =
                     sessionUser?.code === 'EMAIL_NOT_VERIFIED' ||
                     sessionUser?.emailVerificationRequired === true;
@@ -804,9 +931,21 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [], 
                                 </>
                             )}
 
+                            {turnstileSiteKey && (activeTab === 'login' || activeTab === 'register' || (activeTab === 'special' && !!selectedLevelId)) && (
+                                <div className="space-y-1">
+                                    <label className="text-xs font-bold text-slate-500 uppercase ml-1">Verificação</label>
+                                    <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-3 overflow-hidden">
+                                        <div
+                                            id={activeTab === 'login' ? 'cf-turnstile-login' : 'cf-turnstile-register'}
+                                            className="min-h-[65px]"
+                                        />
+                                    </div>
+                                </div>
+                            )}
+
                             <button
                                 type="submit"
-                                disabled={isWeb3Processing}
+                                disabled={isWeb3Processing || (turnstileSiteKey.length > 0 && !turnstileToken)}
                                 className={`w-full font-bold py-3 rounded-lg shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 mt-6 ${activeTab === 'special' ? 'bg-orange-600 hover:bg-orange-500 text-white' : 'bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-white'}`}
                             >
                                 {isWeb3Processing ? (

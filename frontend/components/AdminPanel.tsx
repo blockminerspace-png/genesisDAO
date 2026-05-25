@@ -26,7 +26,9 @@ import { AdminSecurity } from './AdminSecurity';
 import { AdminSeasonPasses } from './AdminSeasonPasses';
 import { AdminTransparency } from './AdminTransparency';
 import { AdminPartnerVideos } from './AdminPartnerVideos';
+import AdminEmailCampaigns from './admin/AdminEmailCampaigns';
 import { BarChart as BarChartIcon } from 'lucide-react';
+import { Mail } from 'lucide-react';
 import { getSeasonPasses } from '../services/api';
 
 interface AdminPanelProps {
@@ -62,7 +64,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         | 'shops'
         | 'transparency'
         | 'support'
-        | 'partners';
+        | 'partners'
+        | 'emailmarketing';
 
     const ADMIN_URL_TAB_SET = new Set<AdminTab>([
         'dashboard',
@@ -78,6 +81,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         'backup',
         'support',
         'partners',
+        'emailmarketing',
     ]);
 
     const adminPathFromTab = (tab: AdminTab): string => `/admin/${tab}`;
@@ -253,6 +257,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         { id: 'backup', icon: <Database size={18} />, label: 'Backup' },
                         { id: 'support', icon: <MessageCircle size={18} />, label: 'Suporte' },
                         { id: 'partners', icon: <Clapperboard size={18} />, label: 'Parceiros' },
+                        { id: 'emailmarketing', icon: <Mail size={18} />, label: 'Email Marketing' },
                     ].filter(item => {
                         if (!user) return false;
                         if (user.isSuperAdmin) return true;
@@ -498,6 +503,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                     />
                                 )}
                                 {activeTab === 'partners' && isAllowed('partners') && <AdminPartnerVideos />}
+                                {activeTab === 'emailmarketing' && isAllowed('emailmarketing') && <AdminEmailCampaigns />}
                             </>
                         );
                     })()}
