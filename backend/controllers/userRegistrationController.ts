@@ -24,6 +24,10 @@ import { logUserAction } from '../lib/mongoLogs.js';
 import { respondIfHttpControlledError, sendInternalErrorSafeMessageOrPrisma } from '../utils/apiErrorResponse.js';
 import { verifyTurnstileToken } from '../utils/cloudflareTurnstile.js';
 import { verifySignupIpNotProxyVpn } from '../utils/signupProxyVpnGuard.js';
+import {
+  markUserPendingEmailVerificationTx,
+  sendSignupVerificationEmail
+} from '../modules/email-verification/emailVerification.service.js';
 
 export type UserRegistrationDeps = {
   bcrypt: typeof bcryptjs;
@@ -359,6 +363,10 @@ export function registerUserRoutes(app: Express, deps: UserRegistrationDeps): vo
           accessLevelIdsValidated,
           clientIpReferral: clientIp
         });
+        // Marcar conta como pendente de verificação de email apenas em novos registos públicos
+        if (!isAuthenticatedRequest && normalizedEmail) {
+          await markUserPendingEmailVerificationTx(tx, Number(uid));
+        }
       });
       console.log(`[UserUpdate] Success for uid: ${uid}`);
 
@@ -395,7 +403,20 @@ export function registerUserRoutes(app: Express, deps: UserRegistrationDeps): vo
         }
       }
 
-      res.json({ ok: true });
+      // Enviar email de confirmação para novos registos públicos (não bloqueia a resposta)
+      if (!isAuthenticatedRequest && normalizedEmail) {
+        void sendSignupVerificationEmail(normalizedEmail).catch((mailErr: unknown) => {
+          console.error(
+            '[Registration] Falha ao enviar email de verificação:',
+            mailErr instanceof Error ? mailErr.message : mailErr
+          );
+        });
+      }
+
+      res.json({
+        ok: true,
+        ...((!isAuthenticatedRequest && normalizedEmail) ? { emailVerificationRequired: true } : {})
+      });
     } catch (e: unknown) {
       console.error('[UserUpdate] Error:', e);
       if (respondIfHttpControlledError(res, e)) return;

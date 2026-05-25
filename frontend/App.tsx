@@ -447,6 +447,18 @@ function gameNavTabClass(isActive: boolean, accent: GameNavTabAccent): string {
 export default function App() {
   const resolveInitialPublicView = (): GlobalView => {
     if (typeof window === 'undefined') return 'home';
+    const params = new URLSearchParams(window.location.search || '');
+    const refCode = params.get('ref');
+    if (refCode) {
+      // Persiste o código de indicação imediatamente, antes de qualquer navegação
+      try { sessionStorage.setItem('genesis_ref', refCode.slice(0, 64)); } catch { /* ignore */ }
+      // Se o link é /?ref=CODE (raiz), redireciona para /registro mantendo o parâmetro
+      const path = (window.location.pathname || '').toLowerCase().replace(/\/+$/, '') || '/';
+      if (path === '/' || path === '') {
+        try { window.history.replaceState({}, '', `/registro?ref=${encodeURIComponent(refCode.slice(0, 64))}`); } catch { /* ignore */ }
+        return 'register';
+      }
+    }
     const path = (window.location.pathname || '').toLowerCase().replace(/\/+$/, '') || '/';
     const legalView = legalViewFromPath(path);
     return legalView || 'home';
@@ -1343,6 +1355,23 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  // Re-fetch upgrades if user is authenticated but gameUpgrades is empty (e.g., JWT expired at bootstrap time)
+  useEffect(() => {
+    if (!user || user.isAdmin || gameUpgrades.length > 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const ups = await getUpgrades();
+        if (!cancelled && Array.isArray(ups) && ups.length > 0) {
+          setGameUpgrades(ups);
+        }
+      } catch {
+        /* silent — fallback optional */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user, gameUpgrades.length]);
 
   // WebSocket: cabeçalho do jogo — saldos (coin_balances + USDC) e hashrate alinhados à BD (~3,5s)
   useEffect(() => {

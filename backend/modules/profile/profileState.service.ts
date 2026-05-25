@@ -82,7 +82,7 @@ export async function buildProfileStatePayload(input: {
   });
 
   const inviteUrl =
-    referralCode && base ? `${base}?ref=${encodeURIComponent(referralCode)}` : referralCode ? `?ref=${encodeURIComponent(referralCode)}` : '';
+    referralCode && base ? `${base}/registro?ref=${encodeURIComponent(referralCode)}` : referralCode ? `/registro?ref=${encodeURIComponent(referralCode)}` : '';
 
   return {
     ok: true,

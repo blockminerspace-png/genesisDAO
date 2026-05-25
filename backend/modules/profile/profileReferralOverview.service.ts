@@ -131,7 +131,7 @@ export async function buildReferralOverview(input: {
   const referralCode = userRow?.referral_code ?? null;
   const base = String(input.inviteBaseUrl || '').replace(/\/+$/, '');
   const inviteUrl =
-    referralCode && base ? `${base}?ref=${encodeURIComponent(referralCode)}` : referralCode ? `?ref=${encodeURIComponent(referralCode)}` : null;
+    referralCode && base ? `${base}/registro?ref=${encodeURIComponent(referralCode)}` : referralCode ? `/registro?ref=${encodeURIComponent(referralCode)}` : null;
 
   const [referredRows, commissionRows] = await Promise.all([
     prisma.$queryRawUnsafe<ReferredRow[]>(
