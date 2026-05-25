@@ -22,16 +22,11 @@ export type ProfilePasswordStrength = { ok: true } | { ok: false; error: string 
  */
 export function validatePasswordStrengthPolicy(newPassword: string): ProfilePasswordStrength {
   const p = String(newPassword || '');
-  if (p.length < 10) {
-    return { ok: false, error: 'A nova palavra-passe deve ter pelo menos 10 caracteres.' };
+  if (p.length < 6) {
+    return { ok: false, error: 'A palavra-passe deve ter pelo menos 6 caracteres.' };
   }
   if (p.length > 50) {
     return { ok: false, error: 'A nova palavra-passe é demasiado longa.' };
-  }
-  const hasLetter = /[a-zA-Z]/.test(p);
-  const hasDigit = /\d/.test(p);
-  if (!hasLetter || !hasDigit) {
-    return { ok: false, error: 'Use letras e números na nova palavra-passe.' };
   }
   const lower = p.toLowerCase();
   if (COMMON_WEAK.has(lower)) {

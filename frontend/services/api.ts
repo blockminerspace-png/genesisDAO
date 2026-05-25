@@ -3695,7 +3695,7 @@ export async function login(
     const res = await apiFetch(`${base}/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const data = await res.json();
     if (res.ok) setSessionHint(true);
-    if (!res.ok) return { error: data.error || 'Erro desconhecido' };
+    if (!res.ok) return { error: data.error || 'Erro desconhecido', code: data.code, emailVerificationRequired: data.emailVerificationRequired };
     return data;
   } catch (err: any) {
     return { error: 'Network Error: ' + err.message };

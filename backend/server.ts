@@ -6009,14 +6009,24 @@ app.get('/api/session', async (req, res) => {
   let isImpersonating = false;
   let targetUserId = req.userId;
   try {
+    const sid = parseCookies(req).sid;
     if (!targetUserId) {
-      const sid = parseCookies(req).sid;
       if (sid) {
         const sidUserId = await findActiveSessionUserId(sid);
         if (sidUserId) targetUserId = sidUserId;
       }
     }
     if (!targetUserId) return res.status(401).json({ error: 'No session', code: 'AUTH_REQUIRED' });
+    // Verifica se há impersonação ativa nesta sessão
+    if (sid) {
+      try {
+        const sRow = await prisma.sessions.findUnique({
+          where: { session_id: sid },
+          select: { original_user_id: true }
+        });
+        if (sRow?.original_user_id) isImpersonating = true;
+      } catch { /* ignora */ }
+    }
 
     const parsePositiveUserId = (raw: unknown): number | null => {
       const n = Number(raw);
@@ -8133,7 +8143,7 @@ app.post('/api/admin/impersonate', isAdmin, async (req, res) => {
     const targetId = await getUserIdByEmail(targetEmail, getClientIp(req), { allowAnyDomain: true });
     if (!targetId || targetId === adminId) return res.status(400).json({ error: 'Invalid target' });
     await db.query('UPDATE sessions SET user_id = $1, original_user_id = $2 WHERE session_id = $3', [targetId, adminId, sid]);
-    clearAuthCookies(res);
+    await issueJwtAuthCookies(res, targetId, req);
     res.json({ ok: true });
   } catch (e) { sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e); }
 });

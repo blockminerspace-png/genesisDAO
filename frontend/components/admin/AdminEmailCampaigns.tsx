@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 
 interface Campaign {
   id: number;
@@ -84,9 +84,44 @@ function CampaignForm({
   const [form, setForm] = useState<FormState>({ ...EMPTY_FORM, ...initial });
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const set = (key: keyof FormState) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
     setForm((f) => ({ ...f, [key]: key === 'daily_limit' ? Number(e.target.value) : e.target.value }));
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const allowed = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp'];
+    if (!allowed.includes(file.type)) {
+      setUploadError('Formato inválido. Use PNG, JPG, GIF ou WebP.');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setUploadError('Ficheiro demasiado grande (máx. 10 MB).');
+      return;
+    }
+    setUploadError('');
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('image', file);
+      const res = await fetch('/api/admin/upload-image', { method: 'POST', body: fd, credentials: 'include' });
+      const json = await res.json().catch(() => ({})) as { ok?: boolean; imageUrl?: string; error?: string };
+      if (json.ok && json.imageUrl) {
+        setForm((f) => ({ ...f, image_url: json.imageUrl as string }));
+      } else {
+        setUploadError(json.error || 'Erro no upload.');
+      }
+    } catch {
+      setUploadError('Erro de rede ao enviar imagem.');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
 
   const handleSave = async () => {
     if (!form.title.trim() || !form.subject.trim() || !form.body_html.trim()) {
@@ -126,13 +161,58 @@ function CampaignForm({
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
-          <label className="block text-sm font-medium text-slate-300 mb-1">URL da imagem (opcional)</label>
+          <label className="block text-sm font-medium text-slate-300 mb-1">Imagem do email (opcional)</label>
+          {/* Upload button */}
+          <div className="flex gap-2 mb-2">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="flex items-center gap-2 rounded-lg border border-dashed border-amber-500/60 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-400 hover:bg-amber-500/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {uploading ? (
+                <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-amber-400 border-t-transparent" />
+              ) : (
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M12 12V4m0 0L8 8m4-4l4 4" />
+                </svg>
+              )}
+              {uploading ? 'Enviando…' : 'Enviar do PC'}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/jpg,image/gif,image/webp"
+              className="hidden"
+              onChange={handleImageUpload}
+            />
+          </div>
+          {/* URL field (auto-filled after upload or manual) */}
           <input
             className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
-            placeholder="https://..."
+            placeholder="https://... ou envie do PC acima"
             value={form.image_url}
             onChange={set('image_url')}
           />
+          {uploadError && <p className="mt-1 text-xs text-red-400">{uploadError}</p>}
+          {/* Preview thumbnail */}
+          {form.image_url && (
+            <div className="mt-2 flex items-center gap-2">
+              <img
+                src={form.image_url}
+                alt="preview"
+                className="h-16 w-auto rounded-md border border-slate-600 object-cover"
+                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+              />
+              <button
+                type="button"
+                onClick={() => setForm((f) => ({ ...f, image_url: '' }))}
+                className="text-xs text-red-400 hover:text-red-300 underline"
+              >
+                Remover
+              </button>
+            </div>
+          )}
         </div>
         <div>
           <label className="block text-sm font-medium text-slate-300 mb-1">Limite diário de envios</label>

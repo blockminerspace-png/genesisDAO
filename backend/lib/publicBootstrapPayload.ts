@@ -427,7 +427,7 @@ export async function getPublicBootstrapPayload(userId: number | undefined, lite
     ]);
 
   const payload: PublicBootstrapPayload = {
-    upgrades: isAnonymous ? [] : upgrades,
+    upgrades: upgrades,
     accessLevels: isAnonymous ? accessLevels.map(redactAccessLevelForAnonymous) : accessLevels,
     lootBoxes: isAnonymous ? lootBoxes.map(redactLootBoxForAnonymous) : lootBoxes,
     miningCoins: isAnonymous ? miningCoins.map(redactMiningCoinForAnonymous) : miningCoins,
