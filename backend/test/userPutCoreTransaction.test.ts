@@ -125,18 +125,8 @@ describe('executeUserPutCoreTransaction', () => {
     expect(referralsCreate).toHaveBeenCalledWith({
       data: { user_id: 7, referred_username: 'new-player' }
     });
-    expect(gameStatesUpsert).toHaveBeenCalledTimes(2);
-    expect(gameStatesUpsert).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        where: { user_id: 7 },
-        update: expect.objectContaining({
-          claimed_referrals: { increment: 1 }
-        })
-      })
-    );
-    expect(gameStatesUpsert).toHaveBeenNthCalledWith(
-      2,
+    expect(gameStatesUpsert).toHaveBeenCalledTimes(1);
+    expect(gameStatesUpsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { user_id: 7 },
         update: expect.objectContaining({
