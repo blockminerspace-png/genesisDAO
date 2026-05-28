@@ -1246,7 +1246,7 @@ app.use(helmet({
             "img-src": ["'self'", "data:", "https:", "http:"],
             "style-src": ["'self'", "https://fonts.googleapis.com"].concat(cspAllowUnsafeInlineStyles ? ["'unsafe-inline'"] : []),
             "font-src": ["'self'", "https://fonts.gstatic.com"],
-            "frame-src": ["'self'", "https://cdn.applixir.com", "https://challenges.cloudflare.com"],
+            "frame-src": ["'self'", "https://cdn.applixir.com", "https://challenges.cloudflare.com", "https://zerads.com"],
             "object-src": ["'none'"],
             ...(cspUpgradeInsecure ? { "upgrade-insecure-requests": [] } : {}),
         },
