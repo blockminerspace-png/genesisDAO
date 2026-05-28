@@ -528,7 +528,19 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin, accessLevels = [], 
 
     return (
         <div className="flex flex-col items-center justify-center min-h-[80vh] px-4 py-10 animate-in fade-in zoom-in-95 duration-300">
-
+            <div className="w-full flex justify-center mb-6">
+                <iframe
+                    src="https://zerads.com/ad/ad.php?width=728&ref=11294"
+                    width={728}
+                    height={90}
+                    marginWidth={0}
+                    marginHeight={0}
+                    frameBorder={0}
+                    scrolling="no"
+                    title="ZerAds banner"
+                    style={{ maxWidth: '100%', border: 0, display: 'block' }}
+                />
+            </div>
             <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden relative transition-colors">
                 <div className="p-8">
                     <div className="mb-6">
