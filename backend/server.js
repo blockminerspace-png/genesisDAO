@@ -105,6 +105,7 @@ import { registerSupportMutationRoutes } from './dist/controllers/supportMutatio
 import { registerSupportPlayerRoutes } from './dist/modules/support/supportPlayer.controller.js';
 import { registerPartnerYoutubeRoutes } from './dist/controllers/partnerYoutubeController.js';
 import { registerPartnersPlayerRoutes } from './dist/modules/partners/partnersPlayer.controller.js';
+import { registerZeradsCallbackRoutes } from './dist/controllers/zeradsCallbackController.js';
 import { registerDashboardModuleRoutes } from './dist/modules/dashboard/dashboard.controller.js';
 import { registerCheckinModuleRoutes } from './dist/modules/checkin/checkin.controller.js';
 import { registerEmailVerificationModuleRoutes } from './dist/modules/email-verification/emailVerification.controller.js';
@@ -1604,6 +1605,11 @@ registerPartnerYoutubeRoutes(app, {
 registerPartnersPlayerRoutes(app, {
     authenticateToken,
     appendGameActivityLog
+});
+registerZeradsCallbackRoutes(app, {
+    authenticateToken,
+    appendGameActivityLog,
+    db
 });
 registerDashboardModuleRoutes(app, { authenticateToken });
 registerCheckinModuleRoutes(app, { authenticateToken });
@@ -5733,7 +5739,10 @@ app.get('/api/session', async (req, res) => {
         // Verifica se há impersonação ativa nesta sessão
         if (sid) {
             try {
-                const sRow = await prisma.sessions.findUnique({ where: { session_id: sid }, select: { original_user_id: true } });
+                const sRow = await prisma.sessions.findUnique({
+                    where: { session_id: sid },
+                    select: { original_user_id: true }
+                });
                 if (sRow?.original_user_id)
                     isImpersonating = true;
             }

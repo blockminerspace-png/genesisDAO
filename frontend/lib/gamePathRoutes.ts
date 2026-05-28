@@ -22,6 +22,7 @@ export type GamePathView =
   | 'support'
   | 'partners'
   | 'partner_games'
+  | 'offerwall'
   | 'profile'
   | 'calculator'
   | 'dashboard';
@@ -42,6 +43,7 @@ export const GAME_PATH_VIEWS: readonly GamePathView[] = [
   'support',
   'partners',
   'partner_games',
+  'offerwall',
   'profile',
   'calculator',
   'dashboard'
@@ -68,6 +70,7 @@ export const ENGLISH_PATH_TO_VIEW: Record<string, GamePathView> = {
   support: 'support',
   partners: 'partners',
   'partner-games': 'partner_games',
+  offerwall: 'offerwall',
   profile: 'profile',
   calculator: 'calculator',
   dashboard: 'dashboard'
@@ -89,6 +92,7 @@ const VIEW_TO_ENGLISH_PATH: Record<GamePathView, string> = {
   support: '/support',
   partners: '/partners',
   partner_games: '/partner-games',
+  offerwall: '/offerwall',
   profile: '/profile',
   calculator: '/calculator',
   dashboard: '/dashboard'

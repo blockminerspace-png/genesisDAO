@@ -5568,3 +5568,44 @@ export async function adminDeleteTransparencyEntry(id: number): Promise<{ ok: bo
     return { ok: false, error: e?.message || 'Erro de rede' };
   }
 }
+
+// --- ZERads PTC (integração externa, Site 11294) ---
+
+export type ZeradsTokenResponse = { token: string; ptc_url: string } | null;
+
+export type ZeradsStatsResponse = {
+  totals: {
+    callbacks: number;
+    amount_zer: number;
+    user_amount_usdc: number;
+    platform_amount_usdc: number;
+    clicks: number;
+  };
+  recent: Array<{
+    amount_zer: number;
+    user_amount_usdc: number;
+    clicks: number;
+    zer_to_usdc_rate: number;
+    created_at: number;
+  }>;
+} | null;
+
+export async function getZeradsToken(): Promise<ZeradsTokenResponse> {
+  try {
+    const res = await apiFetch(`${base}/zerads/me/token`);
+    if (!res.ok) return null;
+    return (await res.json().catch(() => null)) as ZeradsTokenResponse;
+  } catch {
+    return null;
+  }
+}
+
+export async function getZeradsStats(): Promise<ZeradsStatsResponse> {
+  try {
+    const res = await apiFetch(`${base}/zerads/me/stats`);
+    if (!res.ok) return null;
+    return (await res.json().catch(() => null)) as ZeradsStatsResponse;
+  } catch {
+    return null;
+  }
+}

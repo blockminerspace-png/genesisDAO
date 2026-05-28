@@ -106,6 +106,7 @@ const RoletaPage = lazyWithReload(() => import('./components/RoletaPage').then((
 const SupportPage = lazyWithReload(() => import('./components/SupportPage').then((m) => ({ default: m.SupportPage })));
 const PartnersPage = lazyWithReload(() => import('./components/PartnersPage').then((m) => ({ default: m.PartnersPage })));
 const PartnerGamesPage = lazyWithReload(() => import('./components/PartnerGamesPage').then((m) => ({ default: m.PartnerGamesPage })));
+const OfferwallPage = lazyWithReload(() => import('./components/OfferwallPage').then((m) => ({ default: m.OfferwallPage })));
 const DashboardPage = lazyWithReload(() => import('./components/Dashboard').then((m) => ({ default: m.Dashboard })));
 const BlackMarket = lazyWithReload(() => import('./components/BlackMarket').then((m) => ({ default: m.BlackMarket })));
 const Exchange = lazyWithReload(() => import('./components/Exchange').then((m) => ({ default: m.Exchange })));
@@ -296,7 +297,7 @@ function applyNftAutoSanitizedClientSync(
   setGameState(next);
 }
 
-type View = 'servers' | 'inventory' | 'hardware_store' | 'black_market' | 'wallet' | 'withdrawal_history' | 'profile' | 'upgrade' | 'lucky_store' | 'roleta' | 'arcade' | 'calculator' | 'ranking' | 'transparency' | 'support' | 'partners' | 'partner_games' | 'dashboard';
+type View = 'servers' | 'inventory' | 'hardware_store' | 'black_market' | 'wallet' | 'withdrawal_history' | 'profile' | 'upgrade' | 'lucky_store' | 'roleta' | 'arcade' | 'calculator' | 'ranking' | 'transparency' | 'support' | 'partners' | 'partner_games' | 'offerwall' | 'dashboard';
 type GlobalView =
   | 'home'
   | 'docs'
@@ -331,6 +332,7 @@ const VALID_GAME_VIEWS: readonly View[] = [
   'support',
   'partners',
   'partner_games',
+  'offerwall',
   'dashboard',
 ] as const;
 
@@ -1171,6 +1173,7 @@ export default function App() {
       },
       { key: 'support', label: gameNav('support'), icon: LifeBuoy, accent: 'sky', section: 'hub', allowed: has('support') },
       { key: 'partners', label: gameNav('partners'), icon: Clapperboard, accent: 'violet', section: 'hub', allowed: !!user },
+      { key: 'offerwall', label: gameNav('offerwall'), icon: Coins, accent: 'emerald', section: 'hub', allowed: !!user },
       { key: 'arcade', label: gameNav('arcade'), icon: Gamepad2, accent: 'amber', section: 'hub', allowed: has('arcade') },
       {
         key: 'roleta',
@@ -3446,6 +3449,16 @@ export default function App() {
                       <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden custom-scrollbar flex flex-col">
                         <Suspense fallback={<LazyRouteFallback />}>
                           <PartnersPage />
+                        </Suspense>
+                      </div>
+                      <Footer />
+                    </div>
+                  )}
+                  {saveLoaded && currentView === 'offerwall' && user && (
+                    <div className="flex-1 flex flex-col animate-in fade-in slide-in-from-right-4 duration-300">
+                      <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden custom-scrollbar flex flex-col">
+                        <Suspense fallback={<LazyRouteFallback />}>
+                          <OfferwallPage />
                         </Suspense>
                       </div>
                       <Footer />

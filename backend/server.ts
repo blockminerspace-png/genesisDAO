@@ -196,6 +196,7 @@ import { registerSupportMutationRoutes } from './dist/controllers/supportMutatio
 import { registerSupportPlayerRoutes } from './dist/modules/support/supportPlayer.controller.js';
 import { registerPartnerYoutubeRoutes } from './dist/controllers/partnerYoutubeController.js';
 import { registerPartnersPlayerRoutes } from './dist/modules/partners/partnersPlayer.controller.js';
+import { registerZeradsCallbackRoutes } from './dist/controllers/zeradsCallbackController.js';
 import { registerDashboardModuleRoutes } from './dist/modules/dashboard/dashboard.controller.js';
 import { registerCheckinModuleRoutes } from './dist/modules/checkin/checkin.controller.js';
 import { registerEmailVerificationModuleRoutes } from './dist/modules/email-verification/emailVerification.controller.js';
@@ -1810,6 +1811,11 @@ registerPartnerYoutubeRoutes(app, {
 registerPartnersPlayerRoutes(app, {
   authenticateToken,
   appendGameActivityLog
+});
+registerZeradsCallbackRoutes(app, {
+  authenticateToken,
+  appendGameActivityLog,
+  db
 });
 registerDashboardModuleRoutes(app, { authenticateToken });
 registerCheckinModuleRoutes(app, { authenticateToken });
