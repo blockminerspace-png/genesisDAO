@@ -60,6 +60,21 @@ export const HomePage: React.FC<HomePageProps> = ({ onNavigate }) => {
                 </div>
             </div>
 
+            {/* ZerAds banner — entre hero e features */}
+            <div className="w-full flex justify-center px-4 my-8 bg-slate-50 dark:bg-[#120e09]">
+                <iframe
+                    src="https://zerads.com/ad/ad.php?width=728&ref=11294"
+                    width={728}
+                    height={90}
+                    marginWidth={0}
+                    marginHeight={0}
+                    frameBorder={0}
+                    scrolling="no"
+                    title="ZerAds banner"
+                    style={{ maxWidth: '100%', border: 0 }}
+                />
+            </div>
+
             {/* Features Grid */}
             <div className="bg-slate-100 dark:bg-[#15100a] py-20 border-y border-slate-200 dark:border-amber-950/50">
                 <div className="max-w-7xl mx-auto px-6">
