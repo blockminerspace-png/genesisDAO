@@ -4,7 +4,7 @@ import type { ShopProductDto } from './shop.types.js';
 
 /**
  * Catálogo alinhado a `GET /api/upgrades` + filtros da Lojinha (mercado hardware).
- * Itens NFT / exclusivos de fluxo NFT não aparecem como compráveis na Lojinha.
+ * Itens NFT on-chain (is_nft=1) não aparecem como compráveis na Lojinha.
  */
 export async function loadHardwareShopProducts(isAdminUser: boolean): Promise<ShopProductDto[]> {
   const rows = await prisma.upgrades.findMany({

@@ -19,7 +19,6 @@ export async function assertMinerShopProductQuantity(
       type: true,
       status: true,
       is_nft: true,
-      nft_mining_coin_id: true,
       sell_in_hardware_market: true,
       is_active: true,
       max_global_stock: true,
@@ -44,11 +43,11 @@ export async function assertMinerShopProductQuantity(
   if (hasExplicitHardwareProducts > 0 && row.sell_in_hardware_market === 0) {
     return { ok: false, status: 422, error: 'Este item não está à venda na Lojinha.' };
   }
-  if (row.nft_mining_coin_id != null && String(row.nft_mining_coin_id).trim() !== '') {
+  if (Number(row.is_nft) === 1) {
     return {
       ok: false,
       status: 422,
-      error: 'Itens definidos para fluxo NFT/Web3 não são compráveis na Lojinha com USDC.'
+      error: 'NFTs on-chain não podem ser comprados na Lojinha com USDC.'
     };
   }
   if (row.status === 'legacy' || row.status === 'exclusive') {

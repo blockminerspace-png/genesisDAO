@@ -147,7 +147,6 @@ export async function runHardwareCheckoutTransaction(
     const upgradesRes = await client.query(
       `SELECT id, base_cost, name, sell_in_hardware_market, status, max_global_stock, total_sold,
               COALESCE(is_active, 1) AS ia, COALESCE(is_nft, 0) AS is_nft,
-              nft_mining_coin_id,
               type, category, COALESCE(asic_duration_kind, 'none') AS asic_duration_kind,
               COALESCE(asic_duration_amount, 0) AS asic_duration_amount,
               asic_duration_unit
@@ -192,13 +191,12 @@ export async function runHardwareCheckoutTransaction(
         await client.query('ROLLBACK');
         return { ok: false, status: 400, error: `Item não disponível para venda: ${u.name}` };
       }
-      if (u.nft_mining_coin_id != null && String(u.nft_mining_coin_id).trim() !== '') {
+      if (Number(u.is_nft) === 1) {
         await client.query('ROLLBACK');
         return {
           ok: false,
           status: 400,
-          error:
-            'Itens definidos para fluxo NFT/Web3 não podem ser comprados na Lojinha com USDC.'
+          error: 'NFTs on-chain não podem ser comprados na Lojinha com USDC.'
         };
       }
 
