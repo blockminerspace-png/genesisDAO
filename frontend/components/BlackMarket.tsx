@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { GameState, MarketListing, Upgrade, P2PMarketTradeHistoryEntry } from '../types';
 import { Skull, DollarSign, PlusCircle, Package, Tag, Trash2, ArrowRight, Lock, ShieldCheck, History, Search } from 'lucide-react';
 import { UiNoticeModal, type UiNotice } from './UiNoticeModal';
+import { UpgradeMarketSpecLine } from './UpgradeMarketSpecLine';
 import { handleImageError } from '../utils/imageFallback';
 
 const P2P_TYPE_OPTIONS: { value: '' | Upgrade['type']; label: string }[] = [
@@ -785,6 +786,7 @@ export const BlackMarket: React.FC<BlackMarketProps> = ({ gameState, onBuyListin
                           <div className="mt-1 text-[11px] text-slate-500 truncate" title={listing.sellerName}>
                             Vendedor: <span className="text-slate-400">{listing.sellerName}</span>
                           </div>
+                          <UpgradeMarketSpecLine item={item} catalog={upgrades} className="mt-1" />
                         </div>
                       </div>
                       <div className="text-right shrink-0">
@@ -926,6 +928,7 @@ export const BlackMarket: React.FC<BlackMarketProps> = ({ gameState, onBuyListin
                         {item.name}
                         {(l.qty && l.qty > 1) && <span className="text-xs text-slate-500 ml-2">x{l.qty}</span>}
                       </div>
+                      <UpgradeMarketSpecLine item={item} catalog={upgrades} className="mt-0.5" />
                       <div className="text-xs text-slate-500 mt-0.5">
                         {typeof l.buyerPaidUsdc === 'number' && Number.isFinite(l.buyerPaidUsdc) ? (
                           <>
@@ -1102,7 +1105,8 @@ export const BlackMarket: React.FC<BlackMarketProps> = ({ gameState, onBuyListin
             </div>
 
             {selectedSellItem && (
-              <div className="mt-3 flex flex-col gap-1 text-xs text-slate-500 bg-slate-900/50 p-2 rounded">
+              <div className="mt-3 flex flex-col gap-2 text-xs text-slate-500 bg-slate-900/50 p-2 rounded">
+                <UpgradeMarketSpecLine item={selectedSellItem} catalog={upgrades} compact={false} />
                 <div className="flex justify-between items-center">
                   <span>Genesis Supply (loja): <span className="text-green-500 font-mono">${formatCost(marketPrice)}</span></span>
                   <span>
@@ -1161,7 +1165,8 @@ export const BlackMarket: React.FC<BlackMarketProps> = ({ gameState, onBuyListin
                         </div>
                         <div>
                           <div className="text-slate-300 font-bold text-xs">{item.name}</div>
-                          <div className="text-green-500 font-mono text-xs">
+                          <UpgradeMarketSpecLine item={item} catalog={upgrades} className="mt-0.5" />
+                          <div className="text-green-500 font-mono text-xs mt-0.5">
                         ${formatCost(p2pLineTotal(listing))}
                         {(listing.qty && listing.qty > 1) && (
                           <span className="block text-[9px] text-slate-500">${formatCost(listing.price)}/un. × {listing.qty}</span>
@@ -1215,6 +1220,7 @@ export const BlackMarket: React.FC<BlackMarketProps> = ({ gameState, onBuyListin
                           )}
                         </div>
                         <div className="text-xs text-slate-500">Vendedor: {confirmListing.sellerName}</div>
+                        {item && <UpgradeMarketSpecLine item={item} catalog={upgrades} className="mt-1" compact={false} />}
                       </div>
                     </div>
                     <div className="space-y-1">

@@ -3,6 +3,9 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { initAnalytics } from './lib/analytics';
+import { initChunkRecoveryBoot } from './lib/chunkRecovery';
+
+initChunkRecoveryBoot();
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

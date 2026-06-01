@@ -498,6 +498,23 @@ export const initDb = async () => {
         ON mining_block_history (user_id, window_end_ms DESC);
       CREATE INDEX IF NOT EXISTS idx_mining_block_history_user_coin_time
         ON mining_block_history (user_id, coin_id, window_end_ms DESC);
+      CREATE INDEX IF NOT EXISTS idx_mining_block_history_window_end
+        ON mining_block_history (window_end_ms DESC);
+      CREATE INDEX IF NOT EXISTS idx_mining_block_history_coin_window
+        ON mining_block_history (coin_id, window_end_ms DESC);
+
+      CREATE TABLE IF NOT EXISTS mining_distribution_daily (
+        day_utc DATE NOT NULL,
+        coin_id TEXT NOT NULL,
+        total_coins DOUBLE PRECISION NOT NULL DEFAULT 0,
+        total_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+        credit_rows INTEGER NOT NULL DEFAULT 0,
+        unique_users INTEGER NOT NULL DEFAULT 0,
+        updated_at BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (day_utc, coin_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_mining_distribution_daily_day
+        ON mining_distribution_daily (day_utc DESC);
 
 
       CREATE TABLE IF NOT EXISTS economy_settings (

@@ -49,7 +49,6 @@ import {
     bulkGiftUsers,
     updateAdminPermissions,
     getUsers,
-    getAdminUserActivity,
     getAdminDormantMiningAccounts,
     getAdminUserWalletHistory,
     deactivateStreamerRoomByAdmin,
@@ -57,10 +56,9 @@ import {
     type AdminUserWalletHistoryEntry,
     type AdminUserWalletCurrent
 } from '../services/api';
-import { formatUserActivityMeta, ACTIVITY_LOG_FILTER_GROUPS, filterUserActivityLogs, formatAccountCreatedBrt } from '../utils/adminUserActivityLog';
 import { validateAuthUsernameFormat } from '../utils/usernameValidation';
 import { AUTH_USERNAME_MAX } from '../constants/authLimits';
-import type { GameUserActivityEntry } from '../types';
+import { AdminUserAuditPanel } from './AdminUserAuditPanel';
 
 function formatAdminDormantMs(ms: string | null | undefined): string {
     if (ms == null || ms === '') return '—';
@@ -146,13 +144,6 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
 
     // Save Editor State
     const [saveTab, setSaveTab] = useState<'stock' | 'racks' | 'balances' | 'boxes' | 'logs' | 'wallets'>('stock');
-    const [userActivityLogs, setUserActivityLogs] = useState<GameUserActivityEntry[]>([]);
-    const [userActivityLoading, setUserActivityLoading] = useState(false);
-    const [userActivityError, setUserActivityError] = useState<string | null>(null);
-    const [userActivityMongoNote, setUserActivityMongoNote] = useState<string | null>(null);
-    const [userActivityAccountCreatedAtMs, setUserActivityAccountCreatedAtMs] = useState<number | null>(null);
-    const [activityLogFilterId, setActivityLogFilterId] = useState<string>('all');
-    const [activityLogSearch, setActivityLogSearch] = useState('');
     const [walletHistoryLoading, setWalletHistoryLoading] = useState(false);
     const [walletHistoryError, setWalletHistoryError] = useState<string | null>(null);
     const [adminWalletCurrent, setAdminWalletCurrent] = useState<AdminUserWalletCurrent | null>(null);
@@ -355,37 +346,6 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
     }, []);
 
     useEffect(() => {
-        if (saveTab !== 'logs' || !selectedUser) return;
-        const dbId = selectedUserDbId(selectedUser);
-        if (!selectedUser.email?.trim() && !dbId) return;
-        let cancelled = false;
-        (async () => {
-            setUserActivityLoading(true);
-            setUserActivityError(null);
-            setUserActivityMongoNote(null);
-            setUserActivityAccountCreatedAtMs(null);
-            const { logs, error, activityLogNote, accountCreatedAtMs } = await getAdminUserActivity(selectedUser.email || '', {
-                userId: dbId,
-                limit: 150
-            });
-            if (cancelled) return;
-            setUserActivityLoading(false);
-            if (error) {
-                setUserActivityError(error);
-                setUserActivityLogs([]);
-                setUserActivityAccountCreatedAtMs(null);
-            } else {
-                setUserActivityLogs(logs);
-                setUserActivityMongoNote(activityLogNote ?? null);
-                setUserActivityAccountCreatedAtMs(accountCreatedAtMs ?? null);
-            }
-        })();
-        return () => {
-            cancelled = true;
-        };
-    }, [saveTab, selectedUser?.email, selectedUser?.id]);
-
-    useEffect(() => {
         if (saveTab !== 'wallets' || !selectedUser) return;
         const dbId = selectedUserDbId(selectedUser);
         if (!dbId) {
@@ -531,11 +491,6 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
     };
 
     // --- USER MANAGEMENT LOGIC ---
-    const filteredUserActivityLogs = useMemo(
-        () => filterUserActivityLogs(userActivityLogs, activityLogFilterId, activityLogSearch, { accountCreatedAtMs: userActivityAccountCreatedAtMs }),
-        [userActivityLogs, activityLogFilterId, activityLogSearch, userActivityAccountCreatedAtMs]
-    );
-
     const handleSelectUser = async (u: User) => {
         await applyUserToEditor(u);
     };
@@ -1341,149 +1296,10 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
 
                     {saveTab === 'logs' ? (
                         <div className="flex-1 overflow-y-auto custom-scrollbar">
-                            <div className="space-y-3">
-                                <p className="text-[11px] text-slate-500">
-                                    Eventos na base Mongo (<span className="font-mono text-slate-400">game_activity_logs</span> +{' '}
-                                    <span className="font-mono text-slate-400">action_logs</span>) para{' '}
-                                    <span className="font-mono text-slate-300">{selectedUser?.email}</span>
-                                    {selectedUserDbId(selectedUser) != null ? (
-                                        <span className="text-slate-500"> (user #{selectedUserDbId(selectedUser)})</span>
-                                    ) : null}
-                                    : caixas, roleta, resgate de códigos, depósitos quando o servidor regista o evento.
-                                </p>
-                                {formatAccountCreatedBrt(userActivityAccountCreatedAtMs) ? (
-                                    <div className="rounded-lg border border-emerald-900/40 bg-emerald-950/20 px-3 py-2 text-[11px] text-emerald-100/95">
-                                        <span className="font-bold text-emerald-400/95">Conta criada (estimativa): </span>
-                                        {formatAccountCreatedBrt(userActivityAccountCreatedAtMs)} (Brasília), a partir de{' '}
-                                        <span className="font-mono text-slate-300">game_states.start_time</span> no PostgreSQL.
-                                    </div>
-                                ) : (
-                                    <div className="rounded-lg border border-slate-700/80 bg-slate-900/40 px-3 py-2 text-[11px] text-slate-500">
-                                        Sem data de criação no save (sem linha em <span className="font-mono">game_states</span>).
-                                    </div>
-                                )}
-                                <div className="flex flex-col gap-2 rounded-lg border border-slate-700/80 bg-slate-950/50 p-2 sm:flex-row sm:flex-wrap sm:items-end">
-                                    <div className="flex min-w-0 flex-1 flex-col gap-1 sm:max-w-[14rem]">
-                                        <label className="text-[9px] font-bold uppercase tracking-wider text-slate-500" htmlFor="activity-log-filter">
-                                            Tipo de evento
-                                        </label>
-                                        <select
-                                            id="activity-log-filter"
-                                            value={activityLogFilterId}
-                                            onChange={(e) => setActivityLogFilterId(e.target.value)}
-                                            className="rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-xs text-white focus:border-amber-500 focus:outline-none"
-                                        >
-                                            {ACTIVITY_LOG_FILTER_GROUPS.map((g) => (
-                                                <option key={g.id} value={g.id}>
-                                                    {g.label}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                    <div className="min-w-0 flex-1 flex-col gap-1 sm:min-w-[12rem] sm:flex-[2]">
-                                        <label className="text-[9px] font-bold uppercase tracking-wider text-slate-500" htmlFor="activity-log-search">
-                                            Pesquisar (ação ou JSON)
-                                        </label>
-                                        <input
-                                            id="activity-log-search"
-                                            type="search"
-                                            value={activityLogSearch}
-                                            onChange={(e) => setActivityLogSearch(e.target.value)}
-                                            placeholder="ex: deposit, rackId, mining_rack…"
-                                            className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1.5 font-mono text-[11px] text-slate-200 placeholder:text-slate-600 focus:border-amber-500 focus:outline-none"
-                                        />
-                                    </div>
-                                    <p className="w-full text-[10px] text-slate-600 sm:order-last">
-                                        {userActivityLogs.length > 0
-                                            ? `A mostrar ${filteredUserActivityLogs.length} de ${userActivityLogs.length} evento(s) carregados.`
-                                            : null}
-                                    </p>
-                                </div>
-                                {userActivityLoading && (
-                                    <div className="flex items-center justify-center gap-2 py-8 text-slate-400 text-sm">
-                                        <Loader2 className="animate-spin" size={18} /> A carregar…
-                                    </div>
-                                )}
-                                {!userActivityLoading && userActivityError && (
-                                    <div className="rounded-lg border border-amber-700/50 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">{userActivityError}</div>
-                                )}
-                                {!userActivityLoading && !userActivityError && userActivityMongoNote && (
-                                    <div className="rounded-lg border border-sky-800/60 bg-sky-950/40 px-3 py-2 text-xs text-sky-100">
-                                        {userActivityMongoNote}
-                                    </div>
-                                )}
-                                {!userActivityLoading && !userActivityError && (
-                                    <div className="rounded-lg border border-slate-700 overflow-hidden">
-                                        <table className="w-full text-left text-xs">
-                                            <thead className="bg-slate-950 text-slate-500 uppercase text-[10px] tracking-wider font-bold">
-                                                <tr>
-                                                    <th className="px-2 py-2">Data</th>
-                                                    <th className="px-2 py-2">Ação</th>
-                                                    <th className="px-2 py-2">Detalhes</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-slate-800">
-                                                {userActivityLogs.length > 0 ? (
-                                                    filteredUserActivityLogs.length > 0 ? (
-                                                        filteredUserActivityLogs.map((row) => (
-                                                            <tr key={row.id} className="hover:bg-slate-800/40">
-                                                                <td className="px-2 py-2 text-[10px] text-slate-400 font-mono whitespace-nowrap align-top">
-                                                                    {new Date(row.createdAt).toLocaleString()}
-                                                                </td>
-                                                                <td className="px-2 py-2 font-mono text-emerald-400 align-top">{row.action}</td>
-                                                                <td className="px-2 py-2 text-[10px] text-slate-400 font-mono break-all max-w-md align-top" title={formatUserActivityMeta(row.meta)}>
-                                                                    {formatUserActivityMeta(row.meta)}
-                                                                </td>
-                                                            </tr>
-                                                        ))
-                                                    ) : (
-                                                        <tr>
-                                                            <td colSpan={3} className="px-4 py-8 text-center text-slate-500 italic">
-                                                                Nenhum evento corresponde ao filtro ou à pesquisa. Ajuste o tipo ou limpe a pesquisa.
-                                                            </td>
-                                                        </tr>
-                                                    )
-                                                ) : (
-                                                    <tr>
-                                                        <td colSpan={3} className="px-4 py-8 text-center text-slate-500 italic">
-                                                            Nenhum evento registado para esta conta (MongoDB vazio ou sem MONGODB_URI no servidor).
-                                                        </td>
-                                                    </tr>
-                                                )}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                )}
-                                {!userActivityLoading && !userActivityError && (
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            if (!selectedUser) return;
-                                            const dbId = selectedUserDbId(selectedUser);
-                                            if (!selectedUser.email?.trim() && !dbId) return;
-                                            setUserActivityLoading(true);
-                                            getAdminUserActivity(selectedUser.email || '', { userId: dbId, limit: 150 }).then(
-                                                ({ logs, error, activityLogNote, accountCreatedAtMs }) => {
-                                                    setUserActivityLoading(false);
-                                                    if (error) {
-                                                        setUserActivityError(error);
-                                                        setUserActivityLogs([]);
-                                                        setUserActivityMongoNote(null);
-                                                        setUserActivityAccountCreatedAtMs(null);
-                                                    } else {
-                                                        setUserActivityLogs(logs);
-                                                        setUserActivityMongoNote(activityLogNote ?? null);
-                                                        setUserActivityAccountCreatedAtMs(accountCreatedAtMs ?? null);
-                                                    }
-                                                }
-                                            );
-                                        }}
-                                        className="text-xs font-bold text-amber-500 hover:text-amber-400 uppercase"
-                                    >
-                                        Atualizar lista
-                                    </button>
-                                )}
-                            </div>
+                            <AdminUserAuditPanel
+                                userId={selectedUserDbId(selectedUser) ?? null}
+                                userEmail={selectedUser?.email || ''}
+                            />
                         </div>
                     ) : saveTab === 'wallets' ? (
                         <div className="flex-1 overflow-y-auto custom-scrollbar space-y-4">

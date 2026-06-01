@@ -30,6 +30,8 @@ import { logUserAction } from '../../lib/mongoLogs.js';
 export type AuthLoginModuleDeps = {
   bcrypt: typeof bcryptjs;
   getClientIp: (req: Request) => string;
+  /** Snapshot de estado global após login bem-sucedido. */
+  onLoginSuccess?: (userId: number) => void | Promise<void>;
 };
 
 function parseAdminPermissions(raw: unknown): unknown {
@@ -42,7 +44,7 @@ function parseAdminPermissions(raw: unknown): unknown {
 }
 
 export function registerAuthLoginModuleRoutes(app: Express, deps: AuthLoginModuleDeps): void {
-  const { bcrypt, getClientIp } = deps;
+  const { bcrypt, getClientIp, onLoginSuccess } = deps;
 
   app.get('/api/security/turnstile-config', (_req: Request, res: Response) => {
     res.json({
@@ -124,6 +126,14 @@ export function registerAuthLoginModuleRoutes(app: Express, deps: AuthLoginModul
       // A1+B3: limpar contador de falhas após login bem-sucedido e logar evento
       try { await clearLoginFailures(Number(u.id)); } catch { /* non-blocking */ }
       logUserAction(Number(u.id), 'login_success', { ip: getClientIp(req) });
+      try {
+        await onLoginSuccess?.(Number(u.id));
+      } catch (snapErr: unknown) {
+        console.warn(
+          '[Login] onLoginSuccess:',
+          snapErr instanceof Error ? snapErr.message : snapErr
+        );
+      }
 
       const currentIp = getClientIp(req);
       try {

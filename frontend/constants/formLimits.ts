@@ -15,6 +15,8 @@ export const PARTNER_VIDEO_TITLE_MAX = 200;
 export const PARTNER_VIDEO_YOUTUBE_URL_MAX = 500;
 export const PARTNER_VIDEO_DESCRIPTION_MAX = 2000;
 export const PARTNER_CHANNEL_URL_MAX = 500;
+export const PARTNER_CHANNEL_NAME_MAX = 120;
+export const PARTNER_CHANNEL_DESCRIPTION_MAX = 800;
 export const PARTNER_AVATAR_URL_MAX = 800;
 /** Motivo ao recusar envio (`partnerYoutubeController`). */
 export const PARTNER_REJECT_REASON_MAX = 500;

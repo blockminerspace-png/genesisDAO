@@ -751,12 +751,22 @@ export interface SecurityStats {
   blockedUsers: BlockedUserEntry[];
 }
 
+export type ActivityEventDisplay = {
+  category: string;
+  severity: string;
+  title: string;
+  summary: string;
+  lines?: string[];
+  technicalMeta?: Record<string, unknown> | null;
+};
+
 /** Linha de atividade de jogo (MongoDB `game_activity_logs`; id = ObjectId em string). */
 export interface GameUserActivityEntry {
   id: string;
   action: string;
   meta: Record<string, unknown> | null;
   createdAt: number;
+  display?: ActivityEventDisplay;
 }
 
 export type TransparencyCategory = 'pool' | 'expense' | 'investment' | 'other';

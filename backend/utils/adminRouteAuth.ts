@@ -137,6 +137,12 @@ export function resolveAdminRouteRequirement(method: string, rawPath: string): A
   if (p.startsWith('/api/admin/access-level-referral-assignments')) return { kind: 'tab', tab: 'users' };
   if (p === '/api/admin/bulk-gift') return { kind: 'tab', tab: 'users' };
   if (p.startsWith('/api/admin/user-activity')) return { kind: 'tab', tab: 'users' };
+  if (method.toUpperCase() === 'GET' && /^\/api\/admin\/users\/[^/]+\/inventory-audit$/.test(p)) {
+    return { kind: 'tab', tab: 'users' };
+  }
+  if (method.toUpperCase() === 'GET' && /^\/api\/admin\/users\/[^/]+\/session-snapshots$/.test(p)) {
+    return { kind: 'tab', tab: 'users' };
+  }
   if (p === '/api/admin/update-coin-balance' || p === '/api/admin/bulk-update-coin-balance') return { kind: 'tab', tab: 'users' };
   if (p === '/api/admin/ranking-exclusion') return { kind: 'tab', tab: 'users' };
 
@@ -156,6 +162,7 @@ export function resolveAdminRouteRequirement(method: string, rawPath: string): A
     return { kind: 'tab', tab: 'users' };
   }
   if (p.startsWith('/api/admin/economy-stats')) return { kind: 'tab', tab: 'reports' };
+  if (p.startsWith('/api/admin/mining-distribution/')) return { kind: 'tab', tab: 'reports' };
   if (p.startsWith('/api/admin/mining-runtime-summary')) return { kind: 'tab', tab: 'reports' };
   if (p.startsWith('/api/admin/etherscan/')) return { kind: 'tab', tab: 'reports' };
   if (p.startsWith('/api/admin/withdrawals')) return { kind: 'super' };

@@ -38,7 +38,7 @@ Substitui a antiga tabela Postgres `game_activity_logs` (removida do `initDb` e 
 | Campo | Tipo | Descrição |
 |-------|------|-----------|
 | `userId` | `number` | Utilizador alvo do evento. |
-| `action` | `string` | Ex.: `loot_box_open`, `hardware_buy`, `client_*`. |
+| `action` | `string` | Ex.: `loot_box_open`, `hardware_buy`, `client_*`, `session_state_snapshot`, `stock_delta`, `inventory_loss_alert`. |
 | `meta` | `object` | JSON livre (mesmo conteúdo que antes no Postgres). |
 | `at` | `Date` | Timestamp do insert. |
 | `created_at` | `number` | Epoch ms (duplicado para ordenação simples). |
@@ -62,6 +62,11 @@ Bases já existentes: executar uma vez `backend/scripts/drop_game_activity_logs.
 | `action` | `userId` | `meta` (exemplos) |
 |----------|----------|-------------------|
 | `login` | sim | `{ auth: 'password' }` — sem email em claro. |
+| `login_success` | sim | `{ ip }` — após login válido; em seguida grava-se `session_state_snapshot` em `game_activity_logs`. |
+| `login_failed` | sim | `{ ip }` |
+| `session_state_snapshot` | sim | Resumo compacto: economy, inventory, rigs, boxes, batteries, `fingerprint` (SHA-256). |
+| `stock_delta` | sim | `{ itemId, itemName, before, after, delta, source }` — alteração de stock no save-game. |
+| `inventory_loss_alert` | sim | Mesmo meta que `stock_delta` quando quantidade diminui no save. |
 | `signup_complete` | sim | `{}` — registo público concluído. |
 | `profile_update` | sim | `{}` — `PUT /api/user` autenticado. |
 | `wallet_link` | sim | `{}` — `POST /api/session` (carteira Polygon). |

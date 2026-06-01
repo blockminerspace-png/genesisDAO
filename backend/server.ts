@@ -111,6 +111,12 @@ import {
 } from './dist/src/auth/index.js';
 import { registerDeviceFingerprintAdminRoutes } from './dist/controllers/deviceFingerprintAdminController.js';
 import { registerAdminReferralRoutes } from './dist/controllers/adminReferralController.js';
+import { registerAdminMiningDistributionRoutes } from './dist/controllers/adminMiningDistribution.controller.js';
+import { registerAdminUserAuditRoutes } from './dist/controllers/adminUserAudit.controller.js';
+import { appendSessionStateSnapshot } from './dist/services/playerStateSnapshot.service.js';
+import { auditStockSaveDelta } from './dist/modules/inventory/inventoryStockAudit.js';
+import { enrichSaveActivityLogsWithUpgradeNames } from './dist/lib/rackActivityLogEnrich.js';
+import { startMiningDistributionRollupCron } from './dist/cron/miningDistributionRollupCron.js';
 import { registerP2pMarketRoutes } from './dist/controllers/p2pMarketController.js';
 import { registerBlackMarketModuleRoutes } from './dist/modules/black-market/black-market.controller.js';
 import { registerLuckyBoxesModuleRoutes } from './dist/modules/lucky-boxes/lucky-boxes.controller.js';
@@ -1745,6 +1751,8 @@ app.use(async (req, res, next) => {
 
 registerDeviceFingerprintAdminRoutes(app, { isAdmin });
 registerAdminReferralRoutes(app, { isAdmin });
+registerAdminMiningDistributionRoutes(app, { isAdmin, db });
+registerAdminUserAuditRoutes(app, { isAdmin });
 registerP2pMarketRoutes(app, { emitMarketWs });
 registerBlackMarketModuleRoutes(app, { authenticateToken });
 registerLootBoxPlayerRoutes(app, {
@@ -1810,7 +1818,8 @@ registerPartnerYoutubeRoutes(app, {
 });
 registerPartnersPlayerRoutes(app, {
   authenticateToken,
-  appendGameActivityLog
+  appendGameActivityLog,
+  uploadsDir: IMG_UPLOADS_DIR
 });
 registerZeradsCallbackRoutes(app, {
   authenticateToken,
@@ -1928,6 +1937,7 @@ startMiningYieldCron(db);
 
 // --- Email marketing: lote diário automático ---
 startEmailCampaignCron();
+startMiningDistributionRollupCron(db);
 
 // Sistema de carregamento de baterias descontinuado em 20260516180000:
 // não há cron, rotas de workshop/recarga, daily-boost ou reward-ad. Baterias
@@ -6009,7 +6019,20 @@ app.post('/api/admin/mining-coins/sync-live-prices', isAdmin, async (req, res) =
   }
 });
 
-registerAuthLoginModuleRoutes(app, { bcrypt, getClientIp });
+registerAuthLoginModuleRoutes(app, {
+  bcrypt,
+  getClientIp,
+  onLoginSuccess: async (userId: number) => {
+    await appendSessionStateSnapshot(
+      async (uid, action, meta) => {
+        await appendGameActivityLog(db, uid, action, meta);
+      },
+      db,
+      userId,
+      { trigger: 'login' }
+    );
+  }
+});
 
 app.get('/api/session', async (req, res) => {
   let isImpersonating = false;
@@ -7526,6 +7549,24 @@ async function handleSaveGamePost(req, res) {
         );
         throw new HttpControlledError(400, { error: sv.error });
       }
+      const newStockMap: Record<string, number> = {};
+      for (let i = 0; i < sv.itemIds.length; i++) {
+        newStockMap[String(sv.itemIds[i])] = Number(sv.qtys[i]) || 0;
+      }
+      const upgradeNameCache = new Map<string, string>();
+      if (sv.itemIds.length > 0) {
+        const upRows = await client.query<{ id: string; name: string }>(
+          `SELECT id, name FROM upgrades WHERE id = ANY($1::text[])`,
+          [sv.itemIds]
+        );
+        for (const u of upRows.rows) upgradeNameCache.set(String(u.id), String(u.name));
+      }
+      await auditStockSaveDelta(client, uid, newStockMap, {
+        appendGameActivityLog: async (u, action, meta) => {
+          await appendGameActivityLog(db, u, action, meta);
+        },
+        resolveItemName: (itemId) => upgradeNameCache.get(itemId) ?? itemId
+      });
       if (sv.itemIds.length > 0) {
         await client.query(`
           INSERT INTO stock (user_id, item_id, qty) 
@@ -7882,6 +7923,7 @@ async function handleSaveGamePost(req, res) {
       }));
       nftAutoSyncPayload = { placedRacks: changes.placedRacks, stock: stockObj, storedBatteries: bats };
     }
+    await enrichSaveActivityLogsWithUpgradeNames(client, saveActivityLogs);
     },
     { timeout: 24000, maxWait: 5000 }
     );
@@ -8489,67 +8531,7 @@ app.delete('/api/admin/security/blacklist/:ip', isAdmin, async (req, res) => {
   } catch (e) { sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e); }
 });
 
-app.get('/api/admin/user-activity', isAdmin, async (req, res) => {
-  try {
-    const rawQ = String(req.query.email || req.query.q || '').trim().toLowerCase();
-    const uidParsed = parseInt(String(req.query.userId || ''), 10);
-    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || '80'), 10) || 80));
-
-    let uid = null;
-    if (rawQ) {
-      const uRows = await prisma.$queryRaw<Array<{ id: number }>>`
-        SELECT id FROM users
-        WHERE lower(trim(email::text)) = ${rawQ} OR lower(trim(username::text)) = ${rawQ}
-        LIMIT 1
-      `;
-      if (!uRows[0]) {
-        return res.status(404).json({ error: 'Utilizador não encontrado (email ou username).' });
-      }
-      uid = uRows[0].id;
-    } else if (Number.isFinite(uidParsed) && uidParsed > 0) {
-      uid = uidParsed;
-    } else {
-      return res.status(400).json({ error: 'Indique email, username ou userId válido' });
-    }
-
-    let accountCreatedAtMs: number | null = null;
-    try {
-      const gs = await prisma.game_states.findUnique({
-        where: { user_id: Number(uid) },
-        select: { start_time: true }
-      });
-      const raw = gs?.start_time;
-      if (raw != null) {
-        const n = typeof raw === 'bigint' ? Number(raw) : Number(raw);
-        if (Number.isFinite(n) && n > 0) accountCreatedAtMs = n;
-      }
-    } catch {
-      /* ignore */
-    }
-
-    const logs = await listAdminUserActivityLogsMongo(Number(uid), limit, { accountCreatedAtMs });
-    const mongoOk = !!getGenesisMongo();
-    res.json({
-      logs: logs.map((r) => ({
-        id: r.id,
-        action: r.action,
-        meta: r.meta,
-        createdAt: r.createdAt
-      })),
-      accountCreatedAtMs,
-      ...(mongoOk
-        ? {}
-        : {
-            activityLogNote:
-              'MONGODB_URI não está definido: o histórico de atividade de jogo só existe no MongoDB. Configure a URI e a coleção genesis_logs.game_activity_logs.'
-          })
-    });
-  } catch (e) {
-    console.error('[AdminUserActivity]', e);
-    res.status(500).json({ error: 'Falha ao carregar atividade' });
-  }
-});
-
+// GET /api/admin/user-activity → registerAdminUserAuditRoutes (adminUserAudit.controller.ts)
 
 // --- ADMIN MARKET ---
 app.get('/api/admin/market/listings', isAdmin, async (req, res) => {

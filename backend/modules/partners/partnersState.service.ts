@@ -1,7 +1,9 @@
 import {
   countPartnerSubmissionsForUserUtcDay,
   getPartnerAccessLevelIdsLower,
+  getPartnerYoutubeApplicationForUser,
   getPartnerYoutubeApprovedByPublicId,
+  getPartnerYoutubeCreatorProfile,
   isPartnerYoutubeManualAllowlisted,
   listPartnerYoutubeApprovedPublicCursor,
   listPartnerYoutubeByUser,
@@ -15,6 +17,7 @@ import {
   userAccessSetHasPartnerLevel
 } from '../../utils/partnerYoutubeHelpers.js';
 import { youtubeEmbedUrl, youtubeThumbnailUrl } from './partners.youtubeUrl.js';
+import { buildPartnerNftRoomStatus } from './partnersProfile.service.js';
 
 const DEFAULT_LIMIT = 24;
 const MAX_LIMIT = 48;
@@ -48,7 +51,7 @@ function mapApprovedRowToPublicDto(row: PartnerYoutubeApprovedPublicRow): Partne
     description: String(row.description || '').slice(0, 800),
     publishedAt,
     creator: {
-      displayName: String(row.username || '').trim() || 'Parceiro',
+      displayName: String(row.partner_display_name || row.username || '').trim() || 'Parceiro',
       channelUrl: String(row.partner_channel_url || '').trim(),
       avatarUrl: String(row.partner_avatar_url || '').trim()
     }
@@ -123,12 +126,41 @@ export async function buildPartnersStatePayload(params: {
   const usedToday = await countPartnerSubmissionsForUserUtcDay(uid, dayKey);
   const listRows = await listPartnerYoutubeByUser(uid);
 
+  const application = await getPartnerYoutubeApplicationForUser(uid);
+  const creatorProfile = await getPartnerYoutubeCreatorProfile(uid);
+  const nftRoom = isPartner ? await buildPartnerNftRoomStatus(uid) : null;
+
   base.auth = {
     authenticated: true,
     isPartner,
     canSubmitToday: isPartner && usedToday < 1,
-    submissionsToday: usedToday
+    submissionsToday: usedToday,
+    application: application
+      ? {
+          id: application.id,
+          status: application.status,
+          channelName: application.channel_name,
+          channelUrl: application.channel_url,
+          avatarUrl: application.avatar_url,
+          description: application.description,
+          createdAt: Number(application.created_at) || 0,
+          rejectReason: application.reject_reason ? String(application.reject_reason).slice(0, 500) : undefined
+        }
+      : null,
+    canApply:
+      !isPartner &&
+      (!application || application.status === 'rejected')
   };
+  base.creatorProfile = creatorProfile
+    ? {
+        channelName: creatorProfile.channel_name,
+        channelUrl: creatorProfile.channel_url,
+        avatarUrl: creatorProfile.avatar_url,
+        description: creatorProfile.description,
+        canEditChannelUrl: false
+      }
+    : null;
+  base.nftRoom = nftRoom;
   base.mySubmissions = listRows.map(mapMySubmission);
 
   return base;

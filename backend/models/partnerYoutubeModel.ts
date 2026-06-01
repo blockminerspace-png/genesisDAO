@@ -20,8 +20,10 @@ const PARTNER_YOUTUBE_DDL_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_partner_youtube_status ON partner_youtube_submissions (status, reviewed_at DESC)`,
   `CREATE TABLE IF NOT EXISTS partner_youtube_creator_profiles (
         user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        channel_name TEXT NOT NULL DEFAULT '',
         channel_url TEXT NOT NULL DEFAULT '',
         avatar_url TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
         updated_at BIGINT NOT NULL DEFAULT 0,
         updated_by INTEGER REFERENCES users(id)
       )`,
@@ -37,7 +39,25 @@ const PARTNER_YOUTUBE_DDL_STATEMENTS = [
   `CREATE UNIQUE INDEX IF NOT EXISTS partner_youtube_submissions_user_utcday_uidx
      ON partner_youtube_submissions (user_id, submit_utc_day)`,
   `CREATE INDEX IF NOT EXISTS partner_youtube_submissions_video_id_status_idx
-     ON partner_youtube_submissions (youtube_video_id, status)`
+     ON partner_youtube_submissions (youtube_video_id, status)`,
+  `ALTER TABLE partner_youtube_creator_profiles ADD COLUMN IF NOT EXISTS channel_name TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE partner_youtube_creator_profiles ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''`,
+  `CREATE TABLE IF NOT EXISTS partner_youtube_applications (
+        id TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        channel_name TEXT NOT NULL,
+        channel_url TEXT NOT NULL,
+        avatar_url TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at BIGINT NOT NULL,
+        reviewed_at BIGINT,
+        reviewed_by INTEGER REFERENCES users(id),
+        reject_reason TEXT,
+        CONSTRAINT partner_youtube_applications_status_chk CHECK (status IN ('pending','approved','rejected'))
+      )`,
+  `CREATE INDEX IF NOT EXISTS idx_partner_youtube_applications_user ON partner_youtube_applications (user_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_partner_youtube_applications_status ON partner_youtube_applications (status, created_at DESC)`
 ];
 
 export async function ensurePartnerYoutubeSchema(): Promise<void> {
@@ -99,6 +119,7 @@ export type PartnerYoutubeApprovedPublicRow = {
   reviewed_at: bigint | null;
   user_id: number;
   username: string;
+  partner_display_name: string;
   partner_channel_url: string;
   partner_avatar_url: string;
 };
@@ -111,6 +132,7 @@ export async function listPartnerYoutubeApprovedPublic(
     SELECT s.id, s.title, s.youtube_url, s.youtube_video_id, s.description, s.created_at, s.reviewed_at,
            u.id AS user_id,
            u.username,
+           COALESCE(NULLIF(BTRIM(p.channel_name), ''), u.username) AS partner_display_name,
            COALESCE(NULLIF(BTRIM(p.channel_url), ''), '') AS partner_channel_url,
            COALESCE(NULLIF(BTRIM(p.avatar_url), ''), '') AS partner_avatar_url
     FROM partner_youtube_submissions s
@@ -132,6 +154,7 @@ export async function listPartnerYoutubeApprovedPublicCursor(
       SELECT s.id, s.title, s.youtube_url, s.youtube_video_id, s.description, s.created_at, s.reviewed_at,
              u.id AS user_id,
              u.username,
+             COALESCE(NULLIF(BTRIM(p.channel_name), ''), u.username) AS partner_display_name,
              COALESCE(NULLIF(BTRIM(p.channel_url), ''), '') AS partner_channel_url,
              COALESCE(NULLIF(BTRIM(p.avatar_url), ''), '') AS partner_avatar_url
       FROM partner_youtube_submissions s
@@ -146,6 +169,7 @@ export async function listPartnerYoutubeApprovedPublicCursor(
     SELECT s.id, s.title, s.youtube_url, s.youtube_video_id, s.description, s.created_at, s.reviewed_at,
            u.id AS user_id,
            u.username,
+           COALESCE(NULLIF(BTRIM(p.channel_name), ''), u.username) AS partner_display_name,
            COALESCE(NULLIF(BTRIM(p.channel_url), ''), '') AS partner_channel_url,
            COALESCE(NULLIF(BTRIM(p.avatar_url), ''), '') AS partner_avatar_url
     FROM partner_youtube_submissions s
@@ -168,6 +192,7 @@ export async function getPartnerYoutubeApprovedByPublicId(
     SELECT s.id, s.title, s.youtube_url, s.youtube_video_id, s.description, s.created_at, s.reviewed_at,
            u.id AS user_id,
            u.username,
+           COALESCE(NULLIF(BTRIM(p.channel_name), ''), u.username) AS partner_display_name,
            COALESCE(NULLIF(BTRIM(p.channel_url), ''), '') AS partner_channel_url,
            COALESCE(NULLIF(BTRIM(p.avatar_url), ''), '') AS partner_avatar_url
     FROM partner_youtube_submissions s
@@ -181,22 +206,26 @@ export async function getPartnerYoutubeApprovedByPublicId(
 
 export async function getPartnerYoutubeCreatorProfile(
   userId: number
-): Promise<{ channel_url: string; avatar_url: string } | null> {
+): Promise<{ channel_name: string; channel_url: string; avatar_url: string; description: string } | null> {
   const row = await prisma.partner_youtube_creator_profiles.findUnique({
     where: { user_id: userId },
-    select: { channel_url: true, avatar_url: true }
+    select: { channel_name: true, channel_url: true, avatar_url: true, description: true }
   });
   if (!row) return null;
   return {
+    channel_name: String(row.channel_name ?? '').trim(),
     channel_url: String(row.channel_url ?? '').trim(),
-    avatar_url: String(row.avatar_url ?? '').trim()
+    avatar_url: String(row.avatar_url ?? '').trim(),
+    description: String(row.description ?? '').trim()
   };
 }
 
 export async function upsertPartnerYoutubeCreatorProfile(params: {
   userId: number;
+  channelName?: string;
   channelUrl: string;
   avatarUrl: string;
+  description?: string;
   updatedAt: number;
   updatedBy: number | null;
 }): Promise<void> {
@@ -204,16 +233,38 @@ export async function upsertPartnerYoutubeCreatorProfile(params: {
     where: { user_id: params.userId },
     create: {
       user_id: params.userId,
+      channel_name: params.channelName ?? '',
       channel_url: params.channelUrl,
       avatar_url: params.avatarUrl,
+      description: params.description ?? '',
       updated_at: BigInt(params.updatedAt),
       updated_by: params.updatedBy
     },
     update: {
+      ...(params.channelName !== undefined ? { channel_name: params.channelName } : {}),
       channel_url: params.channelUrl,
       avatar_url: params.avatarUrl,
+      ...(params.description !== undefined ? { description: params.description } : {}),
       updated_at: BigInt(params.updatedAt),
       updated_by: params.updatedBy
+    }
+  });
+}
+
+/** Parceiro edita nome e capa — URL do canal permanece intacta. */
+export async function updatePartnerYoutubeCreatorProfileEditable(params: {
+  userId: number;
+  channelName: string;
+  avatarUrl: string;
+  updatedAt: number;
+}): Promise<void> {
+  await prisma.partner_youtube_creator_profiles.updateMany({
+    where: { user_id: params.userId },
+    data: {
+      channel_name: params.channelName,
+      avatar_url: params.avatarUrl,
+      updated_at: BigInt(params.updatedAt),
+      updated_by: params.userId
     }
   });
 }
@@ -390,6 +441,7 @@ export async function listPartnerYoutubePartnersForAdmin(): Promise<PartnerYoutu
               FROM partner_youtube_submissions s
              WHERE s.user_id = u.id
                AND s.status = 'approved') AS last_approved_at,
+           COALESCE(NULLIF(BTRIM(p.channel_name), ''), u.username) AS partner_display_name,
            COALESCE(NULLIF(BTRIM(p.channel_url), ''), '') AS partner_channel_url,
            COALESCE(NULLIF(BTRIM(p.avatar_url), ''), '') AS partner_avatar_url,
            EXISTS (SELECT 1 FROM partner_youtube_manual_allowlist m WHERE m.user_id = u.id) AS is_allowlisted
@@ -444,5 +496,173 @@ export async function findUserIdsByNormalizedUsername(raw: string): Promise<numb
 
 export async function userExistsById(userId: number): Promise<boolean> {
   const n = await prisma.users.count({ where: { id: userId } });
+  return n > 0;
+}
+
+export type PartnerYoutubeApplicationRow = {
+  id: string;
+  user_id: number;
+  channel_name: string;
+  channel_url: string;
+  avatar_url: string;
+  description: string;
+  status: string;
+  created_at: bigint;
+  reviewed_at: bigint | null;
+  reject_reason: string | null;
+  username?: string;
+  email?: string;
+};
+
+export async function getPartnerYoutubeApplicationForUser(userId: number): Promise<PartnerYoutubeApplicationRow | null> {
+  const rows = await prisma.$queryRaw<PartnerYoutubeApplicationRow[]>`
+    SELECT id, user_id, channel_name, channel_url, avatar_url, description, status, created_at, reviewed_at, reject_reason
+    FROM partner_youtube_applications
+    WHERE user_id = ${userId}
+    ORDER BY created_at DESC
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+export async function getPartnerYoutubePendingApplicationForUser(userId: number): Promise<PartnerYoutubeApplicationRow | null> {
+  const rows = await prisma.$queryRaw<PartnerYoutubeApplicationRow[]>`
+    SELECT id, user_id, channel_name, channel_url, avatar_url, description, status, created_at, reviewed_at, reject_reason
+    FROM partner_youtube_applications
+    WHERE user_id = ${userId} AND status = 'pending'
+    ORDER BY created_at DESC
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+export async function insertPartnerYoutubeApplication(params: {
+  id: string;
+  userId: number;
+  channelName: string;
+  channelUrl: string;
+  avatarUrl: string;
+  description: string;
+  createdAt: number;
+}): Promise<void> {
+  await prisma.$executeRaw`
+    INSERT INTO partner_youtube_applications
+      (id, user_id, channel_name, channel_url, avatar_url, description, status, created_at)
+    VALUES
+      (${params.id}, ${params.userId}, ${params.channelName}, ${params.channelUrl}, ${params.avatarUrl}, ${params.description}, 'pending', ${BigInt(params.createdAt)})
+  `;
+}
+
+export async function listPartnerYoutubeApplicationsForAdmin(
+  status: 'all' | 'pending' | 'approved' | 'rejected'
+): Promise<PartnerYoutubeApplicationRow[]> {
+  if (status === 'all') {
+    return prisma.$queryRaw<PartnerYoutubeApplicationRow[]>`
+      SELECT a.id, a.user_id, a.channel_name, a.channel_url, a.avatar_url, a.description, a.status,
+             a.created_at, a.reviewed_at, a.reject_reason, u.username, u.email
+      FROM partner_youtube_applications a
+      JOIN users u ON u.id = a.user_id
+      ORDER BY a.created_at DESC
+      LIMIT 200
+    `;
+  }
+  return prisma.$queryRaw<PartnerYoutubeApplicationRow[]>`
+    SELECT a.id, a.user_id, a.channel_name, a.channel_url, a.avatar_url, a.description, a.status,
+           a.created_at, a.reviewed_at, a.reject_reason, u.username, u.email
+    FROM partner_youtube_applications a
+    JOIN users u ON u.id = a.user_id
+    WHERE a.status = ${status}
+    ORDER BY a.created_at DESC
+    LIMIT 200
+  `;
+}
+
+export async function getPartnerYoutubeApplicationById(id: string): Promise<PartnerYoutubeApplicationRow | null> {
+  const rows = await prisma.$queryRaw<PartnerYoutubeApplicationRow[]>`
+    SELECT a.id, a.user_id, a.channel_name, a.channel_url, a.avatar_url, a.description, a.status,
+           a.created_at, a.reviewed_at, a.reject_reason, u.username, u.email
+    FROM partner_youtube_applications a
+    JOIN users u ON u.id = a.user_id
+    WHERE a.id = ${id}
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+export async function updatePartnerYoutubeApplicationApprove(
+  id: string,
+  adminUserId: number,
+  reviewedAt: number
+): Promise<number> {
+  const r = await prisma.$executeRaw`
+    UPDATE partner_youtube_applications
+       SET status = 'approved', reviewed_at = ${BigInt(reviewedAt)}, reviewed_by = ${adminUserId}, reject_reason = NULL
+     WHERE id = ${id} AND status = 'pending'
+  `;
+  return Number(r) || 0;
+}
+
+export async function updatePartnerYoutubeApplicationReject(
+  id: string,
+  adminUserId: number,
+  reason: string | null,
+  reviewedAt: number
+): Promise<number> {
+  const r = await prisma.$executeRaw`
+    UPDATE partner_youtube_applications
+       SET status = 'rejected', reviewed_at = ${BigInt(reviewedAt)}, reviewed_by = ${adminUserId}, reject_reason = ${reason}
+     WHERE id = ${id} AND status = 'pending'
+  `;
+  return Number(r) || 0;
+}
+
+export async function countPartnerApprovedVideosSince(userId: number, sinceMs: number): Promise<number> {
+  const rows = await prisma.$queryRaw<{ c: bigint }[]>`
+    SELECT COUNT(*)::bigint AS c
+    FROM partner_youtube_submissions
+    WHERE user_id = ${userId}
+      AND status = 'approved'
+      AND COALESCE(reviewed_at, created_at) >= ${BigInt(sinceMs)}
+  `;
+  return Number(rows[0]?.c ?? 0);
+}
+
+export async function getPartnerLastApprovedVideoAt(userId: number): Promise<number | null> {
+  const row = await prisma.partner_youtube_submissions.findFirst({
+    where: { user_id: userId, status: 'approved' },
+    orderBy: [{ reviewed_at: 'desc' }, { created_at: 'desc' }],
+    select: { reviewed_at: true, created_at: true }
+  });
+  if (!row) return null;
+  const ts = row.reviewed_at != null ? Number(row.reviewed_at) : Number(row.created_at);
+  return Number.isFinite(ts) && ts > 0 ? ts : null;
+}
+
+export async function grantPartnerNftRoomAccess(userId: number, roomId: string): Promise<void> {
+  const now = BigInt(Date.now());
+  await prisma.user_rig_rooms.upsert({
+    where: { user_id_room_id: { user_id: userId, room_id: roomId } },
+    create: {
+      user_id: userId,
+      room_id: roomId,
+      purchased_at: now,
+      unlocked_slots: 4
+    },
+    update: {}
+  });
+}
+
+export async function ensurePartnerAccessLevel(userId: number): Promise<void> {
+  await prisma.$executeRaw`
+    INSERT INTO user_access_levels (user_id, access_level_id, granted_at)
+    VALUES (${userId}, 'partners', ${BigInt(Date.now())})
+    ON CONFLICT (user_id, access_level_id) DO NOTHING
+  `;
+}
+
+export async function userHasNftRoomAccess(userId: number, roomId: string): Promise<boolean> {
+  const n = await prisma.user_rig_rooms.count({
+    where: { user_id: userId, room_id: roomId }
+  });
   return n > 0;
 }

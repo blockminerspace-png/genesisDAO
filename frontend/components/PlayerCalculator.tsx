@@ -70,41 +70,47 @@ export const PlayerCalculator: React.FC<PlayerCalculatorProps> = ({ onBack, isAd
     const scopesUi = payload?.scopesUi ?? [{ id: 'total', name: 'Poder Total' }];
 
     return (
-        <div className="flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-hidden bg-slate-950 text-slate-200 xl:flex-row">
-            <div className="flex w-full shrink-0 flex-col border-b border-slate-800 bg-slate-900 p-3 xl:w-72 xl:border-b-0 xl:border-r xl:p-4">
-                <button
-                    type="button"
-                    onClick={onBack}
-                    className="mb-4 flex items-center gap-2 rounded p-2 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white lg:mb-6"
-                >
-                    <ArrowLeft size={18} />
-                    <span className="font-bold text-sm">Voltar</span>
-                </button>
-
-                <div className="mb-3 px-2 text-xs font-bold uppercase tracking-widest text-slate-500">Escopo de Análise</div>
-
-                <div className="grid grid-cols-1 gap-1 sm:grid-cols-2 xl:grid-cols-1">
-                    {scopesUi.map((opt) => (
-                        <button
-                            key={opt.id}
-                            type="button"
-                            disabled={loading}
-                            onClick={() => setScope(opt.id)}
-                            className={`flex w-full items-center justify-between rounded-lg p-3 text-left text-sm font-medium transition-all ${
-                                scope === opt.id
-                                    ? 'bg-amber-600/10 text-amber-400 border border-amber-500/50'
-                                    : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
-                            } ${loading ? 'opacity-60 cursor-wait' : ''}`}
-                        >
-                            <span className="flex items-center gap-2">
-                                {opt.id === 'total' ? <Box size={16} /> : <Server size={16} />}
-                                {opt.name}
-                            </span>
-                        </button>
-                    ))}
+        <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-slate-950 text-slate-200 lg:flex-row">
+            {/* Painel lateral — compacto no telemóvel, coluna fixa no desktop */}
+            <div className="flex w-full shrink-0 flex-col border-b border-slate-800 bg-slate-900 lg:w-72 lg:border-b-0 lg:border-r">
+                <div className="flex items-center gap-2 border-b border-slate-800/80 px-3 py-2 lg:border-b-0 lg:px-4 lg:pt-4 lg:pb-0">
+                    <button
+                        type="button"
+                        onClick={onBack}
+                        className="flex shrink-0 items-center gap-2 rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
+                    >
+                        <ArrowLeft size={18} />
+                        <span className="font-bold text-sm lg:inline">Voltar</span>
+                    </button>
+                    <h2 className="min-w-0 truncate text-sm font-bold text-amber-400 lg:hidden">Calculadora</h2>
                 </div>
 
-                <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 p-4 xl:mt-auto">
+                <div className="px-3 py-2 lg:px-4 lg:py-0">
+                    <div className="mb-2 hidden px-2 text-xs font-bold uppercase tracking-widest text-slate-500 lg:block">
+                        Escopo de Análise
+                    </div>
+
+                    <div className="flex gap-2 overflow-x-auto pb-1 [scrollbar-width:thin] lg:flex-col lg:overflow-visible lg:pb-0">
+                        {scopesUi.map((opt) => (
+                            <button
+                                key={opt.id}
+                                type="button"
+                                disabled={loading}
+                                onClick={() => setScope(opt.id)}
+                                className={`flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-medium transition-all lg:w-full lg:p-3 lg:text-sm ${
+                                    scope === opt.id
+                                        ? 'bg-amber-600/10 text-amber-400 border border-amber-500/50'
+                                        : 'border border-slate-800 text-slate-400 hover:bg-white/5 hover:text-slate-200 lg:border-transparent'
+                                } ${loading ? 'opacity-60 cursor-wait' : ''}`}
+                            >
+                                {opt.id === 'total' ? <Box size={14} className="shrink-0 lg:w-4 lg:h-4" /> : <Server size={14} className="shrink-0 lg:w-4 lg:h-4" />}
+                                <span className="whitespace-nowrap">{opt.name}</span>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                <div className="hidden rounded-xl border border-slate-800 bg-slate-950/50 p-4 m-4 lg:block lg:mt-auto">
                     <div className="text-xs text-slate-500 mb-1">Hashrate Selecionado</div>
                     <div className="break-words text-lg font-mono font-bold text-white sm:text-xl">
                         {selectedCoin
@@ -114,8 +120,16 @@ export const PlayerCalculator: React.FC<PlayerCalculatorProps> = ({ onBack, isAd
                 </div>
             </div>
 
-            <div className="flex min-w-0 flex-1 flex-col items-center overflow-x-hidden overflow-y-auto custom-scrollbar p-3 sm:p-4 xl:p-6">
-                <div className="flex w-full max-w-full flex-col gap-4 sm:gap-5 xl:max-w-5xl xl:gap-6">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden custom-scrollbar p-3 sm:p-4 lg:p-6">
+                <div className="flex w-full max-w-full flex-col gap-4 sm:gap-5 lg:max-w-5xl lg:gap-6 mx-auto">
+                    {selectedCoin && (
+                        <div className="rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2 lg:hidden">
+                            <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Hashrate selecionado</div>
+                            <div className="mt-1 break-words font-mono text-sm font-bold text-white">
+                                {`${selectedCoin.userPowerHps.toLocaleString('en-US', { maximumFractionDigits: 0 })} H/s`}
+                            </div>
+                        </div>
+                    )}
                     {loadError && (
                         <div className="rounded-2xl border border-red-800/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
                             {loadError}
@@ -153,8 +167,8 @@ export const PlayerCalculator: React.FC<PlayerCalculatorProps> = ({ onBack, isAd
 
                             {selectedCoin && (
                                 <>
-                                    <div className="grid grid-cols-1 gap-4 2xl:grid-cols-2 2xl:gap-6">
-                                        <div className="group relative flex min-h-[190px] min-w-0 flex-col justify-between overflow-hidden rounded-3xl border border-slate-800 bg-slate-900 p-5 sm:p-6 xl:h-48 xl:p-8">
+                                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:gap-6">
+                                        <div className="group relative flex min-h-[160px] min-w-0 flex-col justify-between overflow-hidden rounded-3xl border border-slate-800 bg-slate-900 p-4 sm:min-h-[190px] sm:p-6 lg:h-48 lg:p-8">
                                             <div className="absolute top-0 left-0 w-2 h-full bg-gradient-to-b from-amber-400 to-orange-500 rounded-sm"></div>
                                             <div className="z-10">
                                                 <div className="text-[10px] font-bold uppercase text-slate-400 tracking-widest mb-1">
@@ -176,7 +190,7 @@ export const PlayerCalculator: React.FC<PlayerCalculatorProps> = ({ onBack, isAd
                                             </div>
                                         </div>
 
-                                        <div className="group relative flex min-h-[190px] min-w-0 flex-col justify-between overflow-hidden rounded-3xl border border-slate-800 bg-slate-900 p-5 sm:p-6 xl:h-48 xl:p-8">
+                                        <div className="group relative flex min-h-[160px] min-w-0 flex-col justify-between overflow-hidden rounded-3xl border border-slate-800 bg-slate-900 p-4 sm:min-h-[190px] sm:p-6 lg:h-48 lg:p-8">
                                             <div className="absolute top-0 left-0 w-2 h-full bg-gradient-to-b from-amber-400 to-orange-600 rounded-sm"></div>
                                             <div className="z-10">
                                                 <div className="text-[10px] font-bold uppercase text-slate-400 tracking-widest mb-1">Projeção 30 Dias</div>
@@ -283,7 +297,7 @@ export const PlayerCalculator: React.FC<PlayerCalculatorProps> = ({ onBack, isAd
                                                         key={entry.id}
                                                         className="rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-4"
                                                     >
-                                                        <div className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                                                        <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                                                             <div className="min-w-0">
                                                                 <div className="text-sm font-bold text-white">
                                                                     {entry.creditedBlocks.toLocaleString('pt-BR')} bloco(s) creditado(s)
@@ -296,7 +310,7 @@ export const PlayerCalculator: React.FC<PlayerCalculatorProps> = ({ onBack, isAd
                                                                 </div>
                                                             </div>
 
-                                                            <div className="min-w-0 text-left xl:text-right">
+                                                            <div className="min-w-0 text-left lg:text-right">
                                                                 <div className="break-words text-sm font-mono font-bold text-amber-400">
                                                                     {entry.amountCoins.toFixed(8)} {selectedCoin.symbol}
                                                                 </div>
@@ -310,7 +324,7 @@ export const PlayerCalculator: React.FC<PlayerCalculatorProps> = ({ onBack, isAd
                                                             </div>
                                                         </div>
 
-                                                        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-4">
+                                                        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                                                             <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2">
                                                                 <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
                                                                     Seu Hashrate

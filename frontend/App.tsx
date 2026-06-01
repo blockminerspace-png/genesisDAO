@@ -2714,7 +2714,7 @@ export default function App() {
             </div>
             <button
               onClick={() => setMobileMenuOpen(v => !v)}
-              className="ml-3 rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-200 dark:hover:bg-slate-800 md:hidden"
+              className="ml-3 rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-200 dark:hover:bg-slate-800 lg:hidden"
               aria-label={mobileMenuOpen ? 'Fechar menu' : 'Abrir menu'}
             >
               {mobileMenuOpen ? <X size={18} /> : <Menu size={18} />}
@@ -2831,7 +2831,7 @@ export default function App() {
       </header>
 
       {mobileMenuOpen && (
-        <div className="fixed inset-0 z-[70] md:hidden">
+        <div className="fixed inset-0 z-[70] lg:hidden">
           <button
             type="button"
             aria-label="Fechar menu"
@@ -3194,7 +3194,13 @@ export default function App() {
                 {currentView === 'servers' && (
                   <DailyCheckinBanner saveLoaded={saveLoaded} onRewardGranted={() => setGameStateReloadNonce((n) => n + 1)} />
                 )}
-                <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden custom-scrollbar relative min-h-0 flex flex-col font-mono">
+                <div
+                  className={`flex-1 min-w-0 relative min-h-0 flex flex-col font-mono ${
+                    currentView === 'calculator'
+                      ? 'overflow-hidden'
+                      : 'overflow-y-auto overflow-x-hidden custom-scrollbar'
+                  }`}
+                >
                   {!saveLoaded && gameStateLoadError && (
                     <div className="flex min-h-[40vh] w-full flex-col items-center justify-center gap-4 bg-slate-900/80 text-slate-200 font-mono rounded-xl border border-red-900/30 px-6 py-8 text-center">
                       <p className="text-sm text-red-300 max-w-md">{gameStateLoadError}</p>
@@ -3245,7 +3251,7 @@ export default function App() {
                   )}
 
                   {saveLoaded && currentView === 'calculator' && !isOperatorAdminOnly && (
-                    <div className="flex-1 overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-300">
+                    <div className="flex min-h-0 flex-1 flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-300">
                       <Suspense fallback={<LazyRouteFallback />}>
                         <PlayerCalculator onBack={() => goToGameView('servers')} />
                       </Suspense>

@@ -83,14 +83,32 @@ export function sanitizePartnerCreatorChannelUrl(raw: string): string {
   const t = String(raw || '').trim().slice(0, 500);
   if (!t) return '';
   try {
-    const u = new URL(t);
+    const withProto = /^https:\/\//i.test(t) ? t : `https://${t.replace(/^\/+/, '')}`;
+    const u = new URL(withProto);
     if (u.protocol !== 'https:') return '';
     const host = u.hostname.replace(/^www\./i, '').toLowerCase();
-    if (host === 'youtube.com' || host === 'm.youtube.com' || host === 'youtu.be') return t;
+    if (host === 'youtube.com' || host === 'm.youtube.com') {
+      const p = (u.pathname || '').toLowerCase();
+      if (p.startsWith('/watch') || p.startsWith('/shorts/') || p.startsWith('/embed/')) return '';
+      if (p === '/' || p === '') return '';
+      return u.toString();
+    }
+    if (host === 'youtu.be') return '';
     return '';
   } catch {
     return '';
   }
+}
+
+export function sanitizePartnerChannelName(raw: string): string {
+  return String(raw || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .slice(0, 120);
+}
+
+export function sanitizePartnerChannelDescription(raw: string): string {
+  return String(raw || '').trim().slice(0, 800);
 }
 
 /** Imagem vitrine: https absoluto ou caminho relativo do site (ex. /brain/...). */

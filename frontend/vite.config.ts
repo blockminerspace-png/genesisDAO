@@ -50,6 +50,18 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       {
+        name: 'inject-build-stamp-meta',
+        transformIndexHtml: {
+          order: 'pre',
+          handler(html) {
+            return html.replace(
+              /(<meta\s+name="gm-build-id"\s+content=")[^"]*(")/i,
+              `$1${appBuildStamp}$2`
+            );
+          },
+        },
+      },
+      {
         name: 'spa-game-routes',
         configureServer(server) {
           const indexHtml = path.join(server.config.root, 'index.html');

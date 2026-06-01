@@ -237,11 +237,12 @@ async function listUserActionLogsInWindowMongo(
 export async function listAdminUserActivityLogsMongo(
   userId: number,
   limit: number,
-  opts?: { accountCreatedAtMs?: number | null }
-): Promise<GameActivityLogRow[]> {
+  opts?: { accountCreatedAtMs?: number | null; beforeMs?: number | null }
+): Promise<{ rows: GameActivityLogRow[]; hasMore: boolean }> {
   const lim = Math.min(500, Math.max(1, Math.floor(limit)));
-  const gameRecent = await listGameActivityLogsMongo(userId, lim);
-  const actionRecent = await listUserActionLogsMongo(userId, Math.min(200, lim));
+  const fetchCap = Math.min(800, lim * 4);
+  const gameRecent = await listGameActivityLogsMongo(userId, fetchCap);
+  const actionRecent = await listUserActionLogsMongo(userId, Math.min(400, fetchCap));
 
   const center = opts?.accountCreatedAtMs;
   let around: GameActivityLogRow[] = [];
@@ -258,14 +259,44 @@ export async function listAdminUserActivityLogsMongo(
     if (!r.id) return;
     if (!byId.has(r.id)) byId.set(r.id, r);
   };
-  for (const r of around) {
-    if (byId.size >= lim) break;
-    put(r);
-  }
+  for (const r of around) put(r);
   const mergedRecent = [...gameRecent, ...actionRecent].sort((a, b) => b.createdAt - a.createdAt);
-  for (const r of mergedRecent) {
-    if (byId.size >= lim) break;
-    put(r);
+  for (const r of mergedRecent) put(r);
+
+  let sorted = [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
+  const beforeMs = opts?.beforeMs;
+  if (beforeMs != null && Number.isFinite(beforeMs) && beforeMs > 0) {
+    sorted = sorted.filter((r) => r.createdAt < beforeMs);
   }
-  return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
+
+  const hasMore = sorted.length > lim;
+  const rows = sorted.slice(0, lim);
+  return { rows, hasMore };
+}
+
+/** Snapshots de sessão (`session_state_snapshot` / `session_resync`). */
+export async function listSessionSnapshotsMongo(
+  userId: number,
+  limit: number
+): Promise<GameActivityLogRow[]> {
+  const client = getGenesisMongo();
+  if (!client) return [];
+  const lim = Math.min(100, Math.max(1, Math.floor(limit)));
+  try {
+    const docs = await client
+      .db(MONGO_LOG_DB)
+      .collection(MONGO_COLLECTIONS.gameActivity)
+      .find({
+        userId,
+        action: { $in: ['session_state_snapshot', 'session_resync'] }
+      })
+      .sort({ at: -1 })
+      .limit(lim)
+      .toArray();
+    return docs.map((d) => mapGameActivityDoc(d as Record<string, unknown>));
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn('[MongoLogs] listSessionSnapshotsMongo:', msg);
+    return [];
+  }
 }

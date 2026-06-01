@@ -129,30 +129,25 @@ export const ZeradsCard: React.FC = () => {
         {/* Link PTC */}
         {token?.ptc_url && (
           <div className="rounded-xl border border-slate-700 bg-slate-950/70 p-3 sm:p-4 space-y-2">
-            <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
-              O teu link PTC pessoal
-            </div>
-            <div className="flex items-stretch gap-2">
-              <code className="flex-1 min-w-0 rounded-lg bg-black/40 px-3 py-2 text-xs sm:text-sm font-mono text-emerald-200 break-all">
-                {token.ptc_url}
-              </code>
-              <button
-                type="button"
-                onClick={() => void copyLink()}
-                title="Copiar"
-                className="shrink-0 inline-flex items-center justify-center px-3 rounded-lg border border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-200"
-              >
-                <Copy size={16} />
-              </button>
+            <div className="flex flex-wrap items-center gap-2">
               <a
                 href={token.ptc_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                title="Abrir"
-                className="shrink-0 inline-flex items-center justify-center px-3 rounded-lg border border-emerald-700/70 bg-emerald-700/30 hover:bg-emerald-700/50 text-emerald-100"
+                className="inline-flex flex-1 min-w-[200px] items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600 px-5 py-3.5 text-sm font-black uppercase tracking-wide text-white shadow-lg shadow-emerald-900/40 border border-emerald-500/30 transition"
               >
-                <ExternalLink size={16} />
+                <ExternalLink size={18} />
+                O teu link PTC pessoal
               </a>
+              <button
+                type="button"
+                onClick={() => void copyLink()}
+                title="Copiar link"
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-600 bg-slate-900 hover:bg-slate-800 px-4 py-3.5 text-xs font-bold uppercase tracking-wider text-slate-300"
+              >
+                <Copy size={16} />
+                Copiar
+              </button>
             </div>
             {copyHint && <div className="text-[11px] text-emerald-300">{copyHint}</div>}
           </div>

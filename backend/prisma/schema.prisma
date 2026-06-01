@@ -868,6 +868,20 @@ model mining_yield_history {
   @@map("mining_yield_history")
 }
 
+model mining_distribution_daily {
+  day_utc       DateTime @db.Date
+  coin_id       String
+  total_coins   Float    @default(0)
+  total_usd     Float    @default(0)
+  credit_rows   Int      @default(0)
+  unique_users  Int      @default(0)
+  updated_at    BigInt   @default(0)
+
+  @@id([day_utc, coin_id])
+  @@index([day_utc(sort: Desc)], map: "idx_mining_distribution_daily_day")
+  @@map("mining_distribution_daily")
+}
+
 // --- Definições globais de economia (mercados, taxas) ---
 
 model economy_settings {
@@ -1115,13 +1129,33 @@ model partner_youtube_submissions {
 }
 
 model partner_youtube_creator_profiles {
-  user_id     Int    @id
-  channel_url String @default("")
-  avatar_url  String @default("")
-  updated_at  BigInt @default(0)
-  updated_by  Int?
+  user_id      Int    @id
+  channel_name String @default("")
+  channel_url  String @default("")
+  avatar_url   String @default("")
+  description  String @default("")
+  updated_at   BigInt @default(0)
+  updated_by   Int?
 
   @@map("partner_youtube_creator_profiles")
+}
+
+model partner_youtube_applications {
+  id            String  @id
+  user_id       Int
+  channel_name  String
+  channel_url   String
+  avatar_url    String  @default("")
+  description   String  @default("")
+  status        String  @default("pending")
+  created_at    BigInt
+  reviewed_at   BigInt?
+  reviewed_by   Int?
+  reject_reason String?
+
+  @@index([user_id, created_at(sort: Desc)])
+  @@index([status, created_at(sort: Desc)])
+  @@map("partner_youtube_applications")
 }
 
 model partner_youtube_manual_allowlist {

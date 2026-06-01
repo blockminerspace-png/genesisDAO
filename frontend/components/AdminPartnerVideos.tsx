@@ -10,6 +10,7 @@ import {
   Users,
   Clapperboard,
   UserPlus,
+  FileText,
   Search,
   MonitorPlay,
   AlertTriangle
@@ -17,6 +18,9 @@ import {
 import {
   getAdminPartnerYoutubeSubmissions,
   getAdminPartnerYoutubePartners,
+  getAdminPartnerYoutubeApplications,
+  adminApprovePartnerYoutubeApplication,
+  adminRejectPartnerYoutubeApplication,
   adminApprovePartnerYoutube,
   adminRejectPartnerYoutube,
   adminDeletePartnerYoutube,
@@ -31,6 +35,7 @@ import {
   postAdminDeactivateStreamerRoom,
   type AdminPartnerYoutubeRow,
   type AdminPartnerYoutubePartnerRow,
+  type AdminPartnerYoutubeApplicationRow,
   type AdminStreamerRoomUser,
 } from '../services/api';
 import {
@@ -65,7 +70,7 @@ function fmtDateShort(ms: number | null | undefined): string {
 }
 
 export const AdminPartnerVideos: React.FC = () => {
-  const [sectionTab, setSectionTab] = useState<'envios' | 'parceiros' | 'streamers'>('envios');
+  const [sectionTab, setSectionTab] = useState<'envios' | 'candidaturas' | 'parceiros' | 'streamers'>('envios');
   const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('pending');
   const [rows, setRows] = useState<AdminPartnerYoutubeRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -102,6 +107,13 @@ export const AdminPartnerVideos: React.FC = () => {
   const [streamersLoading, setStreamersLoading] = useState(false);
   const [streamersErr, setStreamersErr] = useState<string | null>(null);
   const [deactivateStreamerBusyId, setDeactivateStreamerBusyId] = useState<number | null>(null);
+
+  const [appFilter, setAppFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('pending');
+  const [applications, setApplications] = useState<AdminPartnerYoutubeApplicationRow[]>([]);
+  const [appsLoading, setAppsLoading] = useState(false);
+  const [appsErr, setAppsErr] = useState<string | null>(null);
+  const [appRejectId, setAppRejectId] = useState<string | null>(null);
+  const [appRejectReason, setAppRejectReason] = useState('');
 
   const addFiltered = useMemo(() => {
     const q = addSearch.trim().toLowerCase();
@@ -217,6 +229,56 @@ export const AdminPartnerVideos: React.FC = () => {
   useEffect(() => {
     if (sectionTab === 'parceiros') void loadPartners();
   }, [sectionTab, loadPartners]);
+
+  const loadApplications = useCallback(async () => {
+    setAppsLoading(true);
+    setAppsErr(null);
+    try {
+      const { applications: rows } = await getAdminPartnerYoutubeApplications(appFilter);
+      setApplications(rows);
+    } catch (e) {
+      setAppsErr(e instanceof Error ? e.message : 'Erro ao carregar candidaturas.');
+      setApplications([]);
+    } finally {
+      setAppsLoading(false);
+    }
+  }, [appFilter]);
+
+  useEffect(() => {
+    if (sectionTab === 'candidaturas') void loadApplications();
+  }, [sectionTab, loadApplications]);
+
+  const approveApplication = async (id: string) => {
+    setBusyId(id);
+    try {
+      const r = await adminApprovePartnerYoutubeApplication(id);
+      if (!r.ok) {
+        alert(r.error || 'Falha ao aprovar candidatura.');
+        return;
+      }
+      await loadApplications();
+      void loadPartners();
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const rejectApplication = async () => {
+    if (!appRejectId) return;
+    setBusyId(appRejectId);
+    try {
+      const r = await adminRejectPartnerYoutubeApplication(appRejectId, appRejectReason);
+      if (!r.ok) {
+        alert(r.error || 'Falha ao recusar candidatura.');
+        return;
+      }
+      setAppRejectId(null);
+      setAppRejectReason('');
+      await loadApplications();
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const loadStreamers = useCallback(async () => {
     setStreamersLoading(true);
@@ -351,6 +413,7 @@ export const AdminPartnerVideos: React.FC = () => {
       <div>
         <h2 className="text-xl font-black text-white tracking-tight">Parceiros YouTube</h2>
         <p className="text-xs text-slate-400 mt-1">
+          <strong className="text-slate-300">Candidaturas</strong>: pedidos de novos parceiros YouTube (canal, capa, URL).{' '}
           <strong className="text-slate-300">Envios</strong>: aprovar, recusar ou apagar.{' '}
           <strong className="text-slate-300">Parceiros</strong>: vídeo aprovado na vitrine ou adicionado manualmente — canal YouTube e foto para «Os nossos parceiros»; quem está só na lista manual pode submeter vídeos antes de ter um aprovado.
         </p>
@@ -367,6 +430,17 @@ export const AdminPartnerVideos: React.FC = () => {
           }`}
         >
           <Clapperboard size={16} /> Envios
+        </button>
+        <button
+          type="button"
+          onClick={() => setSectionTab('candidaturas')}
+          className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-black uppercase border transition-colors ${
+            sectionTab === 'candidaturas'
+              ? 'bg-red-600/20 text-white border-red-600/60'
+              : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'
+          }`}
+        >
+          <FileText size={16} /> Candidaturas
         </button>
         <button
           type="button"
@@ -490,6 +564,146 @@ export const AdminPartnerVideos: React.FC = () => {
                 </li>
               ))}
             </ul>
+          )}
+        </>
+      )}
+
+      {sectionTab === 'candidaturas' && (
+        <>
+          <div className="flex flex-wrap gap-2">
+            {(['pending', 'all', 'approved', 'rejected'] as const).map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => setAppFilter(f)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${
+                  appFilter === f ? 'bg-red-600/25 text-white border-red-600/60' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'
+                }`}
+              >
+                {f === 'pending' ? 'Pendentes' : f === 'all' ? 'Todos' : f === 'approved' ? 'Aprovados' : 'Recusados'}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => void loadApplications()}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold border border-slate-600 text-slate-300 hover:bg-slate-800"
+            >
+              <RefreshCw size={14} /> Atualizar
+            </button>
+          </div>
+
+          {appsErr && <div className="text-sm text-red-400">{appsErr}</div>}
+
+          {appsLoading ? (
+            <div className="flex justify-center py-16 text-red-400">
+              <Loader2 className="animate-spin" size={32} />
+            </div>
+          ) : applications.length === 0 ? (
+            <div className="text-slate-500 text-sm border border-slate-800 rounded-xl p-8 text-center">
+              Sem candidaturas neste filtro.
+            </div>
+          ) : (
+            <ul className="space-y-3">
+              {applications.map((a) => (
+                <li
+                  key={a.id}
+                  className="rounded-xl border border-slate-700 bg-slate-900/50 p-4 flex flex-col sm:flex-row gap-4"
+                >
+                  <div className="shrink-0">
+                    {a.avatarUrl ? (
+                      <img
+                        src={a.avatarUrl}
+                        alt=""
+                        className="h-24 w-24 rounded-2xl object-cover border border-slate-600 bg-slate-950"
+                      />
+                    ) : (
+                      <div className="h-24 w-24 rounded-2xl border border-slate-700 bg-slate-950 grid place-items-center text-slate-500 text-xs">
+                        Sem capa
+                      </div>
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="font-bold text-white text-lg">{a.channelName}</div>
+                    <div className="text-[11px] text-slate-500">
+                      {a.username} · #{a.userId} · {a.email} · {fmtDate(a.createdAt)}
+                    </div>
+                    <div className="text-[11px] uppercase font-bold text-slate-400">Estado: {a.status}</div>
+                    {a.description ? <div className="text-xs text-slate-300 mt-1">{a.description}</div> : null}
+                    {a.rejectReason ? <div className="text-xs text-red-300/90">Motivo: {a.rejectReason}</div> : null}
+                    <a
+                      href={a.channelUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300 mt-1"
+                    >
+                      <ExternalLink size={12} /> {a.channelUrl}
+                    </a>
+                  </div>
+                  <div className="flex flex-col gap-2 shrink-0 justify-center">
+                    {a.status === 'pending' && (
+                      <>
+                        <button
+                          type="button"
+                          disabled={busyId === a.id}
+                          onClick={() => void approveApplication(a.id)}
+                          className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold disabled:opacity-40"
+                        >
+                          {busyId === a.id ? <Loader2 className="animate-spin" size={14} /> : <Check size={14} />}
+                          Aprovar + Sala NFT
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busyId === a.id}
+                          onClick={() => {
+                            setAppRejectId(a.id);
+                            setAppRejectReason('');
+                          }}
+                          className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-lg bg-red-900/70 hover:bg-red-800 text-white text-xs font-bold disabled:opacity-40"
+                        >
+                          <X size={14} /> Recusar
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {appRejectId && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+              <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-5 space-y-3">
+                <h3 className="font-bold text-white">Recusar candidatura</h3>
+                <textarea
+                  value={appRejectReason}
+                  onChange={(e) => setAppRejectReason(e.target.value)}
+                  maxLength={PARTNER_REJECT_REASON_MAX}
+                  rows={3}
+                  placeholder="Motivo (opcional)"
+                  className="w-full rounded-lg bg-slate-950 border border-slate-600 px-3 py-2 text-sm"
+                />
+                <div className="flex gap-2 justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAppRejectId(null);
+                      setAppRejectReason('');
+                    }}
+                    className="px-3 py-2 rounded-lg border border-slate-600 text-slate-300 text-xs font-bold"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!!busyId}
+                    onClick={() => void rejectApplication()}
+                    className="px-3 py-2 rounded-lg bg-red-800 text-white text-xs font-bold disabled:opacity-40"
+                  >
+                    Confirmar recusa
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </>
       )}

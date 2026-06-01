@@ -1,8 +1,17 @@
 import type { Express, Request, RequestHandler, Response } from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
+import multer from 'multer';
 import { rateLimit } from 'express-rate-limit';
 import { sendInternalErrorSafeMessageOrPrisma } from '../../utils/apiErrorResponse.js';
 import { PartnerYoutubeSubmitError, runPartnerYoutubeSubmitVideo } from './partnersSubmit.service.js';
 import { buildPartnersStatePayload, getApprovedPartnerVideoByPublicId } from './partnersState.service.js';
+import {
+  PartnerYoutubeApplyError,
+  runPartnerYoutubeApplicationSubmit
+} from './partnersApply.service.js';
+import { PartnerYoutubeProfileError, runPartnerYoutubeProfileUpdate } from './partnersProfile.service.js';
+import { buildStoredUploadFilename, sanitizeOriginalNameBase } from '../../models/imageAssetModel.js';
 
 const partnersSubmitLimiter = rateLimit({
   windowMs: 60_000,
@@ -10,6 +19,14 @@ const partnersSubmitLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Demasiados envios. Aguarda um minuto.', code: 'RATE_LIMIT' }
+});
+
+const partnersApplyLimiter = rateLimit({
+  windowMs: 60 * 60_000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas candidaturas. Aguarda um momento.', code: 'RATE_LIMIT' }
 });
 
 function uidOptional(req: Request): number | null {
@@ -23,8 +40,38 @@ function uidRequired(req: Request): number | null {
   return uidOptional(req);
 }
 
+function createPartnerAvatarMulter(uploadsDir: string): ReturnType<typeof multer> {
+  const dest = path.join(uploadsDir, 'partner-avatars');
+  const storage = multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      try {
+        fs.mkdirSync(dest, { recursive: true });
+      } catch {
+        /* ignore */
+      }
+      cb(null, dest);
+    },
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname || '').toLowerCase() || '.png';
+      const safeBase = sanitizeOriginalNameBase(file.originalname);
+      cb(null, buildStoredUploadFilename(`partner-${safeBase}`, ext));
+    }
+  });
+  return multer({
+    storage,
+    limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+    fileFilter: (_req, file, cb) => {
+      const ext = path.extname(file.originalname || '').toLowerCase();
+      const mime = String(file.mimetype || '').toLowerCase();
+      if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext) && /^image\//.test(mime)) cb(null, true);
+      else cb(new Error('Formato inválido. Usa PNG, JPG ou WEBP.'));
+    }
+  });
+}
+
 export type PartnersPlayerControllerDeps = {
   authenticateToken: RequestHandler;
+  uploadsDir: string;
   appendGameActivityLog: (
     _q: unknown,
     userId: number,
@@ -34,7 +81,8 @@ export type PartnersPlayerControllerDeps = {
 };
 
 export function registerPartnersPlayerRoutes(app: Express, deps: PartnersPlayerControllerDeps): void {
-  const { authenticateToken, appendGameActivityLog } = deps;
+  const { authenticateToken, appendGameActivityLog, uploadsDir } = deps;
+  const uploadPartnerAvatar = createPartnerAvatarMulter(uploadsDir);
 
   app.get('/api/partners/state', async (req: Request, res: Response) => {
     try {
@@ -151,4 +199,96 @@ export function registerPartnersPlayerRoutes(app: Express, deps: PartnersPlayerC
       }
     }
   );
+
+  app.post(
+    '/api/partners/youtube/apply',
+    partnersApplyLimiter,
+    authenticateToken,
+    async (req: Request, res: Response) => {
+      const uid = uidRequired(req);
+      if (!uid) {
+        res.status(401).json({ error: 'Não autenticado', code: 'AUTH_REQUIRED' });
+        return;
+      }
+      const body = (req.body || {}) as Record<string, unknown>;
+      try {
+        const { id } = await runPartnerYoutubeApplicationSubmit({
+          userId: uid,
+          channelNameRaw: body.channelName,
+          channelUrlRaw: body.channelUrl,
+          avatarUrlRaw: body.avatarUrl,
+          descriptionRaw: body.description
+        });
+        try {
+          await appendGameActivityLog(null, uid, 'partner_youtube_apply', { applicationId: id });
+        } catch {
+          /* ignore */
+        }
+        res.status(201).json({ ok: true, id, status: 'pending' });
+      } catch (e) {
+        if (e instanceof PartnerYoutubeApplyError) {
+          const payload: Record<string, unknown> = { error: e.message };
+          if (e.code) payload.code = e.code;
+          res.status(e.statusCode).json(payload);
+          return;
+        }
+        console.error('[POST /api/partners/youtube/apply]', e);
+        sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e, 'Erro ao enviar candidatura.');
+      }
+    }
+  );
+
+  app.post(
+    '/api/partners/youtube/avatar-upload',
+    authenticateToken,
+    (req, res, next) => {
+      uploadPartnerAvatar.single('avatar')(req, res, (err) => {
+        if (err) {
+          res.status(400).json({ error: err instanceof Error ? err.message : 'Upload inválido.' });
+          return;
+        }
+        next();
+      });
+    },
+    async (req: Request, res: Response) => {
+      const uid = uidRequired(req);
+      if (!uid) {
+        res.status(401).json({ error: 'Não autenticado', code: 'AUTH_REQUIRED' });
+        return;
+      }
+      const file = req.file;
+      if (!file) {
+        res.status(400).json({ error: 'Ficheiro em falta.', code: 'VALIDATION' });
+        return;
+      }
+      const publicPath = `/img/partner-avatars/${file.filename}`;
+      res.json({ ok: true, avatarUrl: publicPath });
+    }
+  );
+
+  app.put('/api/partners/youtube/my-profile', authenticateToken, async (req: Request, res: Response) => {
+    const uid = uidRequired(req);
+    if (!uid) {
+      res.status(401).json({ error: 'Não autenticado', code: 'AUTH_REQUIRED' });
+      return;
+    }
+    const body = (req.body || {}) as Record<string, unknown>;
+    try {
+      const out = await runPartnerYoutubeProfileUpdate({
+        userId: uid,
+        channelNameRaw: body.channelName,
+        avatarUrlRaw: body.avatarUrl
+      });
+      res.json({ ok: true, ...out });
+    } catch (e) {
+      if (e instanceof PartnerYoutubeProfileError) {
+        const payload: Record<string, unknown> = { error: e.message };
+        if (e.code) payload.code = e.code;
+        res.status(e.statusCode).json(payload);
+        return;
+      }
+      console.error('[PUT /api/partners/youtube/my-profile]', e);
+      sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e, 'Erro ao guardar perfil.');
+    }
+  });
 }

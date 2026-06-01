@@ -19,16 +19,24 @@ import {
   removePartnerYoutubeManualAllowlist,
   findUserIdsByNormalizedEmail,
   findUserIdsByNormalizedUsername,
-  userExistsById
+  userExistsById,
+  listPartnerYoutubeApplicationsForAdmin
 } from '../models/partnerYoutubeModel.js';
 import {
   partnerYoutubeUtcDayKeyYYYYMMDD,
   parsePartnerYoutubeVideoCursor,
   userAccessSetHasPartnerLevel,
   sanitizePartnerCreatorAvatarUrl,
-  sanitizePartnerCreatorChannelUrl
+  sanitizePartnerCreatorChannelUrl,
+  sanitizePartnerChannelName,
+  sanitizePartnerChannelDescription
 } from '../utils/partnerYoutubeHelpers.js';
 import { PartnerYoutubeSubmitError, runPartnerYoutubeSubmitVideo } from '../modules/partners/partnersSubmit.service.js';
+import {
+  PartnerYoutubeApplyError,
+  runPartnerYoutubeApplicationApprove,
+  runPartnerYoutubeApplicationReject
+} from '../modules/partners/partnersApply.service.js';
 import { sendInternalErrorSafeMessageOrPrisma } from '../utils/apiErrorResponse.js';
 import { NFT_AUTO_ROOM_ID, resolveNftAutoArmario1OnlyRoomIds } from '../lib/nftRoomMining.js';
 import {
@@ -682,7 +690,9 @@ export function registerPartnerYoutubeRoutes(app: Express, deps: PartnerYoutubeD
       const row = await getPartnerYoutubeCreatorProfile(uid);
       res.json({
         channelUrl: row?.channel_url ?? '',
-        avatarUrl: row?.avatar_url ?? ''
+        avatarUrl: row?.avatar_url ?? '',
+        channelName: row?.channel_name ?? '',
+        description: row?.description ?? ''
       });
     } catch (e) {
       console.error('[GET /api/admin/partner-youtube-creators/:userId]', e);
@@ -706,11 +716,15 @@ export function registerPartnerYoutubeRoutes(app: Express, deps: PartnerYoutubeD
       res.status(401).json({ error: 'Não autenticado' });
       return;
     }
-    const body = (req.body || {}) as { channelUrl?: unknown; avatarUrl?: unknown };
+    const body = (req.body || {}) as { channelUrl?: unknown; avatarUrl?: unknown; channelName?: unknown; description?: unknown };
     const rawCh = typeof body.channelUrl === 'string' ? body.channelUrl : '';
     const rawAv = typeof body.avatarUrl === 'string' ? body.avatarUrl : '';
+    const rawName = typeof body.channelName === 'string' ? body.channelName : undefined;
+    const rawDesc = typeof body.description === 'string' ? body.description : undefined;
     const channelUrl = sanitizePartnerCreatorChannelUrl(rawCh);
     const avatarUrl = sanitizePartnerCreatorAvatarUrl(rawAv);
+    const channelName = rawName !== undefined ? sanitizePartnerChannelName(rawName) : undefined;
+    const description = rawDesc !== undefined ? sanitizePartnerChannelDescription(rawDesc) : undefined;
     if (rawCh.trim() && !channelUrl) {
       res.status(400).json({ error: 'Link do canal inválido (use https:// no YouTube).' });
       return;
@@ -722,8 +736,10 @@ export function registerPartnerYoutubeRoutes(app: Express, deps: PartnerYoutubeD
     try {
       await upsertPartnerYoutubeCreatorProfile({
         userId: uid,
+        channelName,
         channelUrl,
         avatarUrl,
+        description,
         updatedAt: Date.now(),
         updatedBy: adminId
       });
@@ -893,4 +909,78 @@ export function registerPartnerYoutubeRoutes(app: Express, deps: PartnerYoutubeD
     }
   }
   );
+
+  app.get('/api/admin/partner-youtube-applications', isAdmin, async (req: Request, res: Response) => {
+    const st = String(req.query.status || 'pending').toLowerCase();
+    const statusFilter =
+      st === 'all' || st === 'approved' || st === 'rejected' ? st : 'pending';
+    try {
+      const rows = await listPartnerYoutubeApplicationsForAdmin(statusFilter as 'all' | 'pending' | 'approved' | 'rejected');
+      res.json({
+        applications: rows.map((row) => ({
+          id: row.id,
+          userId: row.user_id,
+          username: row.username ?? '',
+          email: row.email ?? '',
+          channelName: row.channel_name,
+          channelUrl: row.channel_url,
+          avatarUrl: row.avatar_url,
+          description: row.description || '',
+          status: row.status,
+          createdAt: Number(row.created_at) || 0,
+          reviewedAt: row.reviewed_at != null ? Number(row.reviewed_at) : undefined,
+          rejectReason: row.reject_reason || undefined
+        }))
+      });
+    } catch (e) {
+      console.error('[GET /api/admin/partner-youtube-applications]', e);
+      sendInternalErrorSafeMessageOrPrisma(res, 'GET /api/admin/partner-youtube-applications', e, 'Erro ao listar candidaturas.');
+    }
+  });
+
+  app.post('/api/admin/partner-youtube-applications/:id/approve', isAdmin, async (req: Request, res: Response) => {
+    const id = String(req.params.id || '').trim();
+    const adminId = uidNum(req);
+    if (!id || !adminId) {
+      res.status(id ? 401 : 400).json({ error: id ? 'Não autenticado' : 'ID inválido.' });
+      return;
+    }
+    try {
+      const { userId } = await runPartnerYoutubeApplicationApprove({ applicationId: id, adminUserId: adminId });
+      try {
+        await appendGameActivityLog(null, userId, 'partner_youtube_application_approved', { applicationId: id, adminUserId: adminId });
+      } catch {
+        /* ignore */
+      }
+      res.json({ ok: true, userId });
+    } catch (e) {
+      if (e instanceof PartnerYoutubeApplyError) {
+        res.status(e.statusCode).json({ error: e.message, code: e.code });
+        return;
+      }
+      console.error('[POST /api/admin/partner-youtube-applications/:id/approve]', e);
+      sendInternalErrorSafeMessageOrPrisma(res, 'POST /api/admin/partner-youtube-applications/:id/approve', e, 'Erro ao aprovar candidatura.');
+    }
+  });
+
+  app.post('/api/admin/partner-youtube-applications/:id/reject', isAdmin, async (req: Request, res: Response) => {
+    const id = String(req.params.id || '').trim();
+    const adminId = uidNum(req);
+    if (!id || !adminId) {
+      res.status(id ? 401 : 400).json({ error: id ? 'Não autenticado' : 'ID inválido.' });
+      return;
+    }
+    const body = (req.body || {}) as { reason?: unknown };
+    try {
+      await runPartnerYoutubeApplicationReject({ applicationId: id, adminUserId: adminId, reasonRaw: body.reason });
+      res.json({ ok: true });
+    } catch (e) {
+      if (e instanceof PartnerYoutubeApplyError) {
+        res.status(e.statusCode).json({ error: e.message, code: e.code });
+        return;
+      }
+      console.error('[POST /api/admin/partner-youtube-applications/:id/reject]', e);
+      sendInternalErrorSafeMessageOrPrisma(res, 'POST /api/admin/partner-youtube-applications/:id/reject', e, 'Erro ao recusar candidatura.');
+    }
+  });
 }

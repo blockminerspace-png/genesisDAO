@@ -165,7 +165,34 @@ export type PartnersStatePayload = {
     isPartner?: boolean;
     canSubmitToday?: boolean;
     submissionsToday?: number;
+    canApply?: boolean;
+    application?: {
+      id: string;
+      status: string;
+      channelName: string;
+      channelUrl: string;
+      avatarUrl: string;
+      description?: string;
+      createdAt: number;
+      rejectReason?: string;
+    } | null;
   };
+  creatorProfile?: {
+    channelName: string;
+    channelUrl: string;
+    avatarUrl: string;
+    description?: string;
+    canEditChannelUrl: boolean;
+  } | null;
+  nftRoom?: {
+    active: boolean;
+    compliant: boolean;
+    overdue: boolean;
+    requiredIntervalDays: number;
+    lastApprovedAt: number | null;
+    nextDeadlineAt: number | null;
+    approvedLast60d: number;
+  } | null;
   mySubmissions?: Array<{
     publicId: string;
     title: string;
@@ -298,6 +325,114 @@ export async function submitPartnerYoutubeVideo(payload: {
   } catch {
     return { ok: false, error: 'Network error' };
   }
+}
+
+export async function uploadPartnerYoutubeAvatar(file: File): Promise<{ ok: boolean; avatarUrl?: string; error?: string }> {
+  try {
+    const fd = new FormData();
+    fd.append('avatar', file);
+    const res = await apiFetch(`${base}/partners/youtube/avatar-upload`, { method: 'POST', body: fd });
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; avatarUrl?: string; error?: string };
+    if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` };
+    return { ok: true, avatarUrl: data.avatarUrl };
+  } catch {
+    return { ok: false, error: 'Falha no upload.' };
+  }
+}
+
+export async function submitPartnerYoutubeApplication(payload: {
+  channelName: string;
+  channelUrl: string;
+  avatarUrl: string;
+  description?: string;
+}): Promise<{ ok: boolean; error?: string; code?: string; id?: string }> {
+  try {
+    const res = await apiFetch(`${base}/partners/youtube/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; code?: string; id?: string };
+    if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}`, code: data.code };
+    return { ok: true, id: data.id };
+  } catch {
+    return { ok: false, error: 'Network error' };
+  }
+}
+
+export async function updatePartnerYoutubeMyProfile(payload: {
+  channelName: string;
+  avatarUrl: string;
+}): Promise<{ ok: boolean; error?: string; channelName?: string; avatarUrl?: string; channelUrl?: string }> {
+  try {
+    const res = await apiFetch(`${base}/partners/youtube/my-profile`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      error?: string;
+      channelName?: string;
+      avatarUrl?: string;
+      channelUrl?: string;
+    };
+    if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` };
+    return { ok: true, channelName: data.channelName, avatarUrl: data.avatarUrl, channelUrl: data.channelUrl };
+  } catch {
+    return { ok: false, error: 'Network error' };
+  }
+}
+
+export type AdminPartnerYoutubeApplicationRow = {
+  id: string;
+  userId: number;
+  username: string;
+  email: string;
+  channelName: string;
+  channelUrl: string;
+  avatarUrl: string;
+  description?: string;
+  status: string;
+  createdAt: number;
+  reviewedAt?: number;
+  rejectReason?: string;
+};
+
+export async function getAdminPartnerYoutubeApplications(
+  status: 'all' | 'pending' | 'approved' | 'rejected' = 'pending'
+): Promise<{ applications: AdminPartnerYoutubeApplicationRow[] }> {
+  const q = status === 'pending' ? '' : `?status=${encodeURIComponent(status)}`;
+  const res = await apiFetch(`${base}/admin/partner-youtube-applications${q}`);
+  const data = (await res.json().catch(() => ({}))) as {
+    applications?: AdminPartnerYoutubeApplicationRow[];
+    error?: string;
+  };
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return { applications: Array.isArray(data.applications) ? data.applications : [] };
+}
+
+export async function adminApprovePartnerYoutubeApplication(id: string): Promise<{ ok: boolean; error?: string; userId?: number }> {
+  const res = await apiFetch(`${base}/admin/partner-youtube-applications/${encodeURIComponent(id)}/approve`, {
+    method: 'POST'
+  });
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; userId?: number };
+  if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` };
+  return { ok: !!data.ok, userId: data.userId };
+}
+
+export async function adminRejectPartnerYoutubeApplication(
+  id: string,
+  reason?: string
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await apiFetch(`${base}/admin/partner-youtube-applications/${encodeURIComponent(id)}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: reason || '' })
+  });
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  if (!res.ok) return { ok: false, error: data.error || `HTTP ${res.status}` };
+  return { ok: !!data.ok };
 }
 
 export type AdminPartnerYoutubeRow = {
@@ -1125,6 +1260,229 @@ export function buildAdminReferralCsvUrl(filters: {
   if (filters.referred) params.set('referred', filters.referred);
   if (filters.q) params.set('q', filters.q);
   return `${base}/admin/referrals/export.csv?${params.toString()}`;
+}
+
+export type AdminMiningDistributionTotals = {
+  totalCoins: number;
+  totalUsd: number;
+  creditRows: number;
+  uniqueUsers: number;
+};
+
+export type AdminMiningDistributionOverview = {
+  generatedAtMs: number;
+  timezone: 'UTC';
+  periods: {
+    today: AdminMiningDistributionTotals & { label: string; fromMs: number; toMs: number };
+    last7Days: AdminMiningDistributionTotals & { label: string; fromMs: number; toMs: number };
+    last30Days: AdminMiningDistributionTotals & { label: string; fromMs: number; toMs: number };
+    custom: (AdminMiningDistributionTotals & { label: string; fromMs: number; toMs: number }) | null;
+  };
+};
+
+export type AdminMiningDistributionByCoinRow = {
+  coinId: string;
+  symbol: string;
+  name: string;
+  totalCoins: number;
+  totalUsd: number;
+  creditRows: number;
+  uniqueUsers: number;
+  pctOfTotalUsd: number;
+  theoreticalEmissionCoins: number | null;
+  emissionUtilizationPct: number | null;
+};
+
+export type AdminMiningCreditLedgerRow = {
+  id: string;
+  userId: number;
+  username: string | null;
+  email: string | null;
+  coinId: string;
+  coinSymbol: string | null;
+  roomId: string | null;
+  windowStartMs: number;
+  windowEndMs: number;
+  creditBlocks: number;
+  amountCoins: number;
+  amountUsd: number;
+  userHashHps: number;
+  networkHashrate: number;
+  blockReward: number;
+  blockTime: number;
+  createdAtMs: number;
+};
+
+export async function getAdminMiningDistributionOverview(customFrom?: string, customTo?: string): Promise<AdminMiningDistributionOverview | null> {
+  const params = new URLSearchParams();
+  if (customFrom) params.set('customFrom', customFrom);
+  if (customTo) params.set('customTo', customTo);
+  try {
+    const q = params.toString();
+    const res = await apiFetch(`${base}/admin/mining-distribution/overview${q ? `?${q}` : ''}`);
+    if (!res.ok) return null;
+    return (await res.json().catch(() => null)) as AdminMiningDistributionOverview | null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getAdminMiningDistributionByCoin(fromYmd: string, toYmd: string): Promise<{
+  fromMs: number;
+  toMs: number;
+  rows: AdminMiningDistributionByCoinRow[];
+  totals: AdminMiningDistributionTotals;
+} | null> {
+  const params = new URLSearchParams({ from: fromYmd, to: toYmd });
+  try {
+    const res = await apiFetch(`${base}/admin/mining-distribution/by-coin?${params}`);
+    if (!res.ok) return null;
+    return (await res.json().catch(() => null)) as {
+      fromMs: number;
+      toMs: number;
+      rows: AdminMiningDistributionByCoinRow[];
+      totals: AdminMiningDistributionTotals;
+    } | null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getAdminMiningDistributionTimeline(
+  fromYmd: string,
+  toYmd: string,
+  bucket: 'day' | 'week',
+  coinId?: string
+): Promise<{
+  bucket: 'day' | 'week';
+  rows: Array<{
+    bucketStartMs: number;
+    bucketLabel: string;
+    totalCoins: number;
+    totalUsd: number;
+    creditRows: number;
+    uniqueUsers: number;
+  }>;
+} | null> {
+  const params = new URLSearchParams({ from: fromYmd, to: toYmd, bucket });
+  if (coinId) params.set('coinId', coinId);
+  try {
+    const res = await apiFetch(`${base}/admin/mining-distribution/timeline?${params}`);
+    if (!res.ok) return null;
+    return (await res.json().catch(() => null)) as {
+      bucket: 'day' | 'week';
+      rows: Array<{
+        bucketStartMs: number;
+        bucketLabel: string;
+        totalCoins: number;
+        totalUsd: number;
+        creditRows: number;
+        uniqueUsers: number;
+      }>;
+    } | null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getAdminMiningDistributionCredits(filters: {
+  fromYmd: string;
+  toYmd: string;
+  page?: number;
+  limit?: number;
+  userId?: number;
+  coinId?: string;
+  roomId?: string;
+  q?: string;
+}): Promise<{ total: number; page: number; limit: number; rows: AdminMiningCreditLedgerRow[] } | null> {
+  const params = new URLSearchParams({ from: filters.fromYmd, to: filters.toYmd });
+  if (filters.page) params.set('page', String(filters.page));
+  if (filters.limit) params.set('limit', String(filters.limit));
+  if (filters.userId != null) params.set('userId', String(filters.userId));
+  if (filters.coinId) params.set('coinId', filters.coinId);
+  if (filters.roomId) params.set('roomId', filters.roomId);
+  if (filters.q) params.set('q', filters.q);
+  try {
+    const res = await apiFetch(`${base}/admin/mining-distribution/credits?${params}`);
+    if (!res.ok) return null;
+    return (await res.json().catch(() => null)) as {
+      total: number;
+      page: number;
+      limit: number;
+      rows: AdminMiningCreditLedgerRow[];
+    } | null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildAdminMiningDistributionCsvUrl(filters: {
+  fromYmd: string;
+  toYmd: string;
+  userId?: number;
+  coinId?: string;
+  roomId?: string;
+  q?: string;
+}): string {
+  const params = new URLSearchParams({ from: filters.fromYmd, to: filters.toYmd });
+  if (filters.userId != null) params.set('userId', String(filters.userId));
+  if (filters.coinId) params.set('coinId', filters.coinId);
+  if (filters.roomId) params.set('roomId', filters.roomId);
+  if (filters.q) params.set('q', filters.q);
+  return `${base}/admin/mining-distribution/credits/export.csv?${params.toString()}`;
+}
+
+export async function getAdminMiningDistributionUserSummary(
+  userId: number,
+  fromYmd: string,
+  toYmd: string
+): Promise<{
+  userId: number;
+  fromMs: number;
+  toMs: number;
+  totals: AdminMiningDistributionTotals;
+  byCoin: AdminMiningDistributionByCoinRow[];
+} | null> {
+  const params = new URLSearchParams({ from: fromYmd, to: toYmd });
+  try {
+    const res = await apiFetch(
+      `${base}/admin/mining-distribution/users/${userId}/summary?${params}`
+    );
+    if (!res.ok) return null;
+    return (await res.json().catch(() => null)) as {
+      userId: number;
+      fromMs: number;
+      toMs: number;
+      totals: AdminMiningDistributionTotals;
+      byCoin: AdminMiningDistributionByCoinRow[];
+    } | null;
+  } catch {
+    return null;
+  }
+}
+
+export async function postAdminMiningDistributionRebuildRollups(body?: {
+  fromDay?: string;
+  toDay?: string;
+  daysBack?: number;
+}): Promise<{ ok: boolean; daysProcessed?: number; rowsUpserted?: number; error?: string }> {
+  try {
+    const res = await apiFetch(`${base}/admin/mining-distribution/rebuild-rollups`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body ?? {})
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      error?: string;
+      daysProcessed?: number;
+      rowsUpserted?: number;
+    };
+    if (!res.ok) return { ok: false, error: data.error || `Erro ${res.status}` };
+    return { ok: true, daysProcessed: data.daysProcessed, rowsUpserted: data.rowsUpserted };
+  } catch {
+    return { ok: false, error: 'Erro de rede' };
+  }
 }
 
 export async function getProfileState(): Promise<ProfileApiState | null> {
@@ -4182,14 +4540,46 @@ export async function removeFromBlacklist(ip: string): Promise<{ ok: boolean; er
   } catch { return { ok: false, error: 'Network error' }; }
 }
 
+export type AdminInventoryAuditRow = {
+  id: string;
+  createdAtMs: number;
+  action: string;
+  catalogItemId: string | null;
+  itemName: string | null;
+  instanceId: string | null;
+  quantityBefore: number | null;
+  quantityAfter: number | null;
+  delta: number | null;
+  source: string;
+  summary: string;
+};
+
+export type AdminSessionSnapshotEntry = {
+  id: string;
+  action: string;
+  createdAt: number;
+  snapshot: Record<string, unknown>;
+  display?: import('../types').ActivityEventDisplay;
+};
+
 export async function getAdminUserActivity(
   email: string,
-  opts?: { userId?: number; limit?: number }
+  opts?: {
+    userId?: number;
+    limit?: number;
+    beforeMs?: number;
+    filterId?: string;
+    search?: string;
+    category?: string;
+    severity?: string;
+  }
 ): Promise<{
   logs: GameUserActivityEntry[];
   error?: string;
   activityLogNote?: string;
   accountCreatedAtMs?: number | null;
+  hasMore?: boolean;
+  nextCursor?: number | null;
 }> {
   const q = new URLSearchParams();
   const uid = opts?.userId;
@@ -4200,7 +4590,12 @@ export async function getAdminUserActivity(
     if (!em) return { logs: [], error: 'Indique o email ou username do jogador.' };
     q.set('email', em);
   }
-  if (opts?.limit != null && opts.limit > 0) q.set('limit', String(Math.min(200, opts.limit)));
+  if (opts?.limit != null && opts.limit > 0) q.set('limit', String(Math.min(100, opts.limit)));
+  if (opts?.beforeMs != null && opts.beforeMs > 0) q.set('beforeMs', String(Math.floor(opts.beforeMs)));
+  if (opts?.filterId) q.set('filterId', opts.filterId);
+  if (opts?.search) q.set('search', opts.search);
+  if (opts?.category) q.set('category', opts.category);
+  if (opts?.severity) q.set('severity', opts.severity);
   try {
     const res = await apiFetch(`${base}/admin/user-activity?${q.toString()}`);
     if (!res.ok) {
@@ -4215,6 +4610,8 @@ export async function getAdminUserActivity(
       logs?: GameUserActivityEntry[];
       activityLogNote?: string;
       accountCreatedAtMs?: number | null;
+      hasMore?: boolean;
+      nextCursor?: number | null;
     };
     const note = typeof data.activityLogNote === 'string' ? data.activityLogNote : undefined;
     const rawMs = data.accountCreatedAtMs;
@@ -4222,11 +4619,61 @@ export async function getAdminUserActivity(
       typeof rawMs === 'number' && Number.isFinite(rawMs) && rawMs > 0 ? Math.floor(rawMs) : null;
     return {
       logs: Array.isArray(data.logs) ? data.logs : [],
+      hasMore: !!data.hasMore,
+      nextCursor: data.nextCursor ?? null,
       ...(note ? { activityLogNote: note } : {}),
       accountCreatedAtMs
     };
   } catch {
     return { logs: [], error: 'Erro de rede.' };
+  }
+}
+
+export async function getAdminUserInventoryAudit(
+  userId: number,
+  opts?: { page?: number; limit?: number; fromMs?: number; toMs?: number; lossesOnly?: boolean }
+): Promise<{ total: number; page: number; limit: number; rows: AdminInventoryAuditRow[] } | null> {
+  const q = new URLSearchParams();
+  if (opts?.page) q.set('page', String(opts.page));
+  if (opts?.limit) q.set('limit', String(opts.limit));
+  if (opts?.fromMs) q.set('from', String(opts.fromMs));
+  if (opts?.toMs) q.set('to', String(opts.toMs));
+  if (opts?.lossesOnly) q.set('lossesOnly', 'true');
+  try {
+    const res = await apiFetch(`${base}/admin/users/${userId}/inventory-audit?${q}`);
+    if (!res.ok) return null;
+    return (await res.json()) as { total: number; page: number; limit: number; rows: AdminInventoryAuditRow[] };
+  } catch {
+    return null;
+  }
+}
+
+export async function getAdminUserSessionSnapshots(
+  userId: number,
+  limit = 20
+): Promise<{
+  snapshots: AdminSessionSnapshotEntry[];
+  diffs: Array<{
+    snapshotId: string;
+    createdAt: number;
+    fingerprintChanged: boolean;
+    inventoryDiff: Array<{ itemId: string; before: number; after: number; delta: number }>;
+  }>;
+} | null> {
+  try {
+    const res = await apiFetch(`${base}/admin/users/${userId}/session-snapshots?limit=${limit}`);
+    if (!res.ok) return null;
+    return (await res.json()) as {
+      snapshots: AdminSessionSnapshotEntry[];
+      diffs: Array<{
+        snapshotId: string;
+        createdAt: number;
+        fingerprintChanged: boolean;
+        inventoryDiff: Array<{ itemId: string; before: number; after: number; delta: number }>;
+      }>;
+    };
+  } catch {
+    return null;
   }
 }
 

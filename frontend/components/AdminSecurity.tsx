@@ -3,14 +3,11 @@ import { SecurityStats, GameUserActivityEntry, AdminDeviceFingerprintLog } from 
 import { getSecurityStats, addToBlacklist, removeFromBlacklist, getAdminUserActivity, getAdminDeviceFingerprints, toggleUserBlocked } from '../services/api';
 import { Shield, AlertTriangle, Users, Globe, RefreshCw, Lock, Terminal, Ban, CheckCircle, Gamepad2, Fingerprint, Eye } from 'lucide-react';
 
-function formatActivityMeta(meta: GameUserActivityEntry['meta']): string {
-    if (meta == null || typeof meta !== 'object') return '—';
-    try {
-        const s = JSON.stringify(meta);
-        return s.length > 420 ? `${s.slice(0, 420)}…` : s;
-    } catch {
-        return '—';
-    }
+import { formatActivityEvent } from '../utils/activityEventFormatter';
+
+function formatActivityRow(row: GameUserActivityEntry): string {
+    if (row.display?.summary) return row.display.summary;
+    return formatActivityEvent(row.action, row.meta).summary;
 }
 
 export const AdminSecurity: React.FC = () => {
@@ -747,8 +744,8 @@ export const AdminSecurity: React.FC = () => {
                                                     {new Date(row.createdAt).toLocaleString()}
                                                 </td>
                                                 <td className="px-4 py-3 font-mono text-xs text-emerald-400">{row.action}</td>
-                                                <td className="px-4 py-3 text-[10px] text-slate-400 font-mono break-all max-w-xl" title={formatActivityMeta(row.meta)}>
-                                                    {formatActivityMeta(row.meta)}
+                                                <td className="px-4 py-3 text-xs text-slate-300 break-words max-w-xl" title={row.action}>
+                                                    {formatActivityRow(row)}
                                                 </td>
                                             </tr>
                                         ))

@@ -2,9 +2,6 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Clapperboard,
   Loader2,
-  Rocket,
-  ChevronDown,
-  ChevronUp,
   Calendar,
   ThumbsUp,
   Youtube,
@@ -12,16 +9,11 @@ import {
 } from 'lucide-react';
 import {
   getPartnersState,
-  submitPartnerYoutubeVideo,
   type PartnerYoutubeMySubmission,
   type PartnersShowcaseVideoDto,
   type PartnersStatePayload,
 } from '../services/api';
-import {
-  PARTNER_VIDEO_DESCRIPTION_MAX,
-  PARTNER_VIDEO_TITLE_MAX,
-  PARTNER_VIDEO_YOUTUBE_URL_MAX
-} from '../constants/formLimits';
+import { YoutubePartnerStudio } from './YoutubePartnerStudio';
 
 function thumbUrl(videoId: string): string {
   const v = String(videoId || '').trim();
@@ -36,19 +28,6 @@ function fmtDate(ms: number): string {
   } catch {
     return '—';
   }
-}
-
-function statusLabel(st: string): string {
-  if (st === 'approved') return 'Aprovado';
-  if (st === 'rejected') return 'Recusado';
-  if (st === 'pending') return 'Pendente';
-  return st;
-}
-
-function statusClass(st: string): string {
-  if (st === 'approved') return 'bg-emerald-900/60 text-emerald-200 border-emerald-700/50';
-  if (st === 'rejected') return 'bg-red-950/50 text-red-200 border-red-800/50';
-  return 'bg-amber-900/40 text-amber-100 border-amber-700/50';
 }
 
 function channelOpenUrl(channelUrl: string, displayName: string): string {
@@ -147,25 +126,13 @@ export const PartnersPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  const [ctxLoading, setCtxLoading] = useState(true);
-  const [isPartner, setIsPartner] = useState(false);
-  const [canSubmitToday, setCanSubmitToday] = useState(false);
+  const [partnersState, setPartnersState] = useState<PartnersStatePayload | null>(null);
   const [mySubs, setMySubs] = useState<PartnerYoutubeMySubmission[]>([]);
-  const submitBusyRef = React.useRef(false);
-
-  const [formOpen, setFormOpen] = useState(true);
-  const [title, setTitle] = useState('');
-  const [youtubeUrl, setYoutubeUrl] = useState('');
-  const [description, setDescription] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [submitErr, setSubmitErr] = useState<string | null>(null);
 
   const mapStateToUi = useCallback((st: PartnersStatePayload) => {
     const raw = Array.isArray(st.showcase?.videos) ? st.showcase!.videos : [];
     setVideos(raw);
-    const auth = st.auth || {};
-    setIsPartner(!!auth.isPartner);
-    setCanSubmitToday(!!auth.canSubmitToday);
+    setPartnersState(st);
     const ms = Array.isArray(st.mySubmissions) ? st.mySubmissions : [];
     setMySubs(
       ms.map((s) => ({
@@ -184,15 +151,13 @@ export const PartnersPage: React.FC = () => {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    setCtxLoading(true);
     setErr(null);
     try {
       const st = await getPartnersState({ limit: 48 });
       if (!st?.ok) {
         setErr('Não foi possível carregar os vídeos.');
         setVideos([]);
-        setIsPartner(false);
-        setCanSubmitToday(false);
+        setPartnersState(null);
         setMySubs([]);
         return;
       }
@@ -200,40 +165,16 @@ export const PartnersPage: React.FC = () => {
     } catch {
       setErr('Não foi possível carregar os vídeos.');
       setVideos([]);
-      setIsPartner(false);
-      setCanSubmitToday(false);
+      setPartnersState(null);
       setMySubs([]);
     } finally {
       setLoading(false);
-      setCtxLoading(false);
     }
   }, [mapStateToUi]);
 
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
-
-  const onSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (submitBusyRef.current) return;
-    setSubmitErr(null);
-    submitBusyRef.current = true;
-    setSubmitting(true);
-    try {
-      const r = await submitPartnerYoutubeVideo({ title, youtubeUrl, description });
-      if (!r.ok) {
-        setSubmitErr(r.error || 'Falha ao enviar.');
-        return;
-      }
-      setTitle('');
-      setYoutubeUrl('');
-      setDescription('');
-      await loadAll();
-    } finally {
-      submitBusyRef.current = false;
-      setSubmitting(false);
-    }
-  };
 
   return (
     <div className="w-full flex flex-col gap-8 text-slate-100 pb-8">
@@ -247,122 +188,12 @@ export const PartnersPage: React.FC = () => {
           <span className="bg-gradient-to-r from-white to-slate-300 bg-clip-text text-transparent">Parceiros YouTube</span>
         </h1>
         <p className="text-sm text-slate-400 max-w-3xl">
-          Vídeos aprovados pela equipe — vitrine ao estilo comunidade. Parceiros podem enviar até 1 vídeo por dia (UTC).
+          Vídeos aprovados pela equipa — vitrine ao estilo comunidade. Candidata o teu canal, desbloqueia a Sala NFT e envia até 1 vídeo por dia (UTC).
         </p>
       </div>
 
-      {isPartner && (
-        <section className="rounded-2xl border border-slate-700 bg-slate-900/60 overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setFormOpen((v) => !v)}
-            className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-slate-800/80 hover:bg-slate-800 text-left"
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <Clapperboard size={18} className="text-amber-400 shrink-0" />
-              <span className="font-bold truncate">Submeter novo vídeo</span>
-              <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded border border-emerald-700/60 bg-emerald-950/40 text-emerald-300 shrink-0">
-                Parceiro
-              </span>
-            </div>
-            <div className="flex items-center gap-2 shrink-0 text-slate-400 text-xs font-bold">
-              {formOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-              {formOpen ? 'Ocultar' : 'Mostrar'}
-            </div>
-          </button>
-          {formOpen && (
-            <div className="p-4 sm:p-5 border-t border-slate-800 space-y-4">
-              {ctxLoading ? (
-                <div className="flex items-center gap-2 text-slate-400 text-sm">
-                  <Loader2 className="animate-spin" size={16} /> A carregar…
-                </div>
-              ) : !canSubmitToday ? (
-                <div className="text-sm text-amber-200/90 bg-amber-950/25 border border-amber-900/40 rounded-lg px-3 py-2">
-                  Limite de 1 envio por dia (UTC) atingido. Volta amanhã para submeter outro vídeo.
-                </div>
-              ) : null}
-              <form onSubmit={onSubmit} className="space-y-3">
-                <div>
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Título do vídeo</label>
-                  <input
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    maxLength={PARTNER_VIDEO_TITLE_MAX}
-                    placeholder="O meu vídeo sobre Genesis Miner"
-                    className="w-full rounded-lg bg-slate-950 border border-slate-600 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/40"
-                    required
-                    minLength={3}
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">URL do YouTube</label>
-                  <input
-                    value={youtubeUrl}
-                    onChange={(e) => setYoutubeUrl(e.target.value)}
-                    maxLength={PARTNER_VIDEO_YOUTUBE_URL_MAX}
-                    placeholder="https://www.youtube.com/watch?v=…"
-                    className="w-full rounded-lg bg-slate-950 border border-slate-600 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/40"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Descrição (opcional)</label>
-                  <textarea
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    maxLength={PARTNER_VIDEO_DESCRIPTION_MAX}
-                    rows={3}
-                    placeholder="Breve descrição…"
-                    className="w-full rounded-lg bg-slate-950 border border-slate-600 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/40 resize-y"
-                  />
-                </div>
-                {submitErr && <div className="text-sm text-red-400">{submitErr}</div>}
-                <button
-                  type="submit"
-                  disabled={submitting || !canSubmitToday || ctxLoading}
-                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-black uppercase tracking-wide"
-                >
-                  {submitting ? <Loader2 className="animate-spin" size={18} /> : <Rocket size={18} />}
-                  Submeter vídeo
-                </button>
-              </form>
-            </div>
-          )}
-        </section>
-      )}
-
-      {isPartner && mySubs.length > 0 && (
-        <section className="space-y-3">
-          <h2 className="text-lg font-bold text-white">Os meus envios</h2>
-          <ul className="space-y-2">
-            {mySubs.map((s) => (
-              <li
-                key={s.id}
-                className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/50 px-3 py-2"
-              >
-                <img
-                  src={thumbUrl(s.youtubeVideoId)}
-                  alt=""
-                  className="w-20 h-12 object-cover rounded border border-slate-700 shrink-0 bg-slate-800"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="font-bold text-white truncate">{s.title}</div>
-                  <div className="text-[11px] text-slate-500 flex items-center gap-1">
-                    <Calendar size={12} /> {fmtDate(s.createdAt)}
-                  </div>
-                  {s.rejectReason ? (
-                    <div className="text-[11px] text-red-300/90 mt-0.5 truncate" title={s.rejectReason}>
-                      {s.rejectReason}
-                    </div>
-                  ) : null}
-                </div>
-                <span className={`text-[10px] font-black uppercase px-2 py-1 rounded border shrink-0 ${statusClass(s.status)}`}>
-                  {statusLabel(s.status)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
+      {partnersState && (
+        <YoutubePartnerStudio state={partnersState} mySubs={mySubs} onReload={loadAll} />
       )}
 
       <section className="space-y-4">

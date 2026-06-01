@@ -2,11 +2,21 @@
 """Deploy completo para VPS — sincroniza todos os ficheiros alterados e reinicia."""
 import paramiko, os, posixpath, subprocess, time, sys
 
-HOST = '161.97.176.125'
+HOST = '177.7.47.139'
+SSH_PORT = 2222
 USER = 'root'
-PASSWORD = 'equipefoda20026'
+PASSWORD = 'VortexA9#Lumi'
 REMOTE_APP = '/root/minestation/app_production'
 LOCAL_ROOT = '/home/gustavo/Documentos/minestation'
+
+# Postgres credentials (extraídos de docker-compose.yml + .env)
+POSTGRES_USER = 'postgres'
+POSTGRES_DB = 'minestation'
+POSTGRES_SERVICE = 'db'  # nome do serviço no docker-compose
+
+# Migration zerads
+ZERADS_MIGRATION_DIR = 'backend/prisma/migrations/20260528140000_zerads_integration'
+ZERADS_MIGRATION_SQL = f'{ZERADS_MIGRATION_DIR}/migration.sql'
 
 # Ficheiros backend source + compilados
 BACKEND_TS_FILES = [
@@ -14,6 +24,7 @@ BACKEND_TS_FILES = [
     'backend/modules/auth-login/authLogin.controller.ts',
     'backend/controllers/authController.ts',
     'backend/controllers/userRegistrationController.ts',
+    'backend/controllers/zeradsCallbackController.ts',
     'backend/server.ts',
     'backend/utils/authFlowSecret.ts',
     'backend/utils/cloudflareTurnstile.ts',
@@ -24,6 +35,9 @@ BACKEND_TS_FILES = [
     'backend/models/registrationValidation.ts',
     'backend/models/userModel.ts',
     'backend/models/userPutCoreTransaction.ts',
+    'backend/modules/shop/shop.productRules.ts',
+    'backend/modules/shop/shop.checkout.service.ts',
+    'backend/modules/shop/shop.catalog.ts',
 ]
 
 BACKEND_DIST_FILES = [
@@ -31,6 +45,7 @@ BACKEND_DIST_FILES = [
     'backend/dist/modules/auth-login/authLogin.controller.js',
     'backend/dist/controllers/authController.js',
     'backend/dist/controllers/userRegistrationController.js',
+    'backend/dist/controllers/zeradsCallbackController.js',
     'backend/dist/utils/authFlowSecret.js',
     'backend/dist/utils/cloudflareTurnstile.js',
     'backend/dist/utils/signupProxyVpnGuard.js',
@@ -40,6 +55,9 @@ BACKEND_DIST_FILES = [
     'backend/dist/models/registrationValidation.js',
     'backend/dist/models/userModel.js',
     'backend/dist/models/userPutCoreTransaction.js',
+    'backend/dist/modules/shop/shop.productRules.js',
+    'backend/dist/modules/shop/shop.checkout.service.js',
+    'backend/dist/modules/shop/shop.catalog.js',
     'backend/server.js',
 ]
 
@@ -119,7 +137,8 @@ def main():
     log('\n==> Conectando ao VPS...')
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(HOST, username=USER, password=PASSWORD)
+    ssh.connect(HOST, port=SSH_PORT, username=USER, password=PASSWORD,
+                timeout=60, banner_timeout=60, auth_timeout=60)
     sftp = ssh.open_sftp()
     log('   Conectado.')
 
@@ -133,23 +152,62 @@ def main():
     for f in BACKEND_DIST_FILES:
         upload_file(sftp, f, REMOTE_APP)
 
-    # 5. Upload frontend build
-    log('\n==> Enviando frontend build...')
-    upload_dir_recursive(sftp, 'frontend/build', REMOTE_APP)
+    # 5. Upload frontend build (Vite → dist/)
+    log('\n==> Enviando frontend build (frontend/dist)...')
+    upload_dir_recursive(sftp, 'frontend/dist', REMOTE_APP)
+
+    # 6. Upload pasta de migration zerads (TODOS os ficheiros)
+    log('\n==> Enviando pasta migration zerads...')
+    upload_dir_recursive(sftp, ZERADS_MIGRATION_DIR, REMOTE_APP)
+
+    # 6b. Verificar remoto e (se preciso) garantir migration.sql
+    remote_migration_sql = posixpath.join(REMOTE_APP, ZERADS_MIGRATION_SQL)
+    try:
+        sftp.stat(remote_migration_sql)
+        log(f'   migration.sql confirmado no remoto: {remote_migration_sql}')
+    except FileNotFoundError:
+        log('   migration.sql ausente no remoto após upload — reenviando...')
+        upload_file(sftp, ZERADS_MIGRATION_SQL, REMOTE_APP)
 
     sftp.close()
 
-    # 6. Restart container
-    log('\n==> Reiniciando container app...')
+    # 7. Aplicar migration zerads ANTES do restart (idempotente — CREATE TABLE IF NOT EXISTS)
+    log('\n==> Aplicando migration zerads no postgres...')
+    # Pipe do sql via stdin do psql dentro do container — não precisa montar volume.
+    apply_cmd = (
+        f'cd {REMOTE_APP} && '
+        f'cat {ZERADS_MIGRATION_SQL} | '
+        f'docker compose exec -T {POSTGRES_SERVICE} '
+        f'psql -U {POSTGRES_USER} -d {POSTGRES_DB} -v ON_ERROR_STOP=0 2>&1'
+    )
+    _, stdout, stderr = ssh.exec_command(apply_cmd)
+    out = stdout.read().decode()
+    err = stderr.read().decode()
+    exit_code = stdout.channel.recv_exit_status()
+    log(out)
+    if err:
+        log(f'   stderr: {err}')
+    if exit_code != 0:
+        log(f'   AVISO: migration retornou exit_code={exit_code} — provavelmente já aplicada. Continuando.')
+    else:
+        log('   Migration aplicada (ou já existia — idempotente).')
+
+    # 8. Rebuild + recreate container app
+    # IMPORTANTE: o Dockerfile usa COPY (não bind mount), então um simples
+    # `docker compose restart` NÃO traz os ficheiros uploadados via SFTP para
+    # dentro do container — a imagem precisa ser reconstruída. Por isso fazemos
+    # `build` + `up -d --force-recreate` em vez de `restart`.
+    log('\n==> Rebuildando imagem Docker (build + force-recreate)...')
     _, stdout, stderr = ssh.exec_command(
-        f'cd {REMOTE_APP} && docker compose restart app 2>&1'
+        f'cd {REMOTE_APP} && docker compose build app app_worker 2>&1 && '
+        f'docker compose up -d --force-recreate app app_worker 2>&1'
     )
     log(stdout.read().decode())
     log(stderr.read().decode())
 
     time.sleep(6)
 
-    # 7. Health check
+    # 9. Health check
     _, stdout, _ = ssh.exec_command(
         f'cd {REMOTE_APP} && docker compose ps app 2>&1'
     )

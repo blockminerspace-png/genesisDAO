@@ -23,7 +23,8 @@ import {
     Save,
     Sparkles,
     Loader2,
-    Power
+    Power,
+    TrendingUp
 } from 'lucide-react';
 import { PlayerCalculator } from './PlayerCalculator';
 import { User as UserType, MiningCoin } from '../types';
@@ -40,6 +41,7 @@ import {
 
 import { AdminManualWithdrawals } from './AdminManualWithdrawals';
 import { AdminReferral } from './AdminReferral';
+import { AdminMiningDistribution } from './AdminMiningDistribution';
 
 /** Fallback se `web3_deposit_wallet` estiver vazio nas settings */
 const TREASURY_WALLET_FALLBACK = '0x3D9bDA32f0cbA0E84C332Fd0151D434A4840F38a';
@@ -113,13 +115,13 @@ export const AdminReports: React.FC<AdminReportsProps> = ({ users = [], currentU
     const [limit] = useState(20);
     const [filterPeriod, setFilterPeriod] = useState<'all' | 'day' | 'year'>('all');
     const [searchTerm, setSearchTerm] = useState(() => localStorage.getItem('adminReportsSearchTerm') || '');
-    const [subtab, setSubtab] = useState<'transactions' | 'calculator' | 'withdrawals' | 'referral'>(() => (localStorage.getItem('adminReportsSubtab') as any) || 'transactions');
+    const [subtab, setSubtab] = useState<'transactions' | 'calculator' | 'withdrawals' | 'referral' | 'distribution'>(() => (localStorage.getItem('adminReportsSubtab') as any) || 'transactions');
 
     const reportsOperatorRestricted = !!(currentUser?.isAdmin && !currentUser?.isSuperAdmin);
 
     useEffect(() => {
         if (!reportsOperatorRestricted) return;
-        if (subtab === 'calculator' || subtab === 'withdrawals' || subtab === 'referral') {
+        if (subtab === 'calculator' || subtab === 'withdrawals' || subtab === 'referral' || subtab === 'distribution') {
             setSubtab('transactions');
             localStorage.setItem('adminReportsSubtab', 'transactions');
         }
@@ -570,7 +572,17 @@ export const AdminReports: React.FC<AdminReportsProps> = ({ users = [], currentU
                             className={`px-4 py-2 text-sm font-bold rounded border flex items-center gap-2 transition-all ${subtab === 'calculator' ? 'bg-amber-600/20 text-white border-amber-600/50 shadow-[0_0_10px_rgba(217,119,6,0.1)]' : 'text-slate-400 hover:text-white border-transparent hover:border-slate-700'}`}
                         >
                             <Calculator size={16} />
-                            Calculadora Mining
+                            Moedas & Calculadora
+                        </button>
+                        <button
+                            onClick={() => {
+                                setSubtab('distribution');
+                                localStorage.setItem('adminReportsSubtab', 'distribution');
+                            }}
+                            className={`px-4 py-2 text-sm font-bold rounded border flex items-center gap-2 transition-all ${subtab === 'distribution' ? 'bg-amber-600/20 text-white border-amber-600/50 shadow-[0_0_10px_rgba(217,119,6,0.1)]' : 'text-slate-400 hover:text-white border-transparent hover:border-slate-700'}`}
+                        >
+                            <TrendingUp size={16} />
+                            Distribuição Mining
                         </button>
                         <button
                             onClick={() => {
@@ -1049,6 +1061,12 @@ export const AdminReports: React.FC<AdminReportsProps> = ({ users = [], currentU
                 </div>
             )}
 
+
+            {subtab === 'distribution' && !reportsOperatorRestricted && (
+                <div className="flex-1 overflow-auto custom-scrollbar">
+                    <AdminMiningDistribution />
+                </div>
+            )}
 
             {subtab === 'withdrawals' && !reportsOperatorRestricted && (
                 <div className="flex-1 overflow-auto custom-scrollbar">
