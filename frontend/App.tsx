@@ -479,6 +479,9 @@ export default function App() {
   const [timeOffset, setTimeOffset] = useState<number>(0);
   const [web3SettingsState, setWeb3SettingsState] = useState<Web3Settings | null>(null);
   const [monetizationSettings, setMonetizationSettings] = useState<MonetizationSettings | null>(null);
+  const [showRewardModal, setShowRewardModal] = useState(false);
+  const [announcementQueue, setAnnouncementQueue] = useState<InAppAnnouncement[]>([]);
+  const [announcementDismissing, setAnnouncementDismissing] = useState(false);
 
   // Game State
   const [gameState, setGameState] = useState<GameState>(INITIAL_STATE);
@@ -690,9 +693,6 @@ export default function App() {
     marketTaxPercent: 0,
     blackMarketPriceBandPercent: 20
   });
-  const [showRewardModal, setShowRewardModal] = useState(false);
-  const [announcementQueue, setAnnouncementQueue] = useState<InAppAnnouncement[]>([]);
-  const [announcementDismissing, setAnnouncementDismissing] = useState(false);
   const [offlineStats, setOfflineStats] = useState<Record<string, number>>({});
   const [pendingRewardSummary, setPendingRewardSummary] = useState<{ id: string, name: string, count: number }[]>([]);
   const [marketRefreshTrigger, setMarketRefreshTrigger] = useState(0);

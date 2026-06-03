@@ -754,9 +754,21 @@ export interface SecurityStats {
   blockedUsers: BlockedUserEntry[];
 }
 
+export type ActivityDisplayCategory =
+  | 'auth'
+  | 'inventory'
+  | 'rigs'
+  | 'economy'
+  | 'boxes'
+  | 'session'
+  | 'p2p'
+  | 'other';
+
+export type ActivityDisplaySeverity = 'info' | 'success' | 'warning' | 'danger';
+
 export type ActivityEventDisplay = {
-  category: string;
-  severity: string;
+  category: ActivityDisplayCategory;
+  severity: ActivityDisplaySeverity;
   title: string;
   summary: string;
   lines?: string[];

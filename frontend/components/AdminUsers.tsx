@@ -377,12 +377,6 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
     const applyUserToEditor = useCallback(async (u: User) => {
         setSelectedUser(u);
         setSaveTab('stock');
-        setUserActivityLogs([]);
-        setUserActivityError(null);
-        setUserActivityMongoNote(null);
-        setUserActivityAccountCreatedAtMs(null);
-        setActivityLogFilterId('all');
-        setActivityLogSearch('');
         setAdminWalletCurrent(null);
         setAdminWalletHistory([]);
         setWalletHistoryError(null);

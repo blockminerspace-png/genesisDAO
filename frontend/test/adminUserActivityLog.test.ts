@@ -22,13 +22,19 @@ describe('adminUserActivityLog', () => {
   });
 
   it('ACTIVITY_LOG_FILTER_GROUPS cobre ações típicas', () => {
+    const display = {
+      category: 'other' as const,
+      severity: 'info' as const,
+      title: '',
+      summary: ''
+    };
     const deposit = ACTIVITY_LOG_FILTER_GROUPS.find((g) => g.id === 'deposit');
-    expect(deposit?.test?.('usdc_deposit_confirmed')).toBe(true);
+    expect(deposit?.test?.('usdc_deposit_confirmed', display)).toBe(true);
     const roleta = ACTIVITY_LOG_FILTER_GROUPS.find((g) => g.id === 'roleta');
-    expect(roleta?.test?.('roleta_roll')).toBe(true);
+    expect(roleta?.test?.('roleta_roll', display)).toBe(true);
     const signup = ACTIVITY_LOG_FILTER_GROUPS.find((g) => g.id === 'signup_complete');
-    expect(signup?.test?.('signup_complete')).toBe(true);
-    expect(signup?.test?.('login')).toBe(false);
+    expect(signup?.test?.('signup_complete', display)).toBe(true);
+    expect(signup?.test?.('login', display)).toBe(false);
   });
 
   it('filterUserActivityLogs near_account_creation usa janela ±5 min', () => {
