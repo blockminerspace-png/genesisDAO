@@ -6193,11 +6193,17 @@ export async function dismissInAppAnnouncement(id: string): Promise<boolean> {
 }
 
 /** GET /api/admin/in-app-announcements */
-export async function getAdminInAppAnnouncements(): Promise<InAppAnnouncementAdminPayload[]> {
+export async function getAdminInAppAnnouncements(): Promise<{
+  list: InAppAnnouncementAdminPayload[];
+  error: string | null;
+}> {
   try {
     const res = await apiFetch(`${base}/admin/in-app-announcements`);
-    if (!res.ok) return [];
     const raw = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!res.ok) {
+      const msg = typeof raw?.error === 'string' ? raw.error : `Erro ao carregar avisos (HTTP ${res.status}).`;
+      return { list: [], error: msg };
+    }
     const list = Array.isArray(raw?.announcements) ? raw.announcements : [];
     const out: InAppAnnouncementAdminPayload[] = [];
     for (const item of list) {
@@ -6229,9 +6235,9 @@ export async function getAdminInAppAnnouncements(): Promise<InAppAnnouncementAdm
               : 0
       });
     }
-    return out;
+    return { list: out, error: null };
   } catch {
-    return [];
+    return { list: [], error: 'Falha de rede ao carregar avisos popup.' };
   }
 }
 
@@ -6243,28 +6249,34 @@ export async function createAdminInAppAnnouncement(body: {
   isActive?: boolean;
   startsAt?: number | null;
   endsAt?: number | null;
-}): Promise<InAppAnnouncementAdminPayload | null> {
+}): Promise<{ announcement: InAppAnnouncementAdminPayload | null; error: string | null }> {
   try {
     const res = await apiFetch(`${base}/admin/in-app-announcements`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
-    if (!res.ok) return null;
     const raw = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!res.ok) {
+      const msg = typeof raw?.error === 'string' ? raw.error : `Erro ao criar aviso (HTTP ${res.status}).`;
+      return { announcement: null, error: msg };
+    }
     const ann = parseInAppAnnouncement(raw?.announcement);
-    if (!ann) return null;
+    if (!ann) return { announcement: null, error: 'Resposta inválida do servidor.' };
     const o = (raw?.announcement || {}) as Record<string, unknown>;
     return {
-      ...ann,
-      isActive: o.isActive === true || o.is_active === 1,
-      startsAt: typeof o.startsAt === 'number' ? o.startsAt : null,
-      endsAt: typeof o.endsAt === 'number' ? o.endsAt : null,
-      createdBy: typeof o.createdBy === 'number' ? o.createdBy : null,
-      readCount: typeof o.readCount === 'number' ? o.readCount : 0
+      announcement: {
+        ...ann,
+        isActive: o.isActive === true || o.is_active === 1,
+        startsAt: typeof o.startsAt === 'number' ? o.startsAt : null,
+        endsAt: typeof o.endsAt === 'number' ? o.endsAt : null,
+        createdBy: typeof o.createdBy === 'number' ? o.createdBy : null,
+        readCount: typeof o.readCount === 'number' ? o.readCount : 0
+      },
+      error: null
     };
   } catch {
-    return null;
+    return { announcement: null, error: 'Falha de rede ao criar aviso popup.' };
   }
 }
 
@@ -6279,28 +6291,34 @@ export async function updateAdminInAppAnnouncement(
     startsAt: number | null;
     endsAt: number | null;
   }>
-): Promise<InAppAnnouncementAdminPayload | null> {
+): Promise<{ announcement: InAppAnnouncementAdminPayload | null; error: string | null }> {
   try {
     const res = await apiFetch(`${base}/admin/in-app-announcements/${encodeURIComponent(id)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
-    if (!res.ok) return null;
     const raw = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!res.ok) {
+      const msg = typeof raw?.error === 'string' ? raw.error : `Erro ao atualizar aviso (HTTP ${res.status}).`;
+      return { announcement: null, error: msg };
+    }
     const ann = parseInAppAnnouncement(raw?.announcement);
-    if (!ann) return null;
+    if (!ann) return { announcement: null, error: 'Resposta inválida do servidor.' };
     const o = (raw?.announcement || {}) as Record<string, unknown>;
     return {
-      ...ann,
-      isActive: o.isActive === true || o.is_active === 1,
-      startsAt: typeof o.startsAt === 'number' ? o.startsAt : null,
-      endsAt: typeof o.endsAt === 'number' ? o.endsAt : null,
-      createdBy: typeof o.createdBy === 'number' ? o.createdBy : null,
-      readCount: typeof o.readCount === 'number' ? o.readCount : 0
+      announcement: {
+        ...ann,
+        isActive: o.isActive === true || o.is_active === 1,
+        startsAt: typeof o.startsAt === 'number' ? o.startsAt : null,
+        endsAt: typeof o.endsAt === 'number' ? o.endsAt : null,
+        createdBy: typeof o.createdBy === 'number' ? o.createdBy : null,
+        readCount: typeof o.readCount === 'number' ? o.readCount : 0
+      },
+      error: null
     };
   } catch {
-    return null;
+    return { announcement: null, error: 'Falha de rede ao atualizar aviso popup.' };
   }
 }
 

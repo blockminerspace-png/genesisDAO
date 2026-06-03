@@ -21,15 +21,19 @@ const emptyForm = () => ({
 export const AdminInAppAnnouncements: React.FC = () => {
   const [list, setList] = useState<InAppAnnouncementAdminPayload[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
-      const rows = await getAdminInAppAnnouncements();
+      const { list: rows, error } = await getAdminInAppAnnouncements();
       setList(rows);
+      if (error) setLoadError(error);
     } finally {
       setLoading(false);
     }
@@ -44,6 +48,13 @@ export const AdminInAppAnnouncements: React.FC = () => {
     setEditingId(null);
   };
 
+  const msToDatetimeLocal = (ms: number | null): string => {
+    if (ms == null || !Number.isFinite(ms)) return '';
+    const d = new Date(ms);
+    const pad = (x: number) => String(x).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
   const startEdit = (row: InAppAnnouncementAdminPayload) => {
     setEditingId(row.id);
     setForm({
@@ -52,8 +63,8 @@ export const AdminInAppAnnouncements: React.FC = () => {
       link: row.link || '',
       priority: row.priority ?? 0,
       isActive: row.isActive,
-      startsAt: row.startsAt != null ? String(row.startsAt) : '',
-      endsAt: row.endsAt != null ? String(row.endsAt) : ''
+      startsAt: msToDatetimeLocal(row.startsAt),
+      endsAt: msToDatetimeLocal(row.endsAt)
     });
   };
 
@@ -61,12 +72,15 @@ export const AdminInAppAnnouncements: React.FC = () => {
     const t = v.trim();
     if (!t) return null;
     const n = Number(t);
-    return Number.isFinite(n) ? n : null;
+    if (Number.isFinite(n) && n > 1e11) return n;
+    const parsed = Date.parse(t);
+    return Number.isFinite(parsed) ? parsed : null;
   };
 
   const handleSave = async () => {
     if (!form.title.trim() || !form.message.trim()) return;
     setSaving(true);
+    setSaveError(null);
     try {
       const payload = {
         title: form.title.trim(),
@@ -77,10 +91,12 @@ export const AdminInAppAnnouncements: React.FC = () => {
         startsAt: parseOptionalMs(form.startsAt),
         endsAt: parseOptionalMs(form.endsAt)
       };
-      if (editingId) {
-        await updateAdminInAppAnnouncement(editingId, payload);
-      } else {
-        await createAdminInAppAnnouncement(payload);
+      const result = editingId
+        ? await updateAdminInAppAnnouncement(editingId, payload)
+        : await createAdminInAppAnnouncement(payload);
+      if (result.error || !result.announcement) {
+        setSaveError(result.error || 'Não foi possível guardar o aviso.');
+        return;
       }
       resetForm();
       await load();
@@ -90,13 +106,21 @@ export const AdminInAppAnnouncements: React.FC = () => {
   };
 
   const handleToggleActive = async (row: InAppAnnouncementAdminPayload) => {
-    await updateAdminInAppAnnouncement(row.id, { isActive: !row.isActive });
+    const result = await updateAdminInAppAnnouncement(row.id, { isActive: !row.isActive });
+    if (result.error) {
+      setSaveError(result.error);
+      return;
+    }
     await load();
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm('Apagar este aviso popup? Quem já leu mantém o registo; novos utilizadores deixam de ver.')) return;
-    await deleteAdminInAppAnnouncement(id);
+    const ok = await deleteAdminInAppAnnouncement(id);
+    if (!ok) {
+      setSaveError('Não foi possível apagar o aviso.');
+      return;
+    }
     if (editingId === id) resetForm();
     await load();
   };
@@ -109,9 +133,16 @@ export const AdminInAppAnnouncements: React.FC = () => {
           <h2 className="text-lg font-bold text-white">Avisos popup (ler uma vez)</h2>
           <p className="text-xs text-slate-400">
             Aparecem após login para jogadores que ainda não marcaram como lidos. Banners News continuam separados.
+            Quem já fechou o popup (incluindo a tua conta de teste) não volta a ver o mesmo aviso.
           </p>
         </div>
       </div>
+
+      {(loadError || saveError) && (
+        <div className="rounded-lg border border-amber-700/50 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">
+          {saveError || loadError}
+        </div>
+      )}
 
       <div className="rounded-xl border border-slate-700 bg-slate-900/50 p-4 space-y-3">
         <h3 className="text-xs font-bold uppercase tracking-wide text-slate-400">
@@ -146,16 +177,18 @@ export const AdminInAppAnnouncements: React.FC = () => {
             />
           </label>
           <label className="text-xs text-slate-400">
-            Início (ms epoch, opcional)
+            Início (opcional)
             <input
+              type="datetime-local"
               className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-white"
               value={form.startsAt}
               onChange={(e) => setForm((f) => ({ ...f, startsAt: e.target.value }))}
             />
           </label>
           <label className="text-xs text-slate-400">
-            Fim (ms epoch, opcional)
+            Fim (opcional)
             <input
+              type="datetime-local"
               className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-white"
               value={form.endsAt}
               onChange={(e) => setForm((f) => ({ ...f, endsAt: e.target.value }))}

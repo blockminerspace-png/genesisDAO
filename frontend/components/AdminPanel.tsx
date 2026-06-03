@@ -179,6 +179,33 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         }
     }, [activeTab, settingsSubtab]);
 
+    /** Evita ecrã vazio em Configurações quando a sub-aba guardada não é permitida (ex.: só settings:news). */
+    useEffect(() => {
+        if (activeTab !== 'settings' || !user) return;
+        const tabAllowed = (tab: string) => {
+            if (user.isSuperAdmin) return true;
+            if (user.adminPermissions === null || user.adminPermissions === undefined) return true;
+            if (!Array.isArray(user.adminPermissions)) return true;
+            return (
+                user.adminPermissions.includes(tab) ||
+                user.adminPermissions.some((p) => p.startsWith(`${tab}:`))
+            );
+        };
+        const subtabs: Array<{ id: typeof settingsSubtab; perm: string }> = [
+            { id: 'pages', perm: 'settings:pages' },
+            { id: 'navlabels', perm: 'settings:pages' },
+            { id: 'rigrooms', perm: 'settings:rigrooms' },
+            { id: 'news', perm: 'settings:news' },
+            { id: 'popupAnnouncements', perm: 'settings:news' },
+            { id: 'monetization', perm: 'settings:monetization' },
+            { id: 'passes', perm: 'settings:passes' }
+        ];
+        const current = subtabs.find((s) => s.id === settingsSubtab);
+        if (current && tabAllowed(current.perm)) return;
+        const first = subtabs.find((s) => tabAllowed(s.perm));
+        if (first && first.id !== settingsSubtab) setSettingsSubtab(first.id);
+    }, [activeTab, user, settingsSubtab]);
+
     useEffect(() => {
         localStorage.setItem('adminSidebarCollapsed', String(sidebarCollapsed));
     }, [sidebarCollapsed]);
@@ -264,6 +291,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         if (user.isSuperAdmin) return true;
                         if (user.adminPermissions === null || user.adminPermissions === undefined) return true;
                         if (!Array.isArray(user.adminPermissions)) return true; // Default to allow if not array
+                        if (item.id === 'settings') {
+                            return (
+                                user.adminPermissions.includes('settings') ||
+                                user.adminPermissions.some((p) => p.startsWith('settings:'))
+                            );
+                        }
                         return user.adminPermissions.includes(item.id);
                     })
                         .map((item) => (
