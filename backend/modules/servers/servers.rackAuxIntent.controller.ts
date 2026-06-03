@@ -45,6 +45,10 @@ import {
   releaseEquippedAsicLeaseById,
   applyTimedStockQtyToSnapshot
 } from '../../lib/asicLease.js';
+import {
+  resolveNftAutoArmario1OnlyRoomIds,
+  stripSelectedCoinFromNftRoomRacks
+} from '../../lib/nftRoomMining.js';
 
 const RACK_ID_RE = /^[a-zA-Z0-9_.-]{1,200}$/;
 
@@ -323,6 +327,13 @@ async function runRackAuxMutation(
       }
       if (post && post.ok) out = post;
     }
+    const nftRoomIdsForStrip = await resolveNftAutoArmario1OnlyRoomIds({
+      query: (text, params) => client.query(text, params)
+    });
+    out = {
+      ...out,
+      placedRacks: stripSelectedCoinFromNftRoomRacks(out.placedRacks, nftRoomIdsForStrip)
+    };
     if (process.env.GPU_DUP_DEBUG === '1') {
       const rackOut = out.placedRacks.find((r) => r.id === rackId);
       console.log(

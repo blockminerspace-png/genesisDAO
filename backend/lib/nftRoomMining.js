@@ -19,10 +19,15 @@ export function normalizeMiningCoinSymbolKey(symbol) {
 export function isNftRoomExclusiveMiningCoinSymbol(symbol) {
     return NFT_ROOM_EXCLUSIVE_MINING_COIN_SYMBOLS.includes(normalizeMiningCoinSymbolKey(symbol));
 }
-/** Por id de `mining_coins` ou símbolo (USDT, cbBTC, DAI, GHO, GEMT). */
+/** Por flag BD, id/símbolo canónico, ou id de `mining_coins`. */
 export function isNftRoomExclusiveMiningCoinRef(ref) {
     if (ref == null)
         return false;
+    if (typeof ref === 'object') {
+        const flag = ref.nft_room_only ?? ref.nftRoomOnly;
+        if (flag === 1 || flag === true)
+            return true;
+    }
     if (typeof ref === 'string') {
         const low = ref.trim().toLowerCase();
         if (!low)
@@ -162,4 +167,43 @@ export function listSlotMiningCredits(roomId, slots, multiplierSlots, upgradesMa
         out.push({ coinId, effectiveBaseProd: bp * mult });
     }
     return out;
+}
+/** Na Sala NFT a moeda vem do ASIC; limpa selectedCoinId legado na rig. */
+export function stripSelectedCoinFromNftRoomRacks(racks, nftRoomIds) {
+    return racks.map((r) => {
+        const room = normalizePlacedRackRoomId(r.roomId);
+        const chassis = r.itemId != null ? String(r.itemId).trim() : '';
+        const isNftRig = nftRoomIds.has(room) || chassis === NFT_AUTO_ALLOWED_CHASSIS_ID;
+        if (!isNftRig)
+            return r;
+        if (r.selectedCoinId == null || String(r.selectedCoinId).trim() === '')
+            return r;
+        return { ...r, selectedCoinId: undefined };
+    });
+}
+/**
+ * Moedas escolhidas em «Moeda na Sala NFT (por ASIC)» ficam exclusivas da sala NFT
+ * e deixam de poder ser farmadas em rigs/GPUs normais.
+ */
+export async function syncNftRoomOnlyFlagsFromAsicUpgrades(query) {
+    await query(`
+    UPDATE mining_coins SET nft_room_only = 1
+    WHERE id IN (
+      SELECT DISTINCT btrim(nft_mining_coin_id)
+      FROM upgrades
+      WHERE nft_mining_coin_id IS NOT NULL AND btrim(nft_mining_coin_id) <> ''
+    )
+  `);
+    await query(`
+    UPDATE mining_coins SET nft_room_only = 0
+    WHERE nft_room_only = 1
+      AND id NOT IN (
+        SELECT DISTINCT btrim(nft_mining_coin_id)
+        FROM upgrades
+        WHERE nft_mining_coin_id IS NOT NULL AND btrim(nft_mining_coin_id) <> ''
+      )
+      AND lower(btrim(id)) NOT IN ('usdt', 'cbbtc', 'dai', 'gho', 'gemt')
+      AND upper(btrim(symbol)) NOT IN ('USDT', 'CBBTC', 'DAI', 'GHO', 'GEMT')
+      AND NOT (lower(btrim(id)) ~ '(^|[_-])(usdt|cbbtc|dai|gho|gemt)([_-]|$)')
+  `);
 }

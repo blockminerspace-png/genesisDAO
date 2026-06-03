@@ -3171,7 +3171,7 @@ export const AdminUsers: React.FC<AdminUsersProps> = ({
                                             { id: 'settings', label: 'Configurações (Geral)' },
                                             { id: 'settings:pages', label: '└─ Visibilidade de Páginas', isSub: true },
                                             { id: 'settings:rigrooms', label: '└─ Salas de Rigs', isSub: true },
-                                            { id: 'settings:news', label: '└─ Sistema de News', isSub: true },
+                                            { id: 'settings:news', label: '└─ Sistema de News e avisos popup', isSub: true },
                                             { id: 'settings:monetization', label: '└─ Monetização', isSub: true },
                                             { id: 'reports', label: 'Relatórios Financeiros' },
                                             { id: 'transparency', label: 'Transparência (pools / gastos)' },

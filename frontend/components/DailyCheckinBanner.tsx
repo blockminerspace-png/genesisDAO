@@ -11,13 +11,23 @@ type Props = {
 
 function formatResetCountdown(nextResetMs: number): string {
   const left = Math.max(0, nextResetMs - Date.now());
-  const h = Math.floor(left / 3600000);
+  const d = Math.floor(left / 86400000);
+  const h = Math.floor((left % 86400000) / 3600000);
   const m = Math.floor((left % 3600000) / 60000);
+  if (d > 0) return `${d}d ${h}h`;
   if (h <= 0) {
     if (m <= 0) return 'menos de 1m';
     return `${m}m`;
   }
   return `${h}h ${m}m`;
+}
+
+function checkinButtonDisabled(status: CheckinStatusPayload | null): boolean {
+  if (!status) return true;
+  if (status.premiumWeeklyCheckin) {
+    return !status.canCheckinNow;
+  }
+  return status.todayCheckedIn && !status.canEarlyCheckin && !status.frozen;
 }
 
 export function DailyCheckinBanner({ saveLoaded, onRewardGranted }: Props) {
@@ -67,13 +77,19 @@ export function DailyCheckinBanner({ saveLoaded, onRewardGranted }: Props) {
           setToast('Ganhou 1 bateria Estelar pela sequência de 7 dias!');
           onRewardGranted?.();
         } else if (out.data.performed) {
-          const earlyPerformed =
-            out.data.lastCheckinAtMs != null && out.data.lastCheckinAtMs > Date.now();
-          setToast(
-            earlyPerformed
-              ? 'Check-in antecipado registado — a mineração segue sem pausa até ao próximo ciclo (21:00 Brasília).'
-              : 'Check-in registado. A mineração volta a contar a partir deste momento.'
-          );
+          if (out.data.premiumWeeklyCheckin) {
+            setToast(
+              `Check-in premium registado. Mineração activa por ~${out.data.premiumIntervalDays} dias até ao próximo check-in.`
+            );
+          } else {
+            const earlyPerformed =
+              out.data.lastCheckinAtMs != null && out.data.lastCheckinAtMs > Date.now();
+            setToast(
+              earlyPerformed
+                ? 'Check-in antecipado registado — a mineração segue sem pausa até ao próximo ciclo (21:00 Brasília).'
+                : 'Check-in registado. A mineração volta a contar a partir deste momento.'
+            );
+          }
         } else {
           const alreadyEarly =
             out.data.lastCheckinAtMs != null && out.data.lastCheckinAtMs > Date.now();
@@ -112,26 +128,41 @@ export function DailyCheckinBanner({ saveLoaded, onRewardGranted }: Props) {
             ) : status ? (
               <>
                 <p className="font-bold text-slate-100">
-                  {status.frozen
-                    ? 'Mineração congelada — faça o check-in para voltar a farmar (ciclo diário: 21:00→21:00 Brasília).'
-                    : `Check-in activo — mineração corre até ~${formatResetCountdown(status.nextResetMs)} (próximo 21:00 Brasília).`}
+                  {status.premiumWeeklyCheckin
+                    ? status.frozen
+                      ? `Mineração congelada — check-in premium a cada ${status.premiumIntervalDays} dias (passe ≥ ${status.premiumMinUsdc} USDC).`
+                      : `Check-in premium activo — mineração até ~${formatResetCountdown(status.nextResetMs)}.`
+                    : status.frozen
+                      ? 'Mineração congelada — faça o check-in para voltar a farmar (ciclo diário: 21:00→21:00 Brasília).'
+                      : `Check-in activo — mineração corre até ~${formatResetCountdown(status.nextResetMs)} (próximo 21:00 Brasília).`}
                 </p>
                 <p className="text-slate-400">
                   Sequência: <span className="text-amber-300 font-mono">{status.streak}</span> dia(s) ·{' '}
-                  {status.frozen
-                    ? 'Janela actual expirada.'
-                    : `Próxima janela em ~${formatResetCountdown(status.nextResetMs)}.`}{' '}
-                  {status.canEarlyCheckin ? (
+                  {status.premiumWeeklyCheckin ? (
                     <>
-                      · Pode fazer check-in antecipado (últimas 4h antes das 21:00 Brasília).
+                      {status.frozen
+                        ? 'Janela premium expirada.'
+                        : `Próximo check-in obrigatório em ~${formatResetCountdown(status.nextResetMs)}.`}{' '}
+                      {!status.canCheckinNow && status.nextCheckinAllowedMs != null && !status.frozen ? (
+                        <>· Novo check-in disponível em ~{formatResetCountdown(status.nextCheckinAllowedMs)}.</>
+                      ) : null}
                     </>
-                  ) : null}{' '}
+                  ) : (
+                    <>
+                      {status.frozen
+                        ? 'Janela actual expirada.'
+                        : `Próxima janela em ~${formatResetCountdown(status.nextResetMs)}.`}{' '}
+                      {status.canEarlyCheckin ? (
+                        <>· Pode fazer check-in antecipado (últimas 4h antes das 21:00 Brasília).</>
+                      ) : null}
+                    </>
+                  )}{' '}
                   · Ciclo prémio:{' '}
                   <span className="text-amber-200/90">
                     {status.rewardCycleProgress}/{status.rewardCycleSize}
                   </span>{' '}
                   <Trophy className="inline align-text-bottom text-amber-500/90" size={14} aria-hidden /> a cada 7
-                  check-ins em ciclos seguidos (1 por dia, 21:00→21:00 BRT) ganha 1 Estelar.
+                  check-ins seguidos ganha 1 Estelar.
                 </p>
               </>
             ) : null}
@@ -144,13 +175,17 @@ export function DailyCheckinBanner({ saveLoaded, onRewardGranted }: Props) {
           <button
             type="button"
             onClick={() => void handleCheckin()}
-            disabled={submitting || loading || !status || (status.todayCheckedIn && !status.canEarlyCheckin && !status.frozen)}
+            disabled={submitting || loading || checkinButtonDisabled(status)}
             className="rounded-lg border border-amber-500/50 bg-amber-600/25 px-3 py-1.5 text-xs sm:text-sm font-bold text-amber-100 hover:bg-amber-600/35 disabled:opacity-50 disabled:cursor-not-allowed transition whitespace-nowrap"
           >
             {submitting ? (
               <span className="inline-flex items-center gap-2">
                 <Loader2 className="animate-spin" size={14} /> A registar…
               </span>
+            ) : status?.premiumWeeklyCheckin && !status.canCheckinNow && (status.todayCheckedIn || status.frozen) ? (
+              status.nextCheckinAllowedMs != null
+                ? `Aguardar · ${formatResetCountdown(status.nextCheckinAllowedMs)}`
+                : 'Aguardar intervalo premium'
             ) : status?.canEarlyCheckin ? (
               `Check-in antecipado · ${formatResetCountdown(status.nextResetMs)}`
             ) : status?.todayCheckedIn && !status.frozen ? (

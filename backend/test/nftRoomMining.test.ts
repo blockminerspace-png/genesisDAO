@@ -105,6 +105,11 @@ describe('isNftRoomExclusiveMiningCoinRef', () => {
     expect(isNftRoomExclusiveMiningCoinRef('usdt')).toBe(true);
     expect(isNftRoomExclusiveMiningCoinRef('btc')).toBe(false);
   });
+
+  it('reconhece flag nft_room_only após renomear símbolo', () => {
+    expect(isNftRoomExclusiveMiningCoinRef({ id: 'token-x', symbol: 'CUSTOM', nft_room_only: 1 })).toBe(true);
+    expect(isNftRoomExclusiveMiningCoinRef({ id: 'token-x', symbol: 'CUSTOM', nft_room_only: 0 })).toBe(false);
+  });
 });
 
 describe('resolveMiningCoinUsdRate', () => {

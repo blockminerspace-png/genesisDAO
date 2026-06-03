@@ -45,7 +45,7 @@ export async function runPartnerYoutubeProfileUpdate(params: {
     throw new PartnerYoutubeProfileError('Perfil de parceiro não encontrado.', 404, 'NOT_FOUND');
   }
 
-  const channelName = sanitizePartnerChannelName(params.channelNameRaw);
+  const channelName = sanitizePartnerChannelName(String(params.channelNameRaw ?? ''));
   if (channelName.length < 2) {
     throw new PartnerYoutubeProfileError('Nome do canal inválido (mín. 2 caracteres).', 400, 'VALIDATION');
   }

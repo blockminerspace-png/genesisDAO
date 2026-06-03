@@ -28,6 +28,10 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
   const [checkingBalance, setCheckingBalance] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  /** Rascunho de campos numéricos (evita apagar ao digitar, ex. taxa 0% → 1.5%). */
+  const [numericDraft, setNumericDraft] = useState<Record<string, string>>({});
+
+  const numericDraftKey = (coinId: string, field: string) => `${coinId}:${field}`;
 
   useEffect(() => {
     loadAll();
@@ -49,6 +53,7 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
     if (coins) {
       setMiningCoins(coins);
     }
+    setNumericDraft({});
     setLoadingCoins(false);
   };
 
@@ -194,34 +199,59 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
       if (!c) return { ...t, symbol: t.symbol || t.name };
       return { ...t, coinId: c.id, symbol: c.symbol, name: t.name || c.symbol };
     });
+    const deduped: TokenCfg[] = [];
+    for (const t of mergedTokens) {
+      const c = miningCoins.find((mc) => mc.id === t.coinId || mc.symbol === t.symbol || mc.symbol === t.name);
+      const idx = c
+        ? deduped.findIndex((d) => findWithdrawTokenCfg([d], c) != null)
+        : deduped.findIndex((d) => d.name === t.name && d.symbol === t.symbol);
+      if (idx >= 0) deduped[idx] = { ...deduped[idx], ...t };
+      else deduped.push(t);
+    }
     await setWeb3Settings({
       ...s!,
       payoutWallet,
-      withdrawTokens: mergedTokens,
+      withdrawTokens: deduped,
     });
+    setWithdrawTokens(deduped);
+    setNumericDraft({});
     setSaving(false);
     setSavedAt(Date.now());
   };
 
-  const updateTokenCfg = (name: string, field: keyof TokenCfg, value: any) => {
+  const updateTokenCfg = (
+    coin: Pick<MiningCoin, 'id' | 'symbol' | 'name'>,
+    field: keyof TokenCfg,
+    value: unknown
+  ) => {
     if (readOnly) return;
-    setWithdrawTokens(prev => {
-      const exists = prev.find(t => t.name === name);
-      if (exists) {
-        return prev.map(t => t.name === name ? { ...t, [field]: value } : t);
-      } else {
-        const newCfg: TokenCfg = {
-          name,
-          contract: '',
-          network: undefined,
-          payoutWallet,
-          minAmount: undefined,
-          minWithdrawalUsdc: undefined,
-          feePercent: undefined
-        };
-        return [...prev, { ...newCfg, [field]: value }];
+    setWithdrawTokens((prev) => {
+      const idx = prev.findIndex((t) => findWithdrawTokenCfg([t], coin) != null);
+      if (idx >= 0) {
+        return prev.map((t, i) =>
+          i === idx
+            ? {
+                ...t,
+                [field]: value,
+                coinId: coin.id,
+                symbol: coin.symbol,
+                name: t.name || coin.symbol
+              }
+            : t
+        );
       }
-
+      const newCfg: TokenCfg = {
+        name: coin.symbol,
+        symbol: coin.symbol,
+        coinId: coin.id,
+        contract: '',
+        network: undefined,
+        payoutWallet,
+        minAmount: undefined,
+        minWithdrawalUsdc: undefined,
+        feePercent: undefined
+      };
+      return [...prev, { ...newCfg, [field]: value }];
     });
   };
 
@@ -306,7 +336,7 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
                             className="sr-only peer"
                             disabled={readOnly}
                             checked={!cfg.disabled}
-                            onChange={(e) => updateTokenCfg(coin.symbol, 'disabled', !e.target.checked)}
+                            onChange={(e) => updateTokenCfg(coin, 'disabled', !e.target.checked)}
                           />
                           <div className="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-600"></div>
                           <span className="ms-2 text-[10px] font-bold text-slate-400 uppercase">{!cfg.disabled ? 'Ativado' : 'Desativado'}</span>
@@ -336,7 +366,7 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
                           <button
                             onClick={async () => {
                               const addr = await connectWallet(cfg.network, coin.symbol);
-                              if (addr) updateTokenCfg(coin.symbol, 'payoutWallet', addr);
+                              if (addr) updateTokenCfg(coin, 'payoutWallet', addr);
                             }}
                             className="text-[10px] text-green-400 hover:text-green-300 font-bold flex items-center gap-1 transition-colors"
                           >
@@ -348,7 +378,7 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
                         type="text"
                         readOnly={readOnly}
                         value={cfg.payoutWallet}
-                        onChange={(e) => updateTokenCfg(coin.symbol, 'payoutWallet', e.target.value)}
+                        onChange={(e) => updateTokenCfg(coin, 'payoutWallet', e.target.value)}
                         placeholder={payoutWallet || "0x..."}
                         className={`w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs font-mono focus:border-green-500/50 outline-none ${readOnly ? 'opacity-70 cursor-not-allowed' : ''}`}
                       />
@@ -358,7 +388,7 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
                       <select
                         disabled={readOnly}
                         value={cfg.network || ''}
-                        onChange={(e) => updateTokenCfg(coin.symbol, 'network', e.target.value || undefined)}
+                        onChange={(e) => updateTokenCfg(coin, 'network', e.target.value || undefined)}
                         className={`w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs ${readOnly ? 'opacity-70 cursor-not-allowed' : ''}`}
                       >
                         <option value="">Auto</option>
@@ -373,7 +403,7 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
                         type="text"
                         readOnly={readOnly}
                         value={cfg.contract}
-                        onChange={(e) => updateTokenCfg(coin.symbol, 'contract', e.target.value)}
+                        onChange={(e) => updateTokenCfg(coin, 'contract', e.target.value)}
                         placeholder="Vazio para moeda nativa"
                         className={`w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs font-mono ${readOnly ? 'opacity-70 cursor-not-allowed' : ''}`}
                       />
@@ -381,12 +411,32 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
                     <div>
                       <label className="text-[10px] text-slate-500 font-bold block mb-1">SAQUE MÍN. (USDC)</label>
                       <input
-                        type="number"
+                        type="text"
+                        inputMode="decimal"
                         readOnly={readOnly}
-                        value={typeof cfg.minWithdrawalUsdc === 'number' ? String(cfg.minWithdrawalUsdc) : ''}
+                        value={
+                          numericDraft[numericDraftKey(coin.id, 'minWithdrawalUsdc')] ??
+                          (typeof cfg.minWithdrawalUsdc === 'number' ? String(cfg.minWithdrawalUsdc) : '')
+                        }
                         onChange={(e) => {
-                          const v = parseFloat(e.target.value);
-                          updateTokenCfg(coin.symbol, 'minWithdrawalUsdc', isNaN(v) ? undefined : Math.max(0, v));
+                          setNumericDraft((prev) => ({
+                            ...prev,
+                            [numericDraftKey(coin.id, 'minWithdrawalUsdc')]: e.target.value
+                          }));
+                        }}
+                        onBlur={(e) => {
+                          const raw = e.target.value.trim().replace(',', '.');
+                          const v = parseFloat(raw);
+                          updateTokenCfg(
+                            coin,
+                            'minWithdrawalUsdc',
+                            raw === '' || !Number.isFinite(v) ? undefined : Math.max(0, v)
+                          );
+                          setNumericDraft((prev) => {
+                            const next = { ...prev };
+                            delete next[numericDraftKey(coin.id, 'minWithdrawalUsdc')];
+                            return next;
+                          });
                         }}
                         placeholder="Ex: 5.00"
                         className={`w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs ${readOnly ? 'opacity-70 cursor-not-allowed' : ''}`}
@@ -414,14 +464,34 @@ export const Web3Withdraw: React.FC<Web3WithdrawProps> = ({ readOnly = false }) 
                     <div>
                       <label className="text-[10px] text-slate-500 font-bold block mb-1">TAXA DE SAQUE (%)</label>
                       <input
-                        type="number"
+                        type="text"
+                        inputMode="decimal"
                         readOnly={readOnly}
-                        value={typeof cfg.feePercent === 'number' ? String(cfg.feePercent) : ''}
+                        value={
+                          numericDraft[numericDraftKey(coin.id, 'feePercent')] ??
+                          (typeof cfg.feePercent === 'number' ? String(cfg.feePercent) : '')
+                        }
                         onChange={(e) => {
-                          const v = parseFloat(e.target.value);
-                          updateTokenCfg(coin.symbol, 'feePercent', isNaN(v) ? undefined : Math.max(0, v));
+                          setNumericDraft((prev) => ({
+                            ...prev,
+                            [numericDraftKey(coin.id, 'feePercent')]: e.target.value
+                          }));
                         }}
-                        placeholder="Ex: 1.5"
+                        onBlur={(e) => {
+                          const raw = e.target.value.trim().replace(',', '.');
+                          const v = parseFloat(raw);
+                          updateTokenCfg(
+                            coin,
+                            'feePercent',
+                            raw === '' || !Number.isFinite(v) ? undefined : Math.max(0, v)
+                          );
+                          setNumericDraft((prev) => {
+                            const next = { ...prev };
+                            delete next[numericDraftKey(coin.id, 'feePercent')];
+                            return next;
+                          });
+                        }}
+                        placeholder="Ex: 1.5 (0 = sem taxa)"
                         className={`w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs ${readOnly ? 'opacity-70 cursor-not-allowed' : ''}`}
                       />
                     </div>

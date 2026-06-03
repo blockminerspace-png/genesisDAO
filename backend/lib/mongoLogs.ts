@@ -4,6 +4,8 @@
  */
 import { getGenesisMongo } from './genesisStack/init.js';
 
+export { getGenesisMongo };
+
 /** Base de dados Mongo só para logs / analytics (não é fonte de verdade). */
 export const MONGO_LOG_DB = process.env.GENESIS_MONGO_DB?.trim() || 'genesis_logs';
 

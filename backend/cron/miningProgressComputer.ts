@@ -10,7 +10,7 @@ import {
   type LockHandle
 } from '../lib/redisDistributedLock.js';
 import { miningRuntimeStats } from './miningRuntimeStats.js';
-import { isCheckinFrozenAtMs } from '../modules/checkin/checkin.service.js';
+import { isCheckinFrozenForUser } from '../modules/checkin/checkin.service.js';
 import {
   isNftMiningRoomId,
   listSlotMiningCredits,
@@ -247,7 +247,7 @@ export async function computeProgressForUser(
       gsInitial.last_checkin_at_ms != null
         ? Number(typeof gsInitial.last_checkin_at_ms === 'bigint' ? Number(gsInitial.last_checkin_at_ms) : gsInitial.last_checkin_at_ms)
         : null;
-    const checkinFrozen = isCheckinFrozenAtMs(lastCheckinAtMsRaw, serverNow);
+    const checkinFrozen = await isCheckinFrozenForUser(userId, lastCheckinAtMsRaw, serverNow);
 
     if (serverNow < last) {
       console.warn(`${LOG_PREFIX} user=%s relógio atrás de last_updated (possível manipulação)`, userId);

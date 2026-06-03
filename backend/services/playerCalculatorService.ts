@@ -1,6 +1,6 @@
 import { prisma } from '../config/prisma.js';
 import { miningRuntimeStats } from '../cron/miningRuntimeStats.js';
-import { isCheckinFrozenAtMs } from '../modules/checkin/checkin.service.js';
+import { isCheckinFrozenForUser } from '../modules/checkin/checkin.service.js';
 import { normalizePlacedRackRoomId } from '../modules/batteries/batteries.validation.js';
 import {
   CALCULATOR_PROJECTION_PERIODS,
@@ -144,7 +144,7 @@ export async function loadPlayerCalculatorSnapshot(
   ]);
 
   const lastCheckinAtMs = gsCheckin?.last_checkin_at_ms != null ? Number(gsCheckin.last_checkin_at_ms) : null;
-  const checkinFrozen = isCheckinFrozenAtMs(lastCheckinAtMs, Date.now());
+  const checkinFrozen = await isCheckinFrozenForUser(userId, lastCheckinAtMs, Date.now());
 
   const ownedSet = new Set(ownedRooms.map((r) => normalizePlacedRackRoomId(r.room_id)));
 

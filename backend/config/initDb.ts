@@ -62,7 +62,8 @@ export const initDb = async () => {
         usdc_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
         is_active INTEGER NOT NULL DEFAULT 1,
         target_daily_usd DOUBLE PRECISION DEFAULT 0,
-        show_in_exchange INTEGER DEFAULT 1
+        show_in_exchange INTEGER DEFAULT 1,
+        nft_room_only INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS access_levels (
@@ -139,6 +140,26 @@ export const initDb = async () => {
         duration INTEGER,
         author_name TEXT,
         created_at BIGINT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS in_app_announcements (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        link TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        priority INTEGER NOT NULL DEFAULT 0,
+        starts_at BIGINT,
+        ends_at BIGINT,
+        created_at BIGINT NOT NULL,
+        created_by INTEGER
+      );
+
+      CREATE TABLE IF NOT EXISTS in_app_announcement_reads (
+        user_id INTEGER NOT NULL,
+        announcement_id TEXT NOT NULL REFERENCES in_app_announcements(id) ON DELETE CASCADE,
+        read_at BIGINT NOT NULL,
+        PRIMARY KEY (user_id, announcement_id)
       );
 
       CREATE TABLE IF NOT EXISTS season_passes (
@@ -849,6 +870,8 @@ export const initDb = async () => {
       CREATE INDEX IF NOT EXISTS idx_coin_withdrawals_user_id ON coin_withdrawals(user_id);
       CREATE INDEX IF NOT EXISTS idx_admin_upgrade_purchases_user_id ON admin_upgrade_purchases(user_id);
       CREATE INDEX IF NOT EXISTS idx_system_news_created_at ON system_news(created_at);
+      CREATE INDEX IF NOT EXISTS idx_in_app_announcements_active_created ON in_app_announcements(is_active, created_at);
+      CREATE INDEX IF NOT EXISTS idx_in_app_announcement_reads_user_id ON in_app_announcement_reads(user_id);
       CREATE INDEX IF NOT EXISTS idx_referrals_user_id ON referrals(user_id);
       CREATE INDEX IF NOT EXISTS idx_loot_box_items_box_id ON loot_box_items(box_id);
       CREATE INDEX IF NOT EXISTS idx_upgrade_compat_racks_upgrade_id ON upgrade_compat_racks(upgrade_id);
@@ -1161,6 +1184,28 @@ export const initDb = async () => {
       ALTER TABLE user_wallet_history ADD COLUMN IF NOT EXISTS source VARCHAR(80);
       ALTER TABLE user_wallet_history ADD COLUMN IF NOT EXISTS notes TEXT;
       CREATE INDEX IF NOT EXISTS user_wallet_history_actor_type_idx ON user_wallet_history (actor_type);
+    `);
+
+    await client.query(`
+      ALTER TABLE mining_coins ADD COLUMN IF NOT EXISTS nft_room_only INTEGER NOT NULL DEFAULT 0;
+    `);
+    await client.query(`
+      UPDATE mining_coins SET nft_room_only = 1
+      WHERE COALESCE(nft_room_only, 0) = 0
+        AND (
+          lower(trim(id)) IN ('usdt', 'cbbtc', 'dai', 'gho', 'gemt')
+          OR upper(trim(symbol)) IN ('USDT', 'CBBTC', 'DAI', 'GHO', 'GEMT')
+          OR lower(trim(id)) ~ '(^|[_-])(usdt|cbbtc|dai|gho|gemt)([_-]|$)'
+        );
+    `);
+    await client.query(`
+      UPDATE mining_coins mc SET nft_room_only = 1
+      WHERE COALESCE(mc.nft_room_only, 0) = 0
+        AND EXISTS (
+          SELECT 1 FROM upgrades u
+          WHERE u.nft_mining_coin_id IS NOT NULL
+            AND trim(u.nft_mining_coin_id) = mc.id
+        );
     `);
 
     await client.query('COMMIT');

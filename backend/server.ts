@@ -33,7 +33,8 @@ import { miningRuntimeStats } from './dist/cron/miningRuntimeStats.js';
 import { fetchLiveUsdByMiningCoinRowIds, MINING_ECONOMY_PUBLIC_META } from './lib/miningLivePrices.js';
 import {
   isNftRoomExclusiveMiningCoinRef,
-  NFT_ROOM_EXCLUSIVE_COIN_ERROR_PT
+  NFT_ROOM_EXCLUSIVE_COIN_ERROR_PT,
+  syncNftRoomOnlyFlagsFromAsicUpgrades
 } from './lib/nftRoomMining.js';
 import { mapUpgradeRowToApi, resolveAsicDurationUpsertFields } from './lib/upgradeCatalogShape.js';
 import { mapWithdrawalRequestRow } from './lib/withdrawalHistoryShape.js';
@@ -205,6 +206,7 @@ import { registerPartnersPlayerRoutes } from './dist/modules/partners/partnersPl
 import { registerZeradsCallbackRoutes } from './dist/controllers/zeradsCallbackController.js';
 import { registerDashboardModuleRoutes } from './dist/modules/dashboard/dashboard.controller.js';
 import { registerCheckinModuleRoutes } from './dist/modules/checkin/checkin.controller.js';
+import { registerInAppAnnouncementsModuleRoutes } from './dist/modules/in-app-announcements/inAppAnnouncements.controller.js';
 import { registerEmailVerificationModuleRoutes } from './dist/modules/email-verification/emailVerification.controller.js';
 import { registerAuthLoginModuleRoutes } from './dist/modules/auth-login/index.js';
 import { registerEmailCampaignRoutes } from './dist/modules/email-campaigns/emailCampaigns.controller.js';
@@ -1827,7 +1829,8 @@ registerZeradsCallbackRoutes(app, {
   db
 });
 registerDashboardModuleRoutes(app, { authenticateToken });
-registerCheckinModuleRoutes(app, { authenticateToken });
+registerCheckinModuleRoutes(app, { authenticateToken, isAdmin });
+registerInAppAnnouncementsModuleRoutes(app, { authenticateToken, isAdmin });
 registerEmailVerificationModuleRoutes(app, {
   emailRequestLimiter: passwordResetRequestLimiter,
   verifyAttemptLimiter: verifyEmailAttemptLimiter,
@@ -2845,6 +2848,8 @@ app.post('/api/upgrades', isAdmin, async (req, res) => {
         }
       }
     }
+
+    await syncNftRoomOnlyFlagsFromAsicUpgrades((text) => client.query(text));
 
     await client.query('COMMIT');
     res.json({ ok: true });
@@ -3998,7 +4003,7 @@ async function sanitizePlacedRacksNftAutoRoom(client, uid, changes, saveActivity
     }
     const chassis = r.itemId != null ? String(r.itemId).trim() : '';
     if (!chassis || chassis === NFT_AUTO_ALLOWED_CHASSIS_ID) {
-      kept.push(r);
+      kept.push({ ...r, selectedCoinId: undefined });
       continue;
     }
     stock[chassis] = Math.floor((Number(stock[chassis]) || 0) + 1);
@@ -4063,7 +4068,7 @@ app.post('/api/server-room/room-coins', async (req, res) => {
     await client.query('SELECT 1 FROM game_states WHERE user_id = $1 FOR UPDATE', [uid]);
 
     if (selectedCoinId) {
-      const cRes = await client.query('SELECT id, symbol, is_active FROM mining_coins WHERE id = $1', [
+      const cRes = await client.query('SELECT id, symbol, is_active, nft_room_only FROM mining_coins WHERE id = $1', [
         selectedCoinId
       ]);
       if (!cRes.rows[0]) {
@@ -4074,7 +4079,13 @@ app.post('/api/server-room/room-coins', async (req, res) => {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: 'Esta moeda está desativada.' });
       }
-      if (isNftRoomExclusiveMiningCoinRef({ id: selectedCoinId, symbol: cRes.rows[0].symbol })) {
+      if (
+        isNftRoomExclusiveMiningCoinRef({
+          id: selectedCoinId,
+          symbol: cRes.rows[0].symbol,
+          nft_room_only: cRes.rows[0].nft_room_only
+        })
+      ) {
         await client.query('ROLLBACK');
         return res.status(400).json({
           error: NFT_ROOM_EXCLUSIVE_COIN_ERROR_PT,
@@ -5819,7 +5830,8 @@ app.get('/api/mining-coins', async (req, res) => {
         blockTime: r.block_time,
         priceUSD: r.price_usd, // Ensure camelCase matching calculator expectation
         targetDailyUSD: parseFloat(r.target_daily_usd) || 0, // New Field
-        showInExchange: !!r.show_in_exchange
+        showInExchange: !!r.show_in_exchange,
+        nftRoomOnly: Number(r.nft_room_only ?? 0) === 1
       };
     });
 
@@ -7250,19 +7262,33 @@ async function validatePlacedRacksForSave(dbq, racks, userId) {
     const cids = [...coinIds];
     const cres = await prisma.mining_coins.findMany({
       where: { id: { in: cids } },
-      select: { id: true, symbol: true }
+      select: { id: true, symbol: true, nft_room_only: true }
     });
     if (cres.length !== coinIds.size) {
       return { ok: false, error: 'Moeda inválida numa rig.' };
     }
-    const symById = new Map(cres.map((c) => [c.id, c.symbol]));
+    const coinMetaById = new Map<
+      string,
+      { id: string; symbol: string; nft_room_only: number }
+    >(cres.map((c) => [c.id, { id: c.id, symbol: c.symbol, nft_room_only: c.nft_room_only }]));
     for (const r of racks) {
       if (!r?.selectedCoinId) continue;
       const roomNft = normalizePlacedRackRoomId(r.roomId);
-      if (nftRoomIds.has(roomNft)) continue;
+      const chassisCoin = r.itemId != null ? String(r.itemId).trim() : '';
+      if (nftRoomIds.has(roomNft) || chassisCoin === NFT_AUTO_ALLOWED_CHASSIS_ID) continue;
       const cid = String(r.selectedCoinId);
-      if (isNftRoomExclusiveMiningCoinRef({ id: cid, symbol: symById.get(cid) })) {
-        return { ok: false, error: NFT_ROOM_EXCLUSIVE_COIN_ERROR_PT };
+      const meta = coinMetaById.get(cid);
+      if (
+        isNftRoomExclusiveMiningCoinRef({
+          id: cid,
+          symbol: meta?.symbol,
+          nft_room_only: meta?.nft_room_only
+        })
+      ) {
+        return {
+          ok: false,
+          error: `${NFT_ROOM_EXCLUSIVE_COIN_ERROR_PT} (rig ${String(r.id ?? '?')} na sala ${roomNft} — altere a moeda dessa rig ou mova-a para a Sala NFT.)`
+        };
       }
     }
   }
@@ -8805,6 +8831,7 @@ app.get('/api/mining/coins', async (req, res) => {
       usdcRate: c.usdc_rate,
       showInExchange: c.show_in_exchange === 1,
       targetDailyUSD: Number(c.target_daily_usd) || 0,
+      nftRoomOnly: Number(c.nft_room_only ?? 0) === 1,
       realNetworkHashrate: miningRuntimeStats.globalNetworkHashrates.get(String(c.id)) || 0
     }));
 
@@ -8897,15 +8924,19 @@ app.post('/api/mining/coins', isAdmin, async (req, res) => {
     const showInEx = c.showInExchange ? 1 : 0;
 
     let prevEmission: { block_reward: number; block_time: number; network_hashrate: number } | null = null;
+    let nftRoomOnly = 0;
     try {
       const prevRow = await prisma.mining_coins.findUnique({
         where: { id },
-        select: { block_reward: true, block_time: true, network_hashrate: true }
+        select: { block_reward: true, block_time: true, network_hashrate: true, nft_room_only: true }
       });
       prevEmission = prevRow || null;
+      if (prevRow) nftRoomOnly = Number(prevRow.nft_room_only ?? 0) === 1 ? 1 : 0;
     } catch {
       prevEmission = null;
     }
+    if (c.nftRoomOnly === true || c.nftRoomOnly === 1) nftRoomOnly = 1;
+    else if (c.nftRoomOnly === false || c.nftRoomOnly === 0) nftRoomOnly = 0;
 
     const oldY = prevEmission
       ? spotYieldPerHashForCoin(
@@ -8941,7 +8972,8 @@ app.post('/api/mining/coins', isAdmin, async (req, res) => {
         is_active: isActive,
         usdc_rate: usdcRate,
         show_in_exchange: showInEx,
-        target_daily_usd: targetDailyUSD
+        target_daily_usd: targetDailyUSD,
+        nft_room_only: nftRoomOnly
       },
       update: {
         name: String(c.name),
@@ -8959,7 +8991,8 @@ app.post('/api/mining/coins', isAdmin, async (req, res) => {
         is_active: isActive,
         usdc_rate: usdcRate,
         show_in_exchange: showInEx,
-        target_daily_usd: targetDailyUSD
+        target_daily_usd: targetDailyUSD,
+        nft_room_only: nftRoomOnly
       }
     });
 
@@ -9612,6 +9645,39 @@ const startServer = async () => {
         }
       }
       await ensureShowInExchangeColumn();
+
+      async function ensureNftRoomOnlyColumn() {
+        try {
+          const res = await db.query(
+            "SELECT column_name FROM information_schema.columns WHERE table_name='mining_coins' AND column_name='nft_room_only'"
+          );
+          if (res.rowCount === 0) {
+            console.log("[Migration] Adding 'nft_room_only' column to mining_coins...");
+            await db.query('ALTER TABLE mining_coins ADD COLUMN nft_room_only INTEGER NOT NULL DEFAULT 0');
+          }
+          await db.query(`
+            UPDATE mining_coins SET nft_room_only = 1
+            WHERE COALESCE(nft_room_only, 0) = 0
+              AND (
+                lower(trim(id)) IN ('usdt', 'cbbtc', 'dai', 'gho', 'gemt')
+                OR upper(trim(symbol)) IN ('USDT', 'CBBTC', 'DAI', 'GHO', 'GEMT')
+                OR lower(trim(id)) ~ '(^|[_-])(usdt|cbbtc|dai|gho|gemt)([_-]|$)'
+              )
+          `);
+          await db.query(`
+            UPDATE mining_coins mc SET nft_room_only = 1
+            WHERE COALESCE(mc.nft_room_only, 0) = 0
+              AND EXISTS (
+                SELECT 1 FROM upgrades u
+                WHERE u.nft_mining_coin_id IS NOT NULL
+                  AND trim(u.nft_mining_coin_id) = mc.id
+              )
+          `);
+        } catch (e) {
+          console.warn('[Migration] ensureNftRoomOnlyColumn failed:', e instanceof Error ? e.message : String(e));
+        }
+      }
+      await ensureNftRoomOnlyColumn();
 
       // await ensureMiningYieldHistory(); // DISABLED: Using new dynamic logic
       console.log('[DB] PostgreSQL initialized');

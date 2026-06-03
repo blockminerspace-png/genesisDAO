@@ -5474,6 +5474,17 @@ export type CheckinStatusPayload = {
   windowDurationMs: number;
   rewardCycleProgress: number;
   rewardCycleSize: number;
+  premiumWeeklyCheckin: boolean;
+  premiumIntervalDays: number;
+  premiumMinUsdc: number;
+  nextCheckinAllowedMs: number | null;
+  canCheckinNow: boolean;
+};
+
+export type CheckinPremiumPolicyPayload = {
+  enabled: boolean;
+  minUsdc: number;
+  intervalDays: number;
 };
 
 export type CheckinPerformPayload = CheckinStatusPayload & {
@@ -5525,8 +5536,71 @@ function parseCheckinStatusPayload(raw: Record<string, unknown>): CheckinStatusP
     rewardCycleSize:
       typeof raw.rewardCycleSize === 'number' && Number.isFinite(raw.rewardCycleSize)
         ? Math.max(1, Math.floor(raw.rewardCycleSize))
-        : 7
+        : 7,
+    premiumWeeklyCheckin: raw.premiumWeeklyCheckin === true,
+    premiumIntervalDays:
+      typeof raw.premiumIntervalDays === 'number' && Number.isFinite(raw.premiumIntervalDays)
+        ? Math.max(1, Math.floor(raw.premiumIntervalDays))
+        : 7,
+    premiumMinUsdc:
+      typeof raw.premiumMinUsdc === 'number' && Number.isFinite(raw.premiumMinUsdc)
+        ? raw.premiumMinUsdc
+        : 195,
+    nextCheckinAllowedMs:
+      typeof raw.nextCheckinAllowedMs === 'number' && Number.isFinite(raw.nextCheckinAllowedMs)
+        ? Math.floor(raw.nextCheckinAllowedMs)
+        : null,
+    canCheckinNow: raw.canCheckinNow !== false
   };
+}
+
+export async function getAdminCheckinPremiumPolicy(): Promise<CheckinPremiumPolicyPayload | null> {
+  try {
+    const res = await apiFetch(`${base}/admin/checkin-premium-policy`);
+    if (!res.ok) return null;
+    const raw = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!raw || raw.ok !== true) return null;
+    return {
+      enabled: raw.enabled !== false && raw.enabled !== 0,
+      minUsdc:
+        typeof raw.minUsdc === 'number'
+          ? raw.minUsdc
+          : typeof raw.min_usdc === 'number'
+            ? raw.min_usdc
+            : 195,
+      intervalDays:
+        typeof raw.intervalDays === 'number'
+          ? Math.max(1, Math.floor(raw.intervalDays))
+          : typeof raw.interval_days === 'number'
+            ? Math.max(1, Math.floor(raw.interval_days))
+            : 7
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function setAdminCheckinPremiumPolicy(
+  policy: CheckinPremiumPolicyPayload
+): Promise<CheckinPremiumPolicyPayload | null> {
+  try {
+    const res = await apiFetch(`${base}/admin/checkin-premium-policy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(policy)
+    });
+    if (!res.ok) return null;
+    const raw = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!raw || raw.ok !== true) return null;
+    return {
+      enabled: raw.enabled !== false && raw.enabled !== 0,
+      minUsdc: typeof raw.minUsdc === 'number' ? raw.minUsdc : policy.minUsdc,
+      intervalDays:
+        typeof raw.intervalDays === 'number' ? Math.max(1, Math.floor(raw.intervalDays)) : policy.intervalDays
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** GET /api/checkin/status */
@@ -6054,5 +6128,189 @@ export async function getZeradsStats(): Promise<ZeradsStatsResponse> {
     return (await res.json().catch(() => null)) as ZeradsStatsResponse;
   } catch {
     return null;
+  }
+}
+
+export type InAppAnnouncementPayload = {
+  id: string;
+  title: string;
+  message: string;
+  link: string | null;
+  priority?: number;
+  createdAt?: number;
+};
+
+export type InAppAnnouncementAdminPayload = InAppAnnouncementPayload & {
+  isActive: boolean;
+  startsAt: number | null;
+  endsAt: number | null;
+  createdBy: number | null;
+  readCount: number;
+};
+
+function parseInAppAnnouncement(raw: unknown): InAppAnnouncementPayload | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const id = typeof o.id === 'string' ? o.id.trim() : '';
+  const title = typeof o.title === 'string' ? o.title.trim() : '';
+  const message = typeof o.message === 'string' ? o.message : '';
+  if (!id || !title) return null;
+  const link =
+    typeof o.link === 'string' && o.link.trim()
+      ? o.link.trim()
+      : o.link === null
+        ? null
+        : null;
+  return { id, title, message, link };
+}
+
+/** GET /api/in-app-announcements/pending */
+export async function getPendingInAppAnnouncements(): Promise<InAppAnnouncementPayload[]> {
+  try {
+    const res = await apiFetch(`${base}/in-app-announcements/pending`);
+    if (!res.ok) return [];
+    const raw = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    const list = Array.isArray(raw?.announcements) ? raw.announcements : [];
+    return list.map(parseInAppAnnouncement).filter((x): x is InAppAnnouncementPayload => x != null);
+  } catch {
+    return [];
+  }
+}
+
+/** POST /api/in-app-announcements/:id/dismiss */
+export async function dismissInAppAnnouncement(id: string): Promise<boolean> {
+  try {
+    const safeId = encodeURIComponent(String(id || '').trim());
+    if (!safeId) return false;
+    const res = await apiFetch(`${base}/in-app-announcements/${safeId}/dismiss`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** GET /api/admin/in-app-announcements */
+export async function getAdminInAppAnnouncements(): Promise<InAppAnnouncementAdminPayload[]> {
+  try {
+    const res = await apiFetch(`${base}/admin/in-app-announcements`);
+    if (!res.ok) return [];
+    const raw = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    const list = Array.isArray(raw?.announcements) ? raw.announcements : [];
+    const out: InAppAnnouncementAdminPayload[] = [];
+    for (const item of list) {
+      const baseAnn = parseInAppAnnouncement(item);
+      if (!baseAnn) continue;
+      const o = item as Record<string, unknown>;
+      out.push({
+        ...baseAnn,
+        isActive: o.isActive === true || o.is_active === 1,
+        startsAt:
+          typeof o.startsAt === 'number'
+            ? o.startsAt
+            : typeof o.starts_at === 'number'
+              ? o.starts_at
+              : null,
+        endsAt:
+          typeof o.endsAt === 'number' ? o.endsAt : typeof o.ends_at === 'number' ? o.ends_at : null,
+        createdBy:
+          typeof o.createdBy === 'number'
+            ? o.createdBy
+            : typeof o.created_by === 'number'
+              ? o.created_by
+              : null,
+        readCount:
+          typeof o.readCount === 'number'
+            ? o.readCount
+            : typeof o.read_count === 'number'
+              ? o.read_count
+              : 0
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export async function createAdminInAppAnnouncement(body: {
+  title: string;
+  message: string;
+  link?: string;
+  priority?: number;
+  isActive?: boolean;
+  startsAt?: number | null;
+  endsAt?: number | null;
+}): Promise<InAppAnnouncementAdminPayload | null> {
+  try {
+    const res = await apiFetch(`${base}/admin/in-app-announcements`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) return null;
+    const raw = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    const ann = parseInAppAnnouncement(raw?.announcement);
+    if (!ann) return null;
+    const o = (raw?.announcement || {}) as Record<string, unknown>;
+    return {
+      ...ann,
+      isActive: o.isActive === true || o.is_active === 1,
+      startsAt: typeof o.startsAt === 'number' ? o.startsAt : null,
+      endsAt: typeof o.endsAt === 'number' ? o.endsAt : null,
+      createdBy: typeof o.createdBy === 'number' ? o.createdBy : null,
+      readCount: typeof o.readCount === 'number' ? o.readCount : 0
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function updateAdminInAppAnnouncement(
+  id: string,
+  body: Partial<{
+    title: string;
+    message: string;
+    link: string;
+    priority: number;
+    isActive: boolean;
+    startsAt: number | null;
+    endsAt: number | null;
+  }>
+): Promise<InAppAnnouncementAdminPayload | null> {
+  try {
+    const res = await apiFetch(`${base}/admin/in-app-announcements/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) return null;
+    const raw = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    const ann = parseInAppAnnouncement(raw?.announcement);
+    if (!ann) return null;
+    const o = (raw?.announcement || {}) as Record<string, unknown>;
+    return {
+      ...ann,
+      isActive: o.isActive === true || o.is_active === 1,
+      startsAt: typeof o.startsAt === 'number' ? o.startsAt : null,
+      endsAt: typeof o.endsAt === 'number' ? o.endsAt : null,
+      createdBy: typeof o.createdBy === 'number' ? o.createdBy : null,
+      readCount: typeof o.readCount === 'number' ? o.readCount : 0
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteAdminInAppAnnouncement(id: string): Promise<boolean> {
+  try {
+    const res = await apiFetch(`${base}/admin/in-app-announcements/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }

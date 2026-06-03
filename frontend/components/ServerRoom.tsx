@@ -8,7 +8,8 @@ import {
     normalizePlacedRackRoomId,
     isNftAutoArmario1OnlyRoom,
     isNftAutoArmario1OnlyRoomContext,
-    NFT_AUTO_ALLOWED_CHASSIS_ID
+    NFT_AUTO_ALLOWED_CHASSIS_ID,
+    miningCoinsSelectableOnRig
 } from '../types';
 import { orphanCatalogUpgrade } from '../models/orphanCatalogItem';
 import { normalizePublicAssetUrl } from '../utils/publicUrl';
@@ -327,6 +328,12 @@ export const ServerRoom: React.FC<ServerRoomProps> = ({
                 : false,
         [currentRoom]
     );
+
+    /** Rigs normais: moedas ligadas a ASICs na Sala NFT não aparecem no selector. */
+    const rigCoinSelectOptions = useMemo(() => {
+        const list = miningCoins || [];
+        return isNftSalaRoom ? list : miningCoinsSelectableOnRig(list);
+    }, [miningCoins, isNftSalaRoom]);
 
     const roomTotalProduction = useMemo(() => {
         return calculatePlacedRacksProductionHashrate(
@@ -761,7 +768,7 @@ export const ServerRoom: React.FC<ServerRoomProps> = ({
                                     <MiningCoinSelect
                                         value={bulkRoomCoinId}
                                         onChange={setBulkRoomCoinId}
-                                        coins={miningCoins || []}
+                                        coins={rigCoinSelectOptions}
                                         noneLabel="Nenhuma (desliga rigs)"
                                         buttonClassName="w-full rounded px-1.5 py-1 text-[10px]"
                                         disabled={coinApplyBusy}
@@ -1079,12 +1086,14 @@ export const ServerRoom: React.FC<ServerRoomProps> = ({
                                                         if (slot.type === 'power') {
                                                             const selectedCoin = miningCoins?.find(c => c.id === rack.selectedCoinId);
                                                             const missing = [];
-                                                            if (!rack.selectedCoinId) missing.push("Moeda");
-                                                            else if (selectedCoin && !selectedCoin.isActive) missing.push("Moeda Suspensa");
+                                                            if (!isNftSalaRoom && !rack.selectedCoinId) missing.push("Moeda");
+                                                            else if (!isNftSalaRoom && selectedCoin && !selectedCoin.isActive) missing.push("Moeda Suspensa");
 
                                                             if (!battery) missing.push("Bateria");
                                                             if (!rack.wiringId) missing.push("Circuito");
-                                                            if (!rack.slots.some(s => s !== null)) missing.push("GPU");
+                                                            if (!rack.slots.some(s => s !== null)) {
+                                                                missing.push(isNftSalaRoom ? "ASIC" : "GPU");
+                                                            }
                                                             const isReady = missing.length === 0;
 
                                                             return (
@@ -1132,7 +1141,7 @@ export const ServerRoom: React.FC<ServerRoomProps> = ({
                                                                             onChange={(id) => {
                                                                                 onSetRackCoin(rack.id, id);
                                                                             }}
-                                                                            coins={miningCoins || []}
+                                                                            coins={rigCoinSelectOptions}
                                                                             noneLabel="Moeda"
                                                                             compact
                                                                             stopPointerPropagation
@@ -1433,7 +1442,7 @@ export const ServerRoom: React.FC<ServerRoomProps> = ({
                                                     <MiningCoinSelect
                                                         value={rack.selectedCoinId || ''}
                                                         onChange={(id) => onSetRackCoin(rack.id, id)}
-                                                        coins={miningCoins || []}
+                                                        coins={rigCoinSelectOptions}
                                                         noneLabel="Nenhuma"
                                                         buttonClassName={`rounded p-2 text-sm ${!rack.selectedCoinId ? 'border-amber-500 text-amber-500 font-bold' : 'border-slate-700 text-white'}`}
                                                     />
@@ -1596,7 +1605,7 @@ export const ServerRoom: React.FC<ServerRoomProps> = ({
                                 <MiningCoinSelect
                                     value={roomBulkCoinSelect}
                                     onChange={setRoomBulkCoinSelect}
-                                    coins={miningCoins || []}
+                                    coins={rigCoinSelectOptions}
                                     noneLabel="Nenhuma (desliga rigs sem moeda)"
                                     buttonClassName="rounded p-2"
                                 />

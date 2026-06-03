@@ -1,7 +1,19 @@
 
 import React, { useState } from 'react';
-import { Banknote, PlayCircle, Monitor, Save, Info, ShoppingCart, Ticket, RefreshCw, Trash2, Plus, Users, Gift } from 'lucide-react';
-import { getAdminMonetizationSettings, setMonetizationSettings, getEconomySettings, setEconomySettings as apiSetEconomySettings, getLootBoxes, getUpgrades, getAdminUpgrades, syncMiningCoinLivePricesNow } from '../services/api';
+import { Banknote, PlayCircle, Monitor, Save, Info, ShoppingCart, Ticket, RefreshCw, Trash2, Plus, Users, Gift, CalendarCheck } from 'lucide-react';
+import {
+    getAdminMonetizationSettings,
+    setMonetizationSettings,
+    getEconomySettings,
+    setEconomySettings as apiSetEconomySettings,
+    getLootBoxes,
+    getUpgrades,
+    getAdminUpgrades,
+    syncMiningCoinLivePricesNow,
+    getAdminCheckinPremiumPolicy,
+    setAdminCheckinPremiumPolicy,
+    type CheckinPremiumPolicyPayload
+} from '../services/api';
 import { MonetizationSettings, EconomySettings, PromoCode, LootBox, Upgrade, AdminUpgrade } from '../types';
 import { ApplixirConfig } from './monetization/ApplixirConfig';
 import { EzoicConfig } from './monetization/EzoicConfig';
@@ -36,6 +48,11 @@ export const AdminMonetization: React.FC = () => {
     const [bundles, setBundles] = useState<AdminUpgrade[]>([]);
     const [rewardType, setRewardType] = useState<'box' | 'upgrade' | 'bundle'>('box');
     const [newCodeForm, setNewCodeForm] = useState({ lootBoxId: '', upgradeId: '', adminUpgradeId: '', type: 'per_player' as 'per_player' | 'global_once', code: '' });
+    const [checkinPremium, setCheckinPremium] = useState<CheckinPremiumPolicyPayload>({
+        enabled: true,
+        minUsdc: 195,
+        intervalDays: 7
+    });
 
     const loadPromoCodes = async () => {
         try {
@@ -48,15 +65,17 @@ export const AdminMonetization: React.FC = () => {
     React.useEffect(() => {
         const load = async () => {
             try {
-                const [monet, econ, boxes, upgs, bndls] = await Promise.all([
+                const [monet, econ, boxes, upgs, bndls, checkinPol] = await Promise.all([
                     getAdminMonetizationSettings(),
                     getEconomySettings(),
                     getLootBoxes(),
                     getUpgrades(),
-                    getAdminUpgrades()
+                    getAdminUpgrades(),
+                    getAdminCheckinPremiumPolicy()
                 ]);
                 if (monet) setSettings(monet);
                 if (econ) setEconomy(econ);
+                if (checkinPol) setCheckinPremium(checkinPol);
                 if (boxes) setLootBoxes(boxes);
                 if (upgs) setUpgrades(upgs);
                 if (bndls) setBundles(bndls);
@@ -82,6 +101,7 @@ export const AdminMonetization: React.FC = () => {
         try {
             if (subTab === 'economy') {
                 await apiSetEconomySettings(economy);
+                await setAdminCheckinPremiumPolicy(checkinPremium);
             } else if (subTab !== 'promo') {
                 await setMonetizationSettings(settings);
             }
@@ -249,6 +269,67 @@ export const AdminMonetization: React.FC = () => {
                                 >
                                     {syncingLivePrices ? 'Sincronizando preços...' : 'Atualizar preços agora'}
                                 </button>
+                            </div>
+
+                            <div className="p-5 rounded-xl border border-sky-900/40 bg-sky-950/20 space-y-4">
+                                <div className="flex items-center gap-2">
+                                    <CalendarCheck className="text-sky-400" size={20} />
+                                    <div>
+                                        <h4 className="text-xs font-bold uppercase tracking-widest text-sky-300">
+                                            Check-in premium (passes ≥ USDC)
+                                        </h4>
+                                        <p className="text-[11px] text-slate-400 mt-0.5">
+                                            Retroativo: quem já comprou pacote na loja Upgrades com preço ≥ limite entra no check-in
+                                            a cada N dias (vitalício).
+                                        </p>
+                                    </div>
+                                </div>
+                                <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={checkinPremium.enabled}
+                                        onChange={(e) => setCheckinPremium((p) => ({ ...p, enabled: e.target.checked }))}
+                                    />
+                                    Regra activa
+                                </label>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-lg">
+                                    <div>
+                                        <label className="block text-[10px] text-slate-500 uppercase font-bold mb-1">
+                                            Preço mínimo (USDC)
+                                        </label>
+                                        <input
+                                            type="number"
+                                            min={0}
+                                            step={1}
+                                            className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs text-white"
+                                            value={checkinPremium.minUsdc}
+                                            onChange={(e) =>
+                                                setCheckinPremium((p) => ({
+                                                    ...p,
+                                                    minUsdc: Math.max(0, Number(e.target.value) || 0)
+                                                }))
+                                            }
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] text-slate-500 uppercase font-bold mb-1">
+                                            Dias entre check-ins
+                                        </label>
+                                        <input
+                                            type="number"
+                                            min={1}
+                                            step={1}
+                                            className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs text-white"
+                                            value={checkinPremium.intervalDays}
+                                            onChange={(e) =>
+                                                setCheckinPremium((p) => ({
+                                                    ...p,
+                                                    intervalDays: Math.max(1, Math.floor(Number(e.target.value) || 7))
+                                                }))
+                                            }
+                                        />
+                                    </div>
+                                </div>
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

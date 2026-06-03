@@ -1,5 +1,5 @@
 import { prisma } from '../config/prisma.js';
-import { isCheckinFrozenAtMs } from '../modules/checkin/checkin.service.js';
+import { isCheckinFrozenForUser } from '../modules/checkin/checkin.service.js';
 import { normalizePlacedRackRoomId } from '../modules/batteries/batteries.validation.js';
 import {
   listSlotMiningCredits,
@@ -157,7 +157,7 @@ export async function computePlayerGameHeaderSnapshot(userId: number): Promise<P
   const { mining: upgradesMining } = await loadUpgradesCatalogMaps();
 
   const lastCheckinAtMs = gs.last_checkin_at_ms != null ? Number(gs.last_checkin_at_ms) : null;
-  const checkinFrozen = isCheckinFrozenAtMs(lastCheckinAtMs, Date.now());
+  const checkinFrozen = await isCheckinFrozenForUser(userId, lastCheckinAtMs, Date.now());
 
   const racksRows = checkinFrozen
     ? []

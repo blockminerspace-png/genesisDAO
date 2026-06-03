@@ -162,6 +162,7 @@ model mining_coins {
   is_active          Int
   target_daily_usd   Float?  @default(0)
   show_in_exchange   Int?    @default(1)
+  nft_room_only      Int     @default(0)
 
   @@map("mining_coins")
 }
@@ -268,6 +269,36 @@ model system_news {
   created_at BigInt
 
   @@map("system_news")
+}
+
+model in_app_announcements {
+  id          String  @id
+  title       String
+  message     String
+  link        String?
+  is_active   Int     @default(1)
+  priority    Int     @default(0)
+  starts_at   BigInt?
+  ends_at     BigInt?
+  created_at  BigInt
+  created_by  Int?
+
+  reads in_app_announcement_reads[]
+
+  @@index([is_active, created_at], map: "idx_in_app_announcements_active_created")
+  @@map("in_app_announcements")
+}
+
+model in_app_announcement_reads {
+  user_id          Int
+  announcement_id  String
+  read_at          BigInt
+
+  announcement in_app_announcements @relation(fields: [announcement_id], references: [id], onDelete: Cascade)
+
+  @@id([user_id, announcement_id])
+  @@index([user_id], map: "idx_in_app_announcement_reads_user_id")
+  @@map("in_app_announcement_reads")
 }
 
 model season_passes {

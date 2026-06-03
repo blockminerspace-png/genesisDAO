@@ -62,7 +62,7 @@ export function registerAdminMiningDistributionRoutes(
       const data = await getDistributionOverview(customFrom, customTo);
       res.json(data);
     } catch (e) {
-      sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e);
+      sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e, 'Erro ao carregar distribuição de mineração.');
     }
   });
 
@@ -75,7 +75,7 @@ export function registerAdminMiningDistributionRoutes(
       const data = await getDistributionByCoin(range.fromMs, range.toMs);
       res.json(data);
     } catch (e) {
-      sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e);
+      sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e, 'Erro ao carregar distribuição de mineração.');
     }
   });
 
@@ -90,7 +90,7 @@ export function registerAdminMiningDistributionRoutes(
       const data = await getDistributionTimeline(range.fromMs, range.toMs, bucket, coinId || undefined);
       res.json(data);
     } catch (e) {
-      sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e);
+      sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e, 'Erro ao carregar distribuição de mineração.');
     }
   });
 
@@ -125,7 +125,7 @@ export function registerAdminMiningDistributionRoutes(
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes('Intervalo')) return res.status(400).json({ error: msg });
-      sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e);
+      sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e, 'Erro ao carregar distribuição de mineração.');
     }
   });
 
@@ -176,7 +176,7 @@ export function registerAdminMiningDistributionRoutes(
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes('Intervalo')) return res.status(400).json({ error: msg });
-        sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e);
+        sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e, 'Erro ao carregar distribuição de mineração.');
       }
     }
   );
@@ -199,7 +199,7 @@ export function registerAdminMiningDistributionRoutes(
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes('Intervalo')) return res.status(400).json({ error: msg });
-        sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e);
+        sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e, 'Erro ao carregar distribuição de mineração.');
       }
     }
   );
@@ -234,7 +234,7 @@ export function registerAdminMiningDistributionRoutes(
 
       res.json({ ok: true, ...result });
     } catch (e) {
-      sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e);
+      sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'api', e, 'Erro ao carregar distribuição de mineração.');
     }
   });
 }

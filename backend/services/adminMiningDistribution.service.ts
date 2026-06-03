@@ -688,7 +688,6 @@ export async function getUserMiningDistributionSummary(
   }
 
   const userTotals = await aggregateFromBlockHistory(fromMs, toMs);
-  void rows;
 
   return {
     userId,

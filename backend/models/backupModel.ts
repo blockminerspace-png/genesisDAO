@@ -79,6 +79,8 @@ export const BACKUP_TABLE_NAMES = [
   'loot_boxes',
   'loot_box_items',
   'system_news',
+  'in_app_announcements',
+  'in_app_announcement_reads',
   'season_passes',
   'season_purchases',
   'game_states',

@@ -2,7 +2,6 @@
 import React, { useEffect, useState } from 'react';
 import {
   Upgrade,
-  filterNftRoomExclusiveMiningCoins,
   isAsicMachineUpgrade,
   ASIC_DURATION_UNITS,
   ASIC_DURATION_UNIT_LABELS,
@@ -103,9 +102,20 @@ export const AdminEditor: React.FC<AdminEditorProps> = ({ gameUpgrades, onUpdate
 
     useEffect(() => {
         void getMiningCoins().then((list) => {
-            if (Array.isArray(list)) setMiningCoins(list.filter((c) => c.isActive));
+            if (Array.isArray(list)) {
+                setMiningCoins([...list].sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'pt')));
+            }
         });
     }, []);
+
+    const nftAsicCoinSelectOptions = React.useMemo(() => {
+        const byId = new Map(miningCoins.map((c) => [c.id, c]));
+        const selectedId = itemForm.nftMiningCoinId?.trim();
+        if (selectedId && !byId.has(selectedId)) {
+            return [{ id: selectedId, name: selectedId, symbol: selectedId } as MiningCoin, ...miningCoins];
+        }
+        return miningCoins;
+    }, [miningCoins, itemForm.nftMiningCoinId]);
 
     /**
      * Upload via `multipart/form-data` em `/api/admin/upload-image` — evita o
@@ -457,14 +467,15 @@ export const AdminEditor: React.FC<AdminEditorProps> = ({ gameUpgrades, onUpdate
                                                 className="w-full bg-slate-900 border border-amber-600/40 rounded p-2 text-white text-sm"
                                             >
                                                 <option value="">— Não minera na Sala NFT —</option>
-                                                {filterNftRoomExclusiveMiningCoins(miningCoins).map((c) => (
+                                                {nftAsicCoinSelectOptions.map((c) => (
                                                     <option key={c.id} value={c.id}>
                                                         {c.name} ({c.symbol || c.id})
+                                                        {!c.isActive ? ' — inativa' : ''}
                                                     </option>
                                                 ))}
                                             </select>
                                             <p className="text-[10px] text-slate-500 mt-1">
-                                                Obrigatório para ASICs na Sala dos NFTs. USDT, cbBTC, DAI, GHO e GEMT só minam nesta sala (via ASIC).
+                                                Obrigatório para ASICs na Sala NFT. Ao guardar o catálogo, a moeda escolhida deixa de poder ser farmada em rigs/GPUs normais (só nesta sala, via ASIC).
                                             </p>
                                         </div>
                                         {isAsicMachineUpgrade({

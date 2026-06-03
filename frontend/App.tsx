@@ -49,6 +49,8 @@ import {
   logout as apiLogout,
   getPlayerInventoryMe,
   getPlayerInventoryState,
+  getPendingInAppAnnouncements,
+  dismissInAppAnnouncement,
   type InventoryStackableCategoryApi,
   type ServersRackAuxIntentOk
 } from './services/api';
@@ -69,6 +71,7 @@ import {
 import { useStackSocketStore } from './stores/useStackSocketStore';
 import { RemoteBannerImage } from './components/RemoteBannerImage';
 import { UiNoticeModal, type UiNotice } from './components/UiNoticeModal';
+import { InAppAnnouncementModal, type InAppAnnouncement } from './components/InAppAnnouncementModal';
 import { DailyCheckinBanner } from './components/DailyCheckinBanner';
 import { gpuDupLog } from './utils/gpuDupDebug';
 import { HomePage } from './components/HomePage';
@@ -506,6 +509,37 @@ export default function App() {
     setShowRewardModal(false);
   }, []);
 
+  const refreshPendingAnnouncements = useCallback(async () => {
+    const list = await getPendingInAppAnnouncements();
+    setAnnouncementQueue(
+      list.map((a) => ({
+        id: a.id,
+        title: a.title,
+        message: a.message,
+        link: a.link
+      }))
+    );
+  }, []);
+
+  const currentAnnouncement = announcementQueue[0] ?? null;
+
+  const handleAnnouncementDismiss = useCallback(async () => {
+    const current = announcementQueue[0];
+    if (!current || announcementDismissing) return;
+    setAnnouncementDismissing(true);
+    try {
+      const ok = await dismissInAppAnnouncement(current.id);
+      if (ok) setAnnouncementQueue((prev) => prev.slice(1));
+    } finally {
+      setAnnouncementDismissing(false);
+    }
+  }, [announcementQueue, announcementDismissing]);
+
+  useEffect(() => {
+    if (!user?.id || globalView !== 'game' || user.isImpersonating || showRewardModal) return;
+    void refreshPendingAnnouncements();
+  }, [user?.id, user?.isImpersonating, globalView, showRewardModal, refreshPendingAnnouncements]);
+
   useEffect(() => {
     gameStateRef.current = gameState;
   }, [gameState]);
@@ -657,6 +691,8 @@ export default function App() {
     blackMarketPriceBandPercent: 20
   });
   const [showRewardModal, setShowRewardModal] = useState(false);
+  const [announcementQueue, setAnnouncementQueue] = useState<InAppAnnouncement[]>([]);
+  const [announcementDismissing, setAnnouncementDismissing] = useState(false);
   const [offlineStats, setOfflineStats] = useState<Record<string, number>>({});
   const [pendingRewardSummary, setPendingRewardSummary] = useState<{ id: string, name: string, count: number }[]>([]);
   const [marketRefreshTrigger, setMarketRefreshTrigger] = useState(0);
@@ -1120,6 +1156,8 @@ export default function App() {
     economia: 'Economia',
     hub: 'Hub'
   };
+
+  const GAME_NAV_SECTION_ORDER: readonly GameNavSectionKey[] = ['hub', 'operacao', 'economia'];
 
   const gameNavItems = useMemo<GameNavItem[]>(() => {
     const allowedPages = getAllowedPages();
@@ -1642,6 +1680,7 @@ export default function App() {
   const handleLogout = async () => {
     await apiLogout();
     rackBatteryFromStockCatalogRef.current.clear();
+    setAnnouncementQueue([]);
     setUser(null);
     setGlobalView('home');
     setGameState(INITIAL_STATE);
@@ -2875,7 +2914,7 @@ export default function App() {
               <div className="space-y-2">
                 {globalView === 'game' && user && (
                   <div className="mb-4 space-y-3 border-b border-slate-800/90 pb-4">
-                    {(Object.keys(gameNavSectionLabels) as GameNavSectionKey[]).map((section) => {
+                    {GAME_NAV_SECTION_ORDER.map((section) => {
                       const items = gameNavItems.filter((item) => item.section === section);
                       if (items.length === 0) return null;
                       return (
@@ -3150,7 +3189,7 @@ export default function App() {
                 </div>
                 <div className="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar p-2">
                   <div className="space-y-3">
-                    {(Object.keys(gameNavSectionLabels) as GameNavSectionKey[]).map((section) => {
+                    {GAME_NAV_SECTION_ORDER.map((section) => {
                       const items = gameNavItems.filter((item) => item.section === section);
                       if (items.length === 0) return null;
                       return (
@@ -3534,6 +3573,14 @@ export default function App() {
               coinNames={Object.fromEntries(miningCoins.map(c => [c.id, c.name]))}
             />
           </Suspense>
+        )}
+
+        {!showRewardModal && globalView === 'game' && !user?.isImpersonating && (
+          <InAppAnnouncementModal
+            announcement={currentAnnouncement}
+            onDismiss={() => void handleAnnouncementDismiss()}
+            dismissing={announcementDismissing}
+          />
         )}
 
         <UiNoticeModal

@@ -6,6 +6,7 @@ import { AdminUsers } from './AdminUsers';
 import { AdminEditor } from './AdminEditor';
 import { AdminLootBoxes } from './AdminLootBoxes';
 import { AdminNews } from './AdminNews';
+import { AdminInAppAnnouncements } from './AdminInAppAnnouncements';
 import { AdminWeb3Menu } from './AdminWeb3Menu';
 
 import { getUsers, getSystemNews, getMiningCoins, getAdminUserMap } from '../services/api';
@@ -155,7 +156,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     });
     const [shopsSubtab, setShopsSubtab] = useState<'hardware' | 'blackmarket' | 'layout'>('hardware');
     const [settingsSubtab, setSettingsSubtab] = useState<
-        'pages' | 'navlabels' | 'rigrooms' | 'news' | 'monetization' | 'passes'
+        'pages' | 'navlabels' | 'rigrooms' | 'news' | 'popupAnnouncements' | 'monetization' | 'passes'
     >('pages');
 
     const [seasonPasses, setSeasonPasses] = useState<any[]>([]);
@@ -424,6 +425,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                                     Gerenciar News
                                                 </button>
                                             )}
+                                            {isAllowed('settings:news') && (
+                                                <button
+                                                    onClick={() => setSettingsSubtab('popupAnnouncements')}
+                                                    className={`px-3 py-2 text-xs font-bold rounded border ${settingsSubtab === 'popupAnnouncements' ? 'bg-slate-800 text-white border-slate-700' : 'text-slate-400 hover:text-white border-transparent hover:border-slate-700'}`}
+                                                >
+                                                    Avisos popup
+                                                </button>
+                                            )}
                                             {isAllowed('settings:monetization') && (
                                                 <button
                                                     onClick={() => setSettingsSubtab('monetization')}
@@ -457,6 +466,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                                 accessLevels={accessLevels}
                                                 onUpdateAccessLevels={onUpdateAccessLevels}
                                             />
+                                        )}
+                                        {settingsSubtab === 'popupAnnouncements' && isAllowed('settings:news') && (
+                                            <AdminInAppAnnouncements />
                                         )}
                                         {settingsSubtab === 'monetization' && isAllowed('settings:monetization') && (
                                             <AdminMonetization />

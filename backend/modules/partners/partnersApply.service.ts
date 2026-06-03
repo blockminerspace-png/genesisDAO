@@ -56,7 +56,7 @@ export async function runPartnerYoutubeApplicationSubmit(params: {
 }): Promise<{ id: string }> {
   await assertUserCanApplyForPartner(params.userId);
 
-  const channelName = sanitizePartnerChannelName(params.channelNameRaw);
+  const channelName = sanitizePartnerChannelName(String(params.channelNameRaw ?? ''));
   if (channelName.length < 2) {
     throw new PartnerYoutubeApplyError('Nome do canal inválido (mín. 2 caracteres).', 400, 'VALIDATION');
   }
@@ -75,7 +75,7 @@ export async function runPartnerYoutubeApplicationSubmit(params: {
     throw new PartnerYoutubeApplyError('Envia uma foto/capa do canal (PNG, JPG ou WEBP).', 400, 'AVATAR_REQUIRED');
   }
 
-  const description = sanitizePartnerChannelDescription(params.descriptionRaw);
+  const description = sanitizePartnerChannelDescription(String(params.descriptionRaw ?? ''));
   const id = crypto.randomUUID();
   const now = Date.now();
 

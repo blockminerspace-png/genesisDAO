@@ -12,10 +12,13 @@
 
 import type { Express, Request, RequestHandler, Response } from 'express';
 import { sendInternalErrorSafeMessageOrPrisma } from '../../utils/apiErrorResponse.js';
+import { CHECKIN_PREMIUM_COOLDOWN_CODE, CheckinPremiumCooldownError } from './checkinErrors.js';
 import { getCheckinStatus, performCheckin } from './checkin.service.js';
+import { loadCheckinPremiumPolicy, saveCheckinPremiumPolicy } from './checkinPremiumPolicy.js';
 
 export type CheckinModuleDeps = {
   authenticateToken: RequestHandler;
+  isAdmin: RequestHandler;
 };
 
 function uidNum(req: Request): number | null {
@@ -25,8 +28,58 @@ function uidNum(req: Request): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function formatPremiumCooldownMessage(nextMs: number, intervalDays: number): string {
+  const left = Math.max(0, nextMs - Date.now());
+  const days = Math.floor(left / (24 * 60 * 60 * 1000));
+  const hours = Math.floor((left % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+  const every = intervalDays >= 1 ? intervalDays : 7;
+  if (days > 0) {
+    return `Compradores de passe premium (≥ limite USDC) só podem fazer check-in a cada ${every} dias. Próximo em ~${days}d ${hours}h.`;
+  }
+  if (hours > 0) {
+    return `Compradores de passe premium (≥ limite USDC) só podem fazer check-in a cada ${every} dias. Próximo em ~${hours}h.`;
+  }
+  const mins = Math.max(1, Math.ceil(left / 60000));
+  return `Compradores de passe premium (≥ limite USDC) só podem fazer check-in a cada ${every} dias. Próximo em ~${mins} min.`;
+}
+
 export function registerCheckinModuleRoutes(app: Express, deps: CheckinModuleDeps): void {
-  const { authenticateToken } = deps;
+  const { authenticateToken, isAdmin } = deps;
+
+  app.get('/api/admin/checkin-premium-policy', isAdmin, async (_req: Request, res: Response) => {
+    try {
+      const policy = await loadCheckinPremiumPolicy();
+      return res.json({ ok: true, ...policy });
+    } catch (e) {
+      console.error('[admin/checkin-premium-policy GET]', e);
+      sendInternalErrorSafeMessageOrPrisma(
+        res,
+        'GET /api/admin/checkin-premium-policy',
+        e,
+        'Não foi possível ler a política de check-in premium.'
+      );
+    }
+  });
+
+  app.post('/api/admin/checkin-premium-policy', isAdmin, async (req: Request, res: Response) => {
+    try {
+      const body = req.body || {};
+      const policy = await saveCheckinPremiumPolicy({
+        enabled: body.enabled !== undefined ? body.enabled !== false && body.enabled !== 0 : undefined,
+        minUsdc: body.minUsdc ?? body.min_usdc,
+        intervalDays: body.intervalDays ?? body.interval_days
+      });
+      return res.json({ ok: true, ...policy });
+    } catch (e) {
+      console.error('[admin/checkin-premium-policy POST]', e);
+      sendInternalErrorSafeMessageOrPrisma(
+        res,
+        'POST /api/admin/checkin-premium-policy',
+        e,
+        'Não foi possível guardar a política de check-in premium.'
+      );
+    }
+  });
 
   app.get('/api/checkin/status', authenticateToken, async (req: Request, res: Response) => {
     const userId = uidNum(req);
@@ -61,6 +114,13 @@ export function registerCheckinModuleRoutes(app: Express, deps: CheckinModuleDep
         return res.status(404).json({
           error: 'Estado de jogo não encontrado para este utilizador.',
           code: 'GAME_STATE_NOT_FOUND'
+        });
+      }
+      if (e instanceof CheckinPremiumCooldownError) {
+        return res.status(429).json({
+          error: formatPremiumCooldownMessage(e.nextCheckinAllowedMs, e.intervalDays),
+          code: CHECKIN_PREMIUM_COOLDOWN_CODE,
+          nextCheckinAllowedMs: e.nextCheckinAllowedMs
         });
       }
       console.error('[checkin/perform]', e);

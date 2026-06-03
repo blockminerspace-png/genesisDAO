@@ -24,6 +24,17 @@
 import crypto from 'node:crypto';
 import type { PoolClient } from 'pg';
 import db from '../../config/db.js';
+import {
+  canPerformPremiumCheckinNow,
+  isPremiumWithinActiveWindow,
+  nextPremiumCheckinAllowedMs,
+  premiumIntervalMs,
+  resolveUserCheckinPremiumContext,
+  type UserCheckinPremiumContext
+} from './checkinPremiumPolicy.js';
+import { CheckinPremiumCooldownError } from './checkinErrors.js';
+
+export { CHECKIN_PREMIUM_COOLDOWN_CODE, CheckinPremiumCooldownError } from './checkinErrors.js';
 
 export const CHECKIN_TIMEZONE = 'America/Sao_Paulo';
 export const CHECKIN_REWARD_ITEM_ID = 'battery_estelar';
@@ -54,6 +65,11 @@ export type CheckinStatus = {
   /** Posição relativa dentro do ciclo de 7 dias (0..7). */
   rewardCycleProgress: number;
   rewardCycleSize: number;
+  premiumWeeklyCheckin: boolean;
+  premiumIntervalDays: number;
+  premiumMinUsdc: number;
+  nextCheckinAllowedMs: number | null;
+  canCheckinNow: boolean;
 };
 
 export type CheckinResult = CheckinStatus & {
@@ -239,12 +255,40 @@ function lastCheckinAtMsNumber(raw: unknown): number | null {
   return Number.isFinite(v) && v > 0 ? v : null;
 }
 
-function buildStatus(
+function premiumFields(
+  premiumCtx: UserCheckinPremiumContext,
+  lastCheckinAtMs: number | null,
+  nowMs: number
+): Pick<
+  CheckinStatus,
+  | 'premiumWeeklyCheckin'
+  | 'premiumIntervalDays'
+  | 'premiumMinUsdc'
+  | 'nextCheckinAllowedMs'
+  | 'canCheckinNow'
+> {
+  const { policy, premiumWeeklyCheckin } = premiumCtx;
+  const nextAllowed = premiumWeeklyCheckin
+    ? nextPremiumCheckinAllowedMs(lastCheckinAtMs, policy.intervalDays)
+    : null;
+  return {
+    premiumWeeklyCheckin,
+    premiumIntervalDays: policy.intervalDays,
+    premiumMinUsdc: policy.minUsdc,
+    nextCheckinAllowedMs: nextAllowed,
+    canCheckinNow: premiumWeeklyCheckin
+      ? canPerformPremiumCheckinNow(lastCheckinAtMs, nowMs, policy.intervalDays)
+      : true
+  };
+}
+
+function buildStatusDaily(
   today: string,
   lastCheckinDay: string | null,
   lastCheckinAtMs: number | null,
   streak: number,
-  nowMs: number
+  nowMs: number,
+  premiumCtx: UserCheckinPremiumContext
 ): CheckinStatus {
   const nowPeriodStart = brtCheckinPeriodStartMs(nowMs);
   const lastPeriodStart =
@@ -272,25 +316,84 @@ function buildStatus(
     windowRemainingMs,
     windowDurationMs: CHECKIN_WINDOW_MS,
     rewardCycleProgress: cycleProgress,
-    rewardCycleSize: cycleSize
+    rewardCycleSize: cycleSize,
+    ...premiumFields(premiumCtx, lastCheckinAtMs, nowMs)
   };
+}
+
+function buildStatusPremium(
+  today: string,
+  lastCheckinDay: string | null,
+  lastCheckinAtMs: number | null,
+  streak: number,
+  nowMs: number,
+  premiumCtx: UserCheckinPremiumContext
+): CheckinStatus {
+  const { policy } = premiumCtx;
+  const intervalMs = premiumIntervalMs(policy.intervalDays);
+  const withinWindow = isPremiumWithinActiveWindow(lastCheckinAtMs, nowMs, policy.intervalDays);
+  const frozen = !withinWindow;
+  const nextResetMs =
+    lastCheckinAtMs != null
+      ? lastCheckinAtMs + intervalMs
+      : nowMs + intervalMs;
+  const windowRemainingMs = withinWindow ? Math.max(0, nextResetMs - nowMs) : 0;
+  const canCheckinNow = canPerformPremiumCheckinNow(lastCheckinAtMs, nowMs, policy.intervalDays);
+  const cycleSize = CHECKIN_REWARD_EVERY_DAYS;
+  const cycleProgress = streak === 0 ? 0 : streak % cycleSize === 0 ? cycleSize : streak % cycleSize;
+  return {
+    today,
+    timezone: CHECKIN_TIMEZONE,
+    lastCheckinDay,
+    lastCheckinAtMs,
+    streak,
+    todayCheckedIn: withinWindow,
+    canEarlyCheckin: false,
+    frozen,
+    nextResetMs,
+    windowRemainingMs,
+    windowDurationMs: intervalMs,
+    rewardCycleProgress: cycleProgress,
+    rewardCycleSize: cycleSize,
+    premiumWeeklyCheckin: true,
+    premiumIntervalDays: policy.intervalDays,
+    premiumMinUsdc: policy.minUsdc,
+    nextCheckinAllowedMs: nextPremiumCheckinAllowedMs(lastCheckinAtMs, policy.intervalDays),
+    canCheckinNow
+  };
+}
+
+function buildStatus(
+  today: string,
+  lastCheckinDay: string | null,
+  lastCheckinAtMs: number | null,
+  streak: number,
+  nowMs: number,
+  premiumCtx: UserCheckinPremiumContext
+): CheckinStatus {
+  if (premiumCtx.premiumWeeklyCheckin) {
+    return buildStatusPremium(today, lastCheckinDay, lastCheckinAtMs, streak, nowMs, premiumCtx);
+  }
+  return buildStatusDaily(today, lastCheckinDay, lastCheckinAtMs, streak, nowMs, premiumCtx);
 }
 
 /** Snapshot do check-in (para `GET /api/checkin/status`). */
 export async function getCheckinStatus(userId: number, nowMs: number = Date.now()): Promise<CheckinStatus> {
   const today = brtDayFromMs(nowMs);
+  const premiumCtx = await resolveUserCheckinPremiumContext(userId);
   const client = await db.connect();
   try {
     const row = await readGameStateForCheckin(client, userId, false);
     if (!row) {
-      return buildStatus(today, null, null, 0, nowMs);
+      return buildStatus(today, null, null, 0, nowMs, premiumCtx);
     }
     return buildStatus(
       today,
       row.last_checkin_day,
       lastCheckinAtMsNumber(row.last_checkin_at_ms),
       streakNumber(row.checkin_streak),
-      nowMs
+      nowMs,
+      premiumCtx
     );
   } finally {
     client.release();
@@ -303,6 +406,7 @@ export async function getCheckinStatus(userId: number, nowMs: number = Date.now(
  */
 export async function performCheckin(userId: number, nowMs: number = Date.now()): Promise<CheckinResult> {
   const today = brtDayFromMs(nowMs);
+  const premiumCtx = await resolveUserCheckinPremiumContext(userId);
 
   const client = await db.connect();
   try {
@@ -335,12 +439,63 @@ export async function performCheckin(userId: number, nowMs: number = Date.now())
     const prevAtMs = lastCheckinAtMsNumber(row.last_checkin_at_ms);
     const prevDay = row.last_checkin_day;
 
+    if (premiumCtx.premiumWeeklyCheckin) {
+      if (prevAtMs != null && !canPerformPremiumCheckinNow(prevAtMs, nowMs, premiumCtx.policy.intervalDays)) {
+        await client.query('ROLLBACK');
+        const nextAllowed = nextPremiumCheckinAllowedMs(prevAtMs, premiumCtx.policy.intervalDays)!;
+        throw new CheckinPremiumCooldownError(nextAllowed, premiumCtx.policy.intervalDays);
+      }
+
+      const intervalMs = premiumIntervalMs(premiumCtx.policy.intervalDays);
+      let nextStreak: number;
+      let streakReset = false;
+      if (prevAtMs != null && nowMs - prevAtMs <= intervalMs + 24 * 60 * 60 * 1000) {
+        nextStreak = prevStreak + 1;
+      } else {
+        nextStreak = 1;
+        streakReset = prevStreak !== 0 || prevAtMs !== null;
+      }
+
+      const checkinAtMs = nowMs;
+      const checkinDay = brtDayFromMs(checkinAtMs);
+      const grantsReward = nextStreak > 0 && nextStreak % CHECKIN_REWARD_EVERY_DAYS === 0;
+
+      await client.query(
+        `UPDATE game_states
+            SET last_checkin_day = $2,
+                last_checkin_at_ms = $3,
+                checkin_streak = $4
+          WHERE user_id = $1`,
+        [userId, checkinDay, checkinAtMs, nextStreak]
+      );
+
+      let rewardGranted = 0;
+      if (grantsReward) {
+        const newId = crypto.randomUUID();
+        const ins = await client.query(
+          `INSERT INTO stored_batteries (id, user_id, item_id, display_name, image_url)
+           SELECT $1, $2, u.id, u.name, NULLIF(BTRIM(COALESCE(u.image::text, '')), '')
+             FROM upgrades u
+            WHERE u.id = $3
+              AND COALESCE(u.is_active, 1) <> 0
+              AND (lower(COALESCE(u.type, '')) = 'battery' OR lower(COALESCE(u.category, '')) = 'battery')
+            LIMIT 1`,
+          [newId, userId, CHECKIN_REWARD_ITEM_ID]
+        );
+        rewardGranted = ins.rowCount ?? 0;
+      }
+
+      await client.query('COMMIT');
+      const status = buildStatus(checkinDay, checkinDay, checkinAtMs, nextStreak, nowMs, premiumCtx);
+      return { ...status, performed: true, rewardGranted, streakReset };
+    }
+
     const nowPeriod = brtCheckinPeriodStartMs(nowMs);
     const prevPeriod = prevAtMs == null ? null : brtCheckinPeriodStartMs(prevAtMs);
 
     if (prevAtMs != null && isEarlyCheckinTimestamp(prevAtMs, nowMs)) {
       await client.query('ROLLBACK');
-      const status = buildStatus(today, prevDay, prevAtMs, prevStreak, nowMs);
+      const status = buildStatus(today, prevDay, prevAtMs, prevStreak, nowMs, premiumCtx);
       return { ...status, performed: false, rewardGranted: 0, streakReset: false };
     }
 
@@ -352,7 +507,7 @@ export async function performCheckin(userId: number, nowMs: number = Date.now())
       const nextEnd = nextCheckinPeriodEndMs(nowPeriod);
       if (nowMs < nextEnd - CHECKIN_EARLY_WINDOW_MS) {
         await client.query('ROLLBACK');
-        const status = buildStatus(today, prevDay, prevAtMs, prevStreak, nowMs);
+        const status = buildStatus(today, prevDay, prevAtMs, prevStreak, nowMs, premiumCtx);
         return { ...status, performed: false, rewardGranted: 0, streakReset: false };
       }
       checkinAtMs = nextPeriodStart;
@@ -398,7 +553,7 @@ export async function performCheckin(userId: number, nowMs: number = Date.now())
 
     await client.query('COMMIT');
 
-    const status = buildStatus(checkinDay, checkinDay, checkinAtMs, nextStreak, nowMs);
+    const status = buildStatus(checkinDay, checkinDay, checkinAtMs, nextStreak, nowMs, premiumCtx);
     return { ...status, performed: true, rewardGranted, streakReset };
   } catch (e) {
     try {
@@ -416,6 +571,18 @@ export async function performCheckin(userId: number, nowMs: number = Date.now())
  * Helper barato (single read) para o cron de mineração descobrir se o
  * utilizador está congelado neste tick. Não usa lock — leitura best-effort.
  */
+export async function isCheckinFrozenForUser(
+  userId: number,
+  lastCheckinAtMs: number | null | undefined,
+  nowMs: number = Date.now()
+): Promise<boolean> {
+  const premiumCtx = await resolveUserCheckinPremiumContext(userId);
+  if (premiumCtx.premiumWeeklyCheckin) {
+    return !isPremiumWithinActiveWindow(lastCheckinAtMs, nowMs, premiumCtx.policy.intervalDays);
+  }
+  return isCheckinFrozenAtMs(lastCheckinAtMs, nowMs);
+}
+
 export async function isUserFrozenForToday(userId: number, nowMs: number = Date.now()): Promise<boolean> {
   const client = await db.connect();
   try {
@@ -424,13 +591,13 @@ export async function isUserFrozenForToday(userId: number, nowMs: number = Date.
       [userId]
     );
     if (!r.rowCount) return true;
-    return isCheckinFrozenAtMs(lastCheckinAtMsNumber(r.rows[0].last_checkin_at_ms), nowMs);
+    return isCheckinFrozenForUser(userId, lastCheckinAtMsNumber(r.rows[0].last_checkin_at_ms), nowMs);
   } finally {
     client.release();
   }
 }
 
-/** Versão pura para reutilização em readers que já têm o valor lido (cron, snapshots). */
+/** Versão pura para reutilização em readers que já têm o valor lido (cron, snapshots) — ciclo diário BRT. */
 export function isCheckinFrozenAtMs(lastCheckinAtMs: number | null | undefined, nowMs: number): boolean {
   return !isWithinActiveCheckinWindow(lastCheckinAtMs, nowMs);
 }

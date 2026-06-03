@@ -182,9 +182,10 @@ export function normalizeMiningCoinSymbolKey(symbol: string | null | undefined):
 }
 
 export function isNftRoomExclusiveMiningCoin(
-  coin: Pick<MiningCoin, 'id' | 'symbol'> | string | null | undefined
+  coin: Pick<MiningCoin, 'id' | 'symbol' | 'nftRoomOnly'> | string | null | undefined
 ): boolean {
   if (coin == null) return false;
+  if (typeof coin === 'object' && Boolean(coin.nftRoomOnly)) return true;
   if (typeof coin === 'string') {
     const low = coin.trim().toLowerCase();
     if (!low) return false;
@@ -534,6 +535,8 @@ export interface MiningCoin {
   minProportion: number; // minimum proportion based on miner power
   usdcRate: number; // value per USDC
   isActive: boolean; // if false, visible but not selectable
+  /** Marcada na BD: só pode ser mineirada na Sala NFT (ASIC). Persiste após renomear. */
+  nftRoomOnly?: boolean;
   showInExchange: boolean;
   realNetworkHashrate?: number;
   targetDailyUSD?: number;
