@@ -105,9 +105,135 @@ function formatStockDelta(meta: Record<string, unknown>): ActivityEventDisplay {
   };
 }
 
-function formatRackEvent(action: string, meta: Record<string, unknown>): ActivityEventDisplay {
-  const rackId = str(meta.rackId);
+const RACK_FIELD_PT: Record<string, string> = {
+  chassis: 'chassi',
+  wiring: 'cablagem',
+  battery: 'bateria',
+  power: 'energia (ligar/desligar)',
+  coin: 'moeda de mineração',
+  room: 'sala',
+  slot: 'posição na sala',
+  miners: 'GPUs / ASICs',
+  multipliers: 'multiplicadores'
+};
+
+const AUX_KIND_PT: Record<string, string> = {
+  battery: 'bateria',
+  wiring: 'cablagem',
+  multiplier: 'multiplicador'
+};
+
+function rackContextLine(meta: Record<string, unknown>): string | undefined {
   const room = str(meta.room || meta.roomId);
+  const parts: string[] = [];
+  if (room) parts.push(`sala ${room}`);
+  if (parts.length > 0) return parts.join(' · ');
+  const rackId = str(meta.rackId);
+  if (rackId) return `Ref. interna da rig: ${rackId.slice(0, 8)}…`;
+  return undefined;
+}
+
+function humanizeRackChanged(meta: Record<string, unknown>): string[] {
+  const raw = Array.isArray(meta.changed)
+    ? (meta.changed as string[])
+    : str(meta.changed)
+      ? [str(meta.changed)]
+      : [];
+  return raw.map((f) => RACK_FIELD_PT[f] || f.replace(/_/g, ' '));
+}
+
+function formatRackAuxIntent(meta: Record<string, unknown>): ActivityEventDisplay {
+  const scope = str(meta.scope);
+  const ok = meta.ok !== false;
+  const ctx = rackContextLine(meta);
+  const lines: string[] = [];
+  if (ctx) lines.push(ctx);
+
+  if (scope === 'srv_place_rack') {
+    return {
+      category: 'rigs',
+      severity: ok ? 'success' : 'warning',
+      title: 'Rig colocada na sala',
+      summary: ok ? 'Colocou uma rig no datacenter' : 'Tentativa de colocar rig falhou',
+      lines: lines.length ? lines : undefined,
+      technicalMeta: meta
+    };
+  }
+  if (/^srv_remove_rack:/.test(scope)) {
+    return {
+      category: 'rigs',
+      severity: ok ? 'warning' : 'danger',
+      title: 'Rig removida da sala',
+      summary: ok ? 'Retirou a rig e devolveu equipamento ao stock' : 'Falha ao remover rig',
+      lines: lines.length ? lines : undefined,
+      technicalMeta: meta
+    };
+  }
+  const minerEquip = /^rack_miner_equip:[^:]+:(\d+)$/.exec(scope);
+  if (minerEquip) {
+    const slot = minerEquip[1];
+    return {
+      category: 'rigs',
+      severity: ok ? 'success' : 'warning',
+      title: 'GPU / ASIC montado',
+      summary: ok ? `Equipou miner no slot ${slot}` : `Falha ao equipar miner no slot ${slot}`,
+      lines: lines.length ? lines : undefined,
+      technicalMeta: meta
+    };
+  }
+  const minerUnequip = /^rack_miner_unequip:[^:]+:(\d+)$/.exec(scope);
+  if (minerUnequip) {
+    const slot = minerUnequip[1];
+    return {
+      category: 'rigs',
+      severity: ok ? 'info' : 'warning',
+      title: 'GPU / ASIC desmontado',
+      summary: ok ? `Removeu miner do slot ${slot}` : `Falha ao remover miner do slot ${slot}`,
+      lines: lines.length ? lines : undefined,
+      technicalMeta: meta
+    };
+  }
+  const auxEquip = /^rack_aux_equip:[^:]+:(\w+)$/.exec(scope);
+  if (auxEquip) {
+    const kind = AUX_KIND_PT[auxEquip[1]] || auxEquip[1];
+    return {
+      category: 'rigs',
+      severity: ok ? 'success' : 'warning',
+      title: `Montou ${kind}`,
+      summary: ok ? `Equipou ${kind} na rig` : `Falha ao equipar ${kind}`,
+      lines: lines.length ? lines : undefined,
+      technicalMeta: meta
+    };
+  }
+  const auxUnequip = /^rack_aux_unequip:[^:]+:(\w+)$/.exec(scope);
+  if (auxUnequip) {
+    const kind = AUX_KIND_PT[auxUnequip[1]] || auxUnequip[1];
+    return {
+      category: 'rigs',
+      severity: ok ? 'info' : 'warning',
+      title: `Desmontou ${kind}`,
+      summary: ok ? `Removeu ${kind} da rig` : `Falha ao remover ${kind}`,
+      lines: lines.length ? lines : undefined,
+      technicalMeta: meta
+    };
+  }
+  return {
+    category: 'rigs',
+    severity: 'info',
+    title: 'Alteração na rig',
+    summary: scope
+      ? `Operação na sala de servidores (${scope.split(':')[0].replace(/_/g, ' ')})`
+      : 'Ação na sala de servidores',
+    lines: lines.length ? lines : undefined,
+    technicalMeta: meta
+  };
+}
+
+function formatRackEvent(action: string, meta: Record<string, unknown>): ActivityEventDisplay {
+  const room = str(meta.room || meta.roomId);
+  if (action === 'rack_aux_intent') {
+    return formatRackAuxIntent(meta);
+  }
   if (action === 'rack_dismantle') {
     const parts = metaObj(meta.parts);
     const miners = Array.isArray(parts.miners) ? parts.miners.length : 0;
@@ -115,7 +241,7 @@ function formatRackEvent(action: string, meta: Record<string, unknown>): Activit
       category: 'rigs',
       severity: 'warning',
       title: 'Rig desmontada',
-      summary: `Rig ${rackId.slice(0, 8)}…${room ? ` · sala ${room}` : ''}`,
+      summary: `${str(meta.chassisName) || 'Rig'} desmontada${room ? ` · sala ${room}` : ''}`,
       lines: [
         parts.chassis ? `Chassis: ${str(meta.chassisName) || parts.chassis}` : '',
         miners > 0 ? `${miners} miner(s) removido(s)` : ''
@@ -128,20 +254,19 @@ function formatRackEvent(action: string, meta: Record<string, unknown>): Activit
       category: 'rigs',
       severity: 'success',
       title: 'Rig colocada',
-      summary: `${str(meta.itemName) || str(meta.itemId)} · rig ${rackId.slice(0, 8)}…${room ? ` · ${room}` : ''}`,
+      summary: `${str(meta.itemName) || str(meta.itemId) || 'Rig'} colocada${room ? ` · sala ${room}` : ''}`,
       technicalMeta: meta
     };
   }
   if (action === 'mining_rack_update') {
-    const changed = Array.isArray(meta.changed) ? (meta.changed as string[]).join(', ') : str(meta.changed);
+    const parts = humanizeRackChanged(meta);
+    const ctx = rackContextLine(meta);
     return {
       category: 'rigs',
       severity: 'info',
       title: 'Rig atualizada',
-      summary: `Rig ${rackId.slice(0, 8)}… — alterado: ${changed || 'configuração'}`,
-      lines: Array.isArray(meta.changeDetail)
-        ? (meta.changeDetail as string[]).slice(0, 6)
-        : undefined,
+      summary: parts.length > 0 ? `Alterou: ${parts.join(', ')}` : 'Guardou configuração da rig',
+      lines: ctx ? [ctx] : undefined,
       technicalMeta: meta
     };
   }
