@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { SystemNews, User, Upgrade, AccessLevel, LootBox, RigRoom } from '../types';
-import { Activity, Users, Layers, Gift, Newspaper, Shield, ChevronLeft, ChevronRight, Wallet, Cog, DollarSign, Store, ChevronDown, ChevronUp, MessageCircle, Clapperboard } from 'lucide-react';
+import { Activity, Users, Layers, Gift, Newspaper, Shield, ChevronLeft, ChevronRight, Wallet, Cog, DollarSign, Store, ChevronDown, ChevronUp, MessageCircle, Clapperboard, Bell } from 'lucide-react';
 import { AdminDashboard } from './AdminDashboard';
 import { AdminUsers } from './AdminUsers';
 import { AdminEditor } from './AdminEditor';
@@ -66,7 +66,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         | 'transparency'
         | 'support'
         | 'partners'
-        | 'emailmarketing';
+        | 'emailmarketing'
+        | 'popupAnnouncements';
 
     const ADMIN_URL_TAB_SET = new Set<AdminTab>([
         'dashboard',
@@ -75,6 +76,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         'lootboxes',
         'web3',
         'settings',
+        'popupAnnouncements',
         'reports',
         'transparency',
         'games',
@@ -131,19 +133,33 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         return () => window.removeEventListener('popstate', onPopState);
     }, [activeTab]);
 
+    const adminTabAllowed = useCallback(
+        (tab: AdminTab, perms: string[] | null | undefined): boolean => {
+            if (!user) return false;
+            if (user.isSuperAdmin) return true;
+            if (perms === null || perms === undefined) return true;
+            if (!Array.isArray(perms)) return true;
+            const mapped = tab === 'popupAnnouncements' ? 'settings:news' : tab;
+            if (perms.includes(mapped) || perms.includes(tab)) return true;
+            const colon = mapped.indexOf(':');
+            if (colon > 0 && perms.includes(mapped.slice(0, colon))) return true;
+            if (!mapped.includes(':')) return perms.some((p) => p.startsWith(`${mapped}:`));
+            return false;
+        },
+        [user]
+    );
+
     // Security check: If activeTab is restricted, reset to dashboard or first allowed
     useEffect(() => {
         if (!user) return;
         if (user.isSuperAdmin) return;
         if (user.adminPermissions === null || user.adminPermissions === undefined) return;
         if (!Array.isArray(user.adminPermissions)) return;
-        if (!user.adminPermissions.includes(activeTab)) {
-            // If current tab not allowed, find first allowed or default to dashboard
-            const allowed = user.adminPermissions;
-            if (allowed.length > 0) setActiveTab(allowed[0] as any);
-            else setActiveTab('dashboard'); // fallback
-        }
-    }, [user, activeTab]);
+        if (adminTabAllowed(activeTab, user.adminPermissions)) return;
+        const allowed = user.adminPermissions;
+        if (allowed.length > 0) setActiveTab(allowed[0] as AdminTab);
+        else setActiveTab('dashboard');
+    }, [user, activeTab, adminTabAllowed]);
 
     const [newsList, setNewsList] = useState<SystemNews[]>([]);
     const [userMap, setUserMap] = useState<Array<{ id: number; username: string; polygonWallet?: string; email: string }>>([]);
@@ -278,6 +294,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         { id: 'lootboxes', icon: <Gift size={18} />, label: 'Caixas' },
                         { id: 'web3', icon: <Wallet size={18} />, label: 'Web3' },
                         { id: 'settings', icon: <Cog size={18} />, label: 'Configurações' },
+                        { id: 'popupAnnouncements', icon: <Bell size={18} />, label: 'Avisos popup' },
                         { id: 'reports', icon: <BarChartIcon size={18} />, label: 'Relatórios' },
                         { id: 'transparency', icon: <Scale size={18} />, label: 'Transparência' },
                         { id: 'games', icon: <Gamepad2 size={18} />, label: 'Games' },
@@ -294,6 +311,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         if (item.id === 'settings') {
                             return (
                                 user.adminPermissions.includes('settings') ||
+                                user.adminPermissions.some((p) => p.startsWith('settings:'))
+                            );
+                        }
+                        if (item.id === 'popupAnnouncements') {
+                            return (
+                                user.adminPermissions.includes('settings') ||
+                                user.adminPermissions.includes('settings:news') ||
                                 user.adminPermissions.some((p) => p.startsWith('settings:'))
                             );
                         }
@@ -421,6 +445,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                 )}
                                 {activeTab === 'web3' && isAllowed('web3') && (
                                     <AdminWeb3Menu currentUser={user ?? undefined} />
+                                )}
+
+                                {activeTab === 'popupAnnouncements' && isAllowed('settings:news') && (
+                                    <AdminInAppAnnouncements />
                                 )}
 
                                 {activeTab === 'settings' && isAllowed('settings') && (

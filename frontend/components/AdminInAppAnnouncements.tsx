@@ -127,16 +127,33 @@ export const AdminInAppAnnouncements: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3 border-b border-slate-700 pb-4">
-        <Bell className="text-amber-400" size={22} />
-        <div>
-          <h2 className="text-lg font-bold text-white">Avisos popup (ler uma vez)</h2>
-          <p className="text-xs text-slate-400">
-            Aparecem após login para jogadores que ainda não marcaram como lidos. Banners News continuam separados.
-            Quem já fechou o popup (incluindo a tua conta de teste) não volta a ver o mesmo aviso.
-          </p>
+      <div className="sticky top-0 z-10 -mx-1 px-1 py-3 bg-slate-900/95 backdrop-blur border-b border-slate-700 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <Bell className="text-amber-400 shrink-0" size={22} />
+          <div className="min-w-0">
+            <h2 className="text-lg font-bold text-white">Avisos popup</h2>
+            <p className="text-xs text-slate-400 hidden sm:block">
+              Modal após login — uma vez por jogador por aviso.
+            </p>
+          </div>
         </div>
+        <button
+          type="button"
+          onClick={() => {
+            resetForm();
+            document.getElementById('popup-announcement-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
+          className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-5 py-2.5 text-sm font-bold uppercase text-white hover:bg-amber-500 shadow-lg shadow-amber-900/40 shrink-0"
+        >
+          <PlusCircle size={18} />
+          Criar aviso popup
+        </button>
       </div>
+
+      <p className="text-xs text-slate-500 -mt-2">
+        Aparecem após login para quem ainda não fechou. Banners «News» são outra coisa (Configurações → Gerenciar News).
+        Se já fechaste na tua conta, não volta a aparecer — testa noutro utilizador.
+      </p>
 
       {(loadError || saveError) && (
         <div className="rounded-lg border border-amber-700/50 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">
@@ -144,7 +161,7 @@ export const AdminInAppAnnouncements: React.FC = () => {
         </div>
       )}
 
-      <div className="rounded-xl border border-slate-700 bg-slate-900/50 p-4 space-y-3">
+      <div id="popup-announcement-form" className="rounded-xl border-2 border-amber-700/40 bg-slate-900/50 p-4 space-y-3 scroll-mt-24">
         <h3 className="text-xs font-bold uppercase tracking-wide text-slate-400">
           {editingId ? 'Editar aviso' : 'Novo aviso'}
         </h3>
