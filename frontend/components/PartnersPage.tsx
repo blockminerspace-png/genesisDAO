@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  BadgeCheck,
   Clapperboard,
   Loader2,
   Calendar,
   ThumbsUp,
   Youtube,
-  Play
+  Play,
+  Sparkles
 } from 'lucide-react';
 import {
   getPartnersState,
@@ -121,10 +123,13 @@ function PartnerShowcaseAvatar({ name, imageUrl, compact }: { name: string; imag
   );
 }
 
+type PartnersPageTab = 'videos' | 'studio';
+
 export const PartnersPage: React.FC = () => {
   const [videos, setVideos] = useState<PartnersShowcaseVideoDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<PartnersPageTab>('videos');
 
   const [partnersState, setPartnersState] = useState<PartnersStatePayload | null>(null);
   const [mySubs, setMySubs] = useState<PartnerYoutubeMySubmission[]>([]);
@@ -176,6 +181,13 @@ export const PartnersPage: React.FC = () => {
     void loadAll();
   }, [loadAll]);
 
+  const auth = partnersState?.auth;
+  const isPartner = !!auth?.isPartner;
+  const canApply = !!auth?.canApply;
+  const applicationPending = auth?.application?.status === 'pending';
+
+  const studioTabLabel = isPartner ? 'Meu canal' : 'Credenciamento';
+
   return (
     <div className="w-full flex flex-col gap-8 text-slate-100 pb-8">
       <div id="parceiros-youtube" className="scroll-mt-6 max-w-7xl mx-auto w-full px-3 sm:px-4 space-y-8">
@@ -188,14 +200,78 @@ export const PartnersPage: React.FC = () => {
           <span className="bg-gradient-to-r from-white to-slate-300 bg-clip-text text-transparent">Parceiros YouTube</span>
         </h1>
         <p className="text-sm text-slate-400 max-w-3xl">
-          Vídeos aprovados pela equipa — vitrine ao estilo comunidade. Candidata o teu canal, desbloqueia a Sala NFT e envia até 1 vídeo por dia (UTC).
+          {activeTab === 'videos'
+            ? 'Vitrine com os vídeos aprovados pela equipa — explora, subscreve e apoia os criadores.'
+            : isPartner
+              ? 'Gere o teu canal parceiro, envia vídeos (1/dia UTC) e acompanha a Sala NFT.'
+              : 'Candidata o teu canal YouTube, desbloqueia a Sala NFT e passa a submeter conteúdo após aprovação.'}
         </p>
+
+        <div
+          className="flex flex-wrap gap-2 pt-2"
+          role="tablist"
+          aria-label="Secções Parceiros YouTube"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'videos'}
+            onClick={() => setActiveTab('videos')}
+            className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-black uppercase tracking-wide border transition ${
+              activeTab === 'videos'
+                ? 'bg-violet-600/25 border-violet-500/50 text-violet-100 shadow-lg shadow-violet-950/30'
+                : 'bg-slate-950/50 border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-600'
+            }`}
+          >
+            <Play size={16} className={activeTab === 'videos' ? 'text-violet-300' : 'text-slate-500'} />
+            Vídeos
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'studio'}
+            onClick={() => setActiveTab('studio')}
+            className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-black uppercase tracking-wide border transition ${
+              activeTab === 'studio'
+                ? 'bg-red-600/20 border-red-500/45 text-red-100 shadow-lg shadow-red-950/25'
+                : 'bg-slate-950/50 border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-600'
+            }`}
+          >
+            {isPartner ? (
+              <BadgeCheck size={16} className={activeTab === 'studio' ? 'text-emerald-300' : 'text-slate-500'} />
+            ) : (
+              <Sparkles size={16} className={activeTab === 'studio' ? 'text-red-300' : 'text-slate-500'} />
+            )}
+            {studioTabLabel}
+            {applicationPending && activeTab !== 'studio' ? (
+              <span className="rounded-full bg-amber-500/90 px-1.5 py-0.5 text-[9px] font-black text-black normal-case tracking-normal">
+                Pendente
+              </span>
+            ) : null}
+            {canApply && !applicationPending && !isPartner && activeTab !== 'studio' ? (
+              <span className="rounded-full bg-red-500/90 px-1.5 py-0.5 text-[9px] font-black text-white normal-case tracking-normal">
+                Novo
+              </span>
+            ) : null}
+          </button>
+        </div>
       </div>
 
-      {partnersState && (
-        <YoutubePartnerStudio state={partnersState} mySubs={mySubs} onReload={loadAll} />
-      )}
+      {activeTab === 'studio' ? (
+        loading && !partnersState ? (
+          <div className="flex justify-center py-16 text-red-400">
+            <Loader2 className="animate-spin" size={32} />
+          </div>
+        ) : partnersState ? (
+          <YoutubePartnerStudio state={partnersState} mySubs={mySubs} onReload={loadAll} />
+        ) : (
+          <div className="text-red-400 text-sm border border-red-900/40 rounded-xl p-6 text-center">
+            Não foi possível carregar o painel de credenciamento.
+          </div>
+        )
+      ) : null}
 
+      {activeTab === 'videos' ? (
       <section className="space-y-4">
         <div className="flex flex-wrap items-end justify-between gap-3 border-b border-slate-800 pb-3">
           <div>
@@ -283,6 +359,7 @@ export const PartnersPage: React.FC = () => {
           </div>
         )}
       </section>
+      ) : null}
       </div>
     </div>
   );

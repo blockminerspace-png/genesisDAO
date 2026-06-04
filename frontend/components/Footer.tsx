@@ -1,6 +1,7 @@
 import React from 'react';
-import { MessageCircle, Send } from 'lucide-react';
 import { MarketNews } from './MarketNews';
+import { DISCORD_COMMUNITY_URL, TELEGRAM_COMMUNITY_URL } from '../constants/communityLinks';
+import { DiscordIcon, TelegramIcon } from './icons/SocialBrandIcons';
 
 type FooterProps = {
     onNavigate?: (
@@ -57,11 +58,11 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate, showMarketNews = tru
                                 Plataformas do game
                             </h3>
                             <div className="flex flex-col gap-2 text-slate-600 dark:text-slate-300">
-                                <a href="https://discord.com" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 hover:text-amber-500 transition-colors">
-                                    <MessageCircle size={16} /> Discord
+                                <a href={DISCORD_COMMUNITY_URL} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 hover:text-[#7289da] transition-colors">
+                                    <DiscordIcon size={16} /> Discord
                                 </a>
-                                <a href="https://t.me" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 hover:text-amber-500 transition-colors">
-                                    <Send size={16} /> Telegram
+                                <a href={TELEGRAM_COMMUNITY_URL} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 hover:text-[#26A5E4] transition-colors">
+                                    <TelegramIcon size={16} /> Telegram
                                 </a>
                             </div>
                         </div>

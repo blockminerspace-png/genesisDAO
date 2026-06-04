@@ -77,7 +77,9 @@ import { gpuDupLog } from './utils/gpuDupDebug';
 import { HomePage } from './components/HomePage';
 import { Footer } from './components/Footer';
 import { lazyWithReload } from './lib/lazyWithReload';
-import { Wallet, TrendingUp, RefreshCw, DollarSign, Coins, Server, ShoppingCart, LayoutDashboard, Package, LogOut, Home, BookOpen, User as UserIcon, Skull, Shield, Crown, Gift, ChevronDown, ChevronUp, Menu, X, Play, Wrench, Gamepad2, Trophy, Scale, Sparkles, Battery, LifeBuoy, Clapperboard, Construction, Grid3X3, History } from 'lucide-react';
+import { Wallet, TrendingUp, RefreshCw, DollarSign, Coins, Server, ShoppingCart, LayoutDashboard, Package, LogOut, BookOpen, User as UserIcon, Skull, Shield, Crown, Gift, ChevronDown, ChevronUp, Menu, X, Play, Wrench, Gamepad2, Trophy, Scale, Sparkles, Battery, LifeBuoy, Clapperboard, Construction, Grid3X3, History } from 'lucide-react';
+import { DiscordCommunityLink, DiscordIcon, TelegramCommunityLink, TelegramIcon } from './components/icons/SocialBrandIcons';
+import { DISCORD_COMMUNITY_URL, TELEGRAM_COMMUNITY_URL } from './constants/communityLinks';
 
 const DocsPage = lazyWithReload(() => import('./components/DocsPage').then((m) => ({ default: m.DocsPage })));
 const TermsPage = lazyWithReload(() => import('./components/TermsPage').then((m) => ({ default: m.TermsPage })));
@@ -128,12 +130,6 @@ function LazyRouteFallback() {
     </div>
   );
 }
-
-const TelegramIcon = ({ size = 18 }: { size?: number }) => (
-  <svg viewBox="0 0 24 24" fill="currentColor" width={size} height={size} aria-hidden>
-    <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 1 0 24 0 12 12 0 0 0-12-12zm4.962 7.224c.1-.422.436-.698.795-.652l2.318.327c.36 0 .65.268.65.588 0 .12-.025.24-.065.358l-3.738 13.45c-.23.824-.704 1.03-1.38.644l-3.84-2.83-1.854 1.78c-.204.205-.376.376-.77.376-.244 0-.49-.11-.642-.355l-1.314-2.01-3.68-2.84c-.66-.54-.53-.978.11-1.46l14.378-8.284z" />
-  </svg>
-);
 
 // --- GAME LOGIC HELPERS ---
 
@@ -2828,9 +2824,9 @@ export default function App() {
           )}
 
           {/* Navigation Links */}
-          <div className="hidden md:flex items-center gap-2">
-              <button onClick={() => navigateGlobalView('home')} className={`px-3 py-2 text-sm font-bold rounded hover:bg-slate-200 dark:hover:bg-slate-800 transition ${globalView === 'home' ? 'text-amber-600 dark:text-amber-400' : 'text-slate-500'}`} title="Início (landing)"><Home size={18} /></button>
-              <a href="https://t.me/+Fm72joLwb-tjYTZh" target="_blank" rel="noopener noreferrer" className="px-3 py-2 text-sm font-bold rounded text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800 hover:text-[#229ED9] transition" title="Telegram — Genesis Miner"><TelegramIcon size={18} /></a>
+          <div className="hidden md:flex items-center gap-1.5">
+              <DiscordCommunityLink size={18} />
+              <TelegramCommunityLink size={18} />
               <button onClick={() => { if (!user) navigateGlobalView('auth'); else { setGlobalView('game'); setCurrentView('ranking'); } }} className="px-3 py-2 text-sm font-bold rounded text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800 hover:text-yellow-500 transition" title="Ranking de mineradores"><Trophy size={18} /></button>
               <button onClick={() => navigateGlobalView('docs')} className={`px-3 py-2 text-sm font-bold rounded hover:bg-slate-200 dark:hover:bg-slate-800 transition ${globalView === 'docs' ? 'text-amber-600 dark:text-amber-400' : 'text-slate-500'}`} title="Documentação"><BookOpen size={18} /></button>
               {user && (globalView === 'home' || globalView === 'docs') && !user.isAdmin && (
@@ -2947,22 +2943,21 @@ export default function App() {
                   </div>
                 )}
 
-                <button
-                  onClick={() => { navigateGlobalView('home'); setMobileMenuOpen(false); }}
-                  className={`flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left text-sm font-bold transition ${
-                    globalView === 'home'
-                      ? 'border-amber-500/60 bg-amber-500/10 text-amber-300'
-                      : 'border-slate-800 bg-slate-900/70 text-slate-200 hover:border-slate-600 hover:bg-slate-800/90'
-                  }`}
-                >
-                  <Home size={17} /> Início
-                </button>
                 <a
-                  href="https://t.me/+Fm72joLwb-tjYTZh"
+                  href={DISCORD_COMMUNITY_URL}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="flex w-full items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-3 text-sm font-bold text-[#229ED9] transition hover:border-slate-600 hover:bg-slate-800/90"
+                  className="flex w-full items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-3 text-sm font-bold text-[#7289da] transition hover:border-[#5865F2]/40 hover:bg-[#5865F2]/10"
+                >
+                  <DiscordIcon size={17} /> Discord
+                </a>
+                <a
+                  href={TELEGRAM_COMMUNITY_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="flex w-full items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-3 text-sm font-bold text-[#26A5E4] transition hover:border-[#229ED9]/40 hover:bg-[#229ED9]/10"
                 >
                   <TelegramIcon size={17} /> Telegram
                 </a>
