@@ -1,17 +1,20 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Bell, Edit, PlusCircle, Trash2, ToggleLeft, ToggleRight } from 'lucide-react';
+import { Bell, Edit, Image as ImageIcon, PlusCircle, Trash2, ToggleLeft, ToggleRight, Upload } from 'lucide-react';
 import {
   createAdminInAppAnnouncement,
   deleteAdminInAppAnnouncement,
   getAdminInAppAnnouncements,
   updateAdminInAppAnnouncement,
+  uploadAdImage,
   type InAppAnnouncementAdminPayload
 } from '../services/api';
+import { RemoteBannerImage } from './RemoteBannerImage';
 
 const emptyForm = () => ({
   title: '',
   message: '',
   link: '',
+  imageUrl: '',
   priority: 0,
   isActive: true,
   startsAt: '',
@@ -26,6 +29,7 @@ export const AdminInAppAnnouncements: React.FC = () => {
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -61,6 +65,7 @@ export const AdminInAppAnnouncements: React.FC = () => {
       title: row.title,
       message: row.message,
       link: row.link || '',
+      imageUrl: row.imageUrl || '',
       priority: row.priority ?? 0,
       isActive: row.isActive,
       startsAt: msToDatetimeLocal(row.startsAt),
@@ -86,6 +91,7 @@ export const AdminInAppAnnouncements: React.FC = () => {
         title: form.title.trim(),
         message: form.message.trim(),
         link: form.link.trim() || undefined,
+        imageUrl: form.imageUrl.trim() || null,
         priority: Number(form.priority) || 0,
         isActive: form.isActive,
         startsAt: parseOptionalMs(form.startsAt),
@@ -177,6 +183,59 @@ export const AdminInAppAnnouncements: React.FC = () => {
           value={form.message}
           onChange={(e) => setForm((f) => ({ ...f, message: e.target.value }))}
         />
+        <div>
+          <label className="text-xs font-bold uppercase tracking-wide text-slate-400 mb-1 block">
+            Imagem do aviso (PNG, JPG, GIF)
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <div className="relative flex-1 min-w-[200px]">
+              <ImageIcon size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+              <input
+                className="w-full rounded-lg border border-slate-600 bg-slate-950 pl-9 pr-3 py-2 text-sm text-white"
+                placeholder="URL ou suba ficheiro abaixo"
+                value={form.imageUrl}
+                onChange={(e) => setForm((f) => ({ ...f, imageUrl: e.target.value }))}
+              />
+            </div>
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-amber-600/60 bg-amber-950/40 px-4 py-2 text-xs font-bold uppercase text-amber-200 hover:bg-amber-900/50">
+              <Upload size={16} />
+              {uploadingImage ? 'A subir…' : 'Subir imagem'}
+              <input
+                type="file"
+                className="hidden"
+                accept="image/*"
+                disabled={uploadingImage}
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  setUploadingImage(true);
+                  setSaveError(null);
+                  try {
+                    const res = await uploadAdImage(file);
+                    if (res.ok && res.imageUrl) {
+                      setForm((f) => ({ ...f, imageUrl: res.imageUrl! }));
+                    } else {
+                      setSaveError(res.error || 'Erro no upload da imagem.');
+                    }
+                  } finally {
+                    setUploadingImage(false);
+                    e.target.value = '';
+                  }
+                }}
+              />
+            </label>
+          </div>
+          {form.imageUrl.trim() ? (
+            <div className="mt-3 rounded-lg border border-slate-700 bg-slate-950 p-2 flex justify-center max-h-48 overflow-hidden">
+              <RemoteBannerImage
+                src={form.imageUrl.trim()}
+                alt="Pré-visualização"
+                className="max-h-44 w-auto object-contain rounded"
+                failureHint="Imagem indisponível"
+              />
+            </div>
+          ) : null}
+        </div>
         <input
           className="w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-white"
           placeholder="Link opcional (https://...)"
@@ -268,6 +327,16 @@ export const AdminInAppAnnouncements: React.FC = () => {
                   <span className="text-[10px] text-slate-500">{row.readCount} leituras</span>
                 </div>
                 <p className="mt-1 text-sm text-slate-400 line-clamp-3 whitespace-pre-wrap">{row.message}</p>
+                {row.imageUrl ? (
+                  <div className="mt-2 max-w-xs rounded border border-slate-700 overflow-hidden bg-slate-950">
+                    <RemoteBannerImage
+                      src={row.imageUrl}
+                      alt={row.title}
+                      className="max-h-24 w-full object-contain"
+                      failureHint="Imagem indisponível"
+                    />
+                  </div>
+                ) : null}
               </div>
               <div className="flex shrink-0 gap-2">
                 <button

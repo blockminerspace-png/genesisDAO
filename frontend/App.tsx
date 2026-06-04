@@ -519,7 +519,8 @@ export default function App() {
         id: a.id,
         title: a.title,
         message: a.message,
-        link: a.link
+        link: a.link,
+        imageUrl: a.imageUrl ?? null
       }))
     );
   }, []);

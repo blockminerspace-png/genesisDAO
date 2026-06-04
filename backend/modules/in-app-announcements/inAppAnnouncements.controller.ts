@@ -99,6 +99,7 @@ export function registerInAppAnnouncementsModuleRoutes(
         title: body.title,
         message: body.message,
         link: body.link,
+        imageUrl: body.imageUrl ?? body.image_url ?? null,
         priority: body.priority,
         isActive: body.isActive !== false && body.is_active !== 0,
         startsAt: body.startsAt ?? body.starts_at ?? null,
@@ -128,6 +129,7 @@ export function registerInAppAnnouncementsModuleRoutes(
         title: body.title,
         message: body.message,
         link: body.link,
+        imageUrl: body.imageUrl ?? body.image_url,
         priority: body.priority,
         isActive:
           body.isActive !== undefined

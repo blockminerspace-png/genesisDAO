@@ -6136,6 +6136,7 @@ export type InAppAnnouncementPayload = {
   title: string;
   message: string;
   link: string | null;
+  imageUrl?: string | null;
   priority?: number;
   createdAt?: number;
 };
@@ -6161,7 +6162,10 @@ function parseInAppAnnouncement(raw: unknown): InAppAnnouncementPayload | null {
       : o.link === null
         ? null
         : null;
-  return { id, title, message, link };
+  const imageUrlRaw = o.imageUrl ?? o.image_url;
+  const imageUrl =
+    typeof imageUrlRaw === 'string' && imageUrlRaw.trim() ? imageUrlRaw.trim() : null;
+  return { id, title, message, link, imageUrl };
 }
 
 /** GET /api/in-app-announcements/pending */
@@ -6245,6 +6249,7 @@ export async function createAdminInAppAnnouncement(body: {
   title: string;
   message: string;
   link?: string;
+  imageUrl?: string | null;
   priority?: number;
   isActive?: boolean;
   startsAt?: number | null;
@@ -6286,6 +6291,7 @@ export async function updateAdminInAppAnnouncement(
     title: string;
     message: string;
     link: string;
+    imageUrl: string | null;
     priority: number;
     isActive: boolean;
     startsAt: number | null;

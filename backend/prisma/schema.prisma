@@ -276,6 +276,7 @@ model in_app_announcements {
   title       String
   message     String
   link        String?
+  image_url   String?
   is_active   Int     @default(1)
   priority    Int     @default(0)
   starts_at   BigInt?

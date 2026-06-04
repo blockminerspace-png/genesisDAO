@@ -1,11 +1,13 @@
 import React from 'react';
 import { ExternalLink, Info, X } from 'lucide-react';
+import { RemoteBannerImage } from './RemoteBannerImage';
 
 export type InAppAnnouncement = {
   id: string;
   title: string;
   message: string;
   link: string | null;
+  imageUrl?: string | null;
 };
 
 type Props = {
@@ -18,6 +20,7 @@ export const InAppAnnouncementModal: React.FC<Props> = ({ announcement, onDismis
   if (!announcement) return null;
 
   const link = announcement.link?.trim() || null;
+  const imageUrl = announcement.imageUrl?.trim() || null;
 
   return (
     <div
@@ -45,6 +48,16 @@ export const InAppAnnouncementModal: React.FC<Props> = ({ announcement, onDismis
         <h3 className="mb-2 pr-8 text-sm font-bold uppercase tracking-wide text-white">
           {announcement.title}
         </h3>
+        {imageUrl ? (
+          <div className="mb-3 overflow-hidden rounded-xl border border-slate-700 bg-slate-950">
+            <RemoteBannerImage
+              src={imageUrl}
+              alt={announcement.title}
+              className="max-h-56 w-full object-contain"
+              failureHint="Imagem indisponível"
+            />
+          </div>
+        ) : null}
         <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-300">{announcement.message}</p>
         {link ? (
           <a

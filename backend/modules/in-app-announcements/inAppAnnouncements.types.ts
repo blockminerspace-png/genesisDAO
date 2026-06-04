@@ -3,6 +3,7 @@ export type InAppAnnouncementDto = {
   title: string;
   message: string;
   link: string | null;
+  imageUrl: string | null;
   priority: number;
   createdAt: number;
 };
@@ -19,6 +20,7 @@ export type CreateInAppAnnouncementInput = {
   title: string;
   message: string;
   link?: string | null;
+  imageUrl?: string | null;
   priority?: number;
   isActive?: boolean;
   startsAt?: number | null;

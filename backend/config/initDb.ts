@@ -147,6 +147,7 @@ export const initDb = async () => {
         title TEXT NOT NULL,
         message TEXT NOT NULL,
         link TEXT,
+        image_url TEXT,
         is_active INTEGER NOT NULL DEFAULT 1,
         priority INTEGER NOT NULL DEFAULT 0,
         starts_at BIGINT,
@@ -872,6 +873,7 @@ export const initDb = async () => {
       CREATE INDEX IF NOT EXISTS idx_system_news_created_at ON system_news(created_at);
       CREATE INDEX IF NOT EXISTS idx_in_app_announcements_active_created ON in_app_announcements(is_active, created_at);
       CREATE INDEX IF NOT EXISTS idx_in_app_announcement_reads_user_id ON in_app_announcement_reads(user_id);
+      ALTER TABLE in_app_announcements ADD COLUMN IF NOT EXISTS image_url TEXT;
       CREATE INDEX IF NOT EXISTS idx_referrals_user_id ON referrals(user_id);
       CREATE INDEX IF NOT EXISTS idx_loot_box_items_box_id ON loot_box_items(box_id);
       CREATE INDEX IF NOT EXISTS idx_upgrade_compat_racks_upgrade_id ON upgrade_compat_racks(upgrade_id);

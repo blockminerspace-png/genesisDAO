@@ -24,6 +24,7 @@ function toPlayerDto(row: {
   title: string;
   message: string;
   link: string | null;
+  image_url: string | null;
   priority: number;
   created_at: bigint;
 }): InAppAnnouncementDto {
@@ -32,6 +33,7 @@ function toPlayerDto(row: {
     title: row.title,
     message: row.message,
     link: row.link && String(row.link).trim() ? String(row.link).trim() : null,
+    imageUrl: row.image_url && String(row.image_url).trim() ? String(row.image_url).trim() : null,
     priority: Number(row.priority) || 0,
     createdAt: Number(row.created_at) || nowMs()
   };
@@ -43,6 +45,7 @@ function toAdminDto(
     title: string;
     message: string;
     link: string | null;
+    image_url: string | null;
     is_active: number;
     priority: number;
     starts_at: bigint | null;
@@ -135,6 +138,8 @@ export async function createAnnouncementAdmin(
       title,
       message,
       link: input.link && String(input.link).trim() ? String(input.link).trim() : null,
+      image_url:
+        input.imageUrl && String(input.imageUrl).trim() ? String(input.imageUrl).trim() : null,
       is_active: input.isActive === false ? 0 : 1,
       priority: Number(input.priority) || 0,
       starts_at: input.startsAt != null ? BigInt(input.startsAt) : null,
@@ -170,6 +175,10 @@ export async function updateAnnouncementAdmin(
   }
   if (input.link !== undefined) {
     data.link = input.link && String(input.link).trim() ? String(input.link).trim() : null;
+  }
+  if (input.imageUrl !== undefined) {
+    data.image_url =
+      input.imageUrl && String(input.imageUrl).trim() ? String(input.imageUrl).trim() : null;
   }
   if (input.priority !== undefined) data.priority = Number(input.priority) || 0;
   if (input.isActive !== undefined) data.is_active = input.isActive ? 1 : 0;
