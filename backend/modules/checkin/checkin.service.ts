@@ -11,19 +11,26 @@
  *  - Com check-in já feito no ciclo actual, nas últimas
  *    `CHECKIN_EARLY_WINDOW_MS` (4h) antes das 21:00 BRT pode registar o
  *    ciclo seguinte antecipadamente (mineração continua sem pausa na fronteira).
- *  - Streak:
- *      - check-in no ciclo imediatamente a seguir ao do anterior → `streak += 1`;
- *      - caso contrário (ou primeiro de sempre) → `streak = 1`.
- *  - Sempre que `streak` atinge um múltiplo de 7 (7, 14, 21, …), o jogador
- *    ganha 1 instância UUID de `battery_estelar` em `stored_batteries`.
+ *  - Streak (diário):
+ *      - check-in no ciclo imediatamente a seguir, ou até 1 ciclo perdido (48h),
+ *        → `streak += 1`;
+ *      - 2+ ciclos perdidos (ou primeiro de sempre) → `streak = 1`.
+ *  - Recompensa Estelar:
+ *      - diário: a cada `streak` múltiplo de 7;
+ *      - premium (check-in a cada N dias): 1 Estelar em cada check-in do intervalo.
  *  - `last_checkin_day` é mantido por compatibilidade/diagnóstico (dia civil
  *    BRT do instante do check-in). Freeze/streak usam `last_checkin_at_ms` +
  *    fronteira 21:00 BRT.
  */
 
-import crypto from 'node:crypto';
 import type { PoolClient } from 'pg';
 import db from '../../config/db.js';
+import {
+  computeNextDailyCheckinStreak,
+  computeNextPremiumCheckinStreak,
+  grantCheckinEstelarBattery,
+  shouldGrantCheckinEstelarReward
+} from './checkinReward.js';
 import {
   canPerformPremiumCheckinNow,
   isPremiumWithinActiveWindow,
@@ -447,42 +454,32 @@ export async function performCheckin(userId: number, nowMs: number = Date.now())
       }
 
       const intervalMs = premiumIntervalMs(premiumCtx.policy.intervalDays);
-      let nextStreak: number;
-      let streakReset = false;
-      if (prevAtMs != null && nowMs - prevAtMs <= intervalMs + 24 * 60 * 60 * 1000) {
-        nextStreak = prevStreak + 1;
-      } else {
-        nextStreak = 1;
-        streakReset = prevStreak !== 0 || prevAtMs !== null;
-      }
+      const { nextStreak, streakReset } = computeNextPremiumCheckinStreak(
+        prevStreak,
+        prevAtMs,
+        nowMs,
+        intervalMs
+      );
 
       const checkinAtMs = nowMs;
       const checkinDay = brtDayFromMs(checkinAtMs);
-      const grantsReward = nextStreak > 0 && nextStreak % CHECKIN_REWARD_EVERY_DAYS === 0;
+      const grantsReward = shouldGrantCheckinEstelarReward(nextStreak, true);
 
       await client.query(
         `UPDATE game_states
             SET last_checkin_day = $2,
                 last_checkin_at_ms = $3,
-                checkin_streak = $4
+                checkin_streak = $4,
+                server_updated_at = $5,
+                last_updated_at = $5
           WHERE user_id = $1`,
-        [userId, checkinDay, checkinAtMs, nextStreak]
+        [userId, checkinDay, checkinAtMs, nextStreak, nowMs]
       );
 
       let rewardGranted = 0;
       if (grantsReward) {
-        const newId = crypto.randomUUID();
-        const ins = await client.query(
-          `INSERT INTO stored_batteries (id, user_id, item_id, display_name, image_url)
-           SELECT $1, $2, u.id, u.name, NULLIF(BTRIM(COALESCE(u.image::text, '')), '')
-             FROM upgrades u
-            WHERE u.id = $3
-              AND COALESCE(u.is_active, 1) <> 0
-              AND (lower(COALESCE(u.type, '')) = 'battery' OR lower(COALESCE(u.category, '')) = 'battery')
-            LIMIT 1`,
-          [newId, userId, CHECKIN_REWARD_ITEM_ID]
-        );
-        rewardGranted = ins.rowCount ?? 0;
+        const grant = await grantCheckinEstelarBattery(client, userId);
+        rewardGranted = grant.rewardGranted;
       }
 
       await client.query('COMMIT');
@@ -514,41 +511,30 @@ export async function performCheckin(userId: number, nowMs: number = Date.now())
       streakAnchorPeriod = nextPeriodStart;
     }
 
-    let nextStreak: number;
-    let streakReset = false;
-    if (prevPeriod != null && streakAnchorPeriod - prevPeriod === CHECKIN_WINDOW_MS) {
-      nextStreak = prevStreak + 1;
-    } else {
-      nextStreak = 1;
-      streakReset = prevStreak !== 0 || prevAtMs !== null;
-    }
+    const { nextStreak, streakReset } = computeNextDailyCheckinStreak(
+      prevStreak,
+      prevPeriod,
+      streakAnchorPeriod
+    );
 
-    const grantsReward = nextStreak > 0 && nextStreak % CHECKIN_REWARD_EVERY_DAYS === 0;
+    const grantsReward = shouldGrantCheckinEstelarReward(nextStreak, false);
     const checkinDay = brtDayFromMs(checkinAtMs);
 
     await client.query(
       `UPDATE game_states
           SET last_checkin_day = $2,
               last_checkin_at_ms = $3,
-              checkin_streak = $4
+              checkin_streak = $4,
+              server_updated_at = $5,
+              last_updated_at = $5
         WHERE user_id = $1`,
-      [userId, checkinDay, checkinAtMs, nextStreak]
+      [userId, checkinDay, checkinAtMs, nextStreak, nowMs]
     );
 
     let rewardGranted = 0;
     if (grantsReward) {
-      const newId = crypto.randomUUID();
-      const ins = await client.query(
-        `INSERT INTO stored_batteries (id, user_id, item_id, display_name, image_url)
-         SELECT $1, $2, u.id, u.name, NULLIF(BTRIM(COALESCE(u.image::text, '')), '')
-           FROM upgrades u
-          WHERE u.id = $3
-            AND COALESCE(u.is_active, 1) <> 0
-            AND (lower(COALESCE(u.type, '')) = 'battery' OR lower(COALESCE(u.category, '')) = 'battery')
-          LIMIT 1`,
-        [newId, userId, CHECKIN_REWARD_ITEM_ID]
-      );
-      rewardGranted = ins.rowCount ?? 0;
+      const grant = await grantCheckinEstelarBattery(client, userId);
+      rewardGranted = grant.rewardGranted;
     }
 
     await client.query('COMMIT');

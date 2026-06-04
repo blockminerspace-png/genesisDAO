@@ -161,8 +161,10 @@ export function DailyCheckinBanner({ saveLoaded, onRewardGranted }: Props) {
                   <span className="text-amber-200/90">
                     {status.rewardCycleProgress}/{status.rewardCycleSize}
                   </span>{' '}
-                  <Trophy className="inline align-text-bottom text-amber-500/90" size={14} aria-hidden /> a cada 7
-                  check-ins seguidos ganha 1 Estelar.
+                  <Trophy className="inline align-text-bottom text-amber-500/90" size={14} aria-hidden />{' '}
+                  {status.premiumWeeklyCheckin
+                    ? 'a cada check-in premium ganha 1 Estelar.'
+                    : 'a cada 7 check-ins seguidos ganha 1 Estelar.'}
                 </p>
               </>
             ) : null}
