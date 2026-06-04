@@ -1,5 +1,5 @@
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Upgrade,
   isAsicMachineUpgrade,
@@ -92,6 +92,7 @@ export const AdminEditor: React.FC<AdminEditorProps> = ({ gameUpgrades, onUpdate
     const [editItemMode, setEditItemMode] = useState<boolean>(false);
     const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
     const [editorFilter, setEditorFilter] = useState<string>('all');
+    const [catalogSearch, setCatalogSearch] = useState('');
     const [itemForm, setItemForm] = useState<Partial<Upgrade>>({
         id: '', name: '', category: '', type: 'machine', baseCost: 0, baseProduction: 0, description: '', status: 'normal', compatibleRacks: [], image: '', icon: '🧩',
         sellInHardwareMarket: true, sellInBlackMarket: true, isActive: true
@@ -261,10 +262,37 @@ export const AdminEditor: React.FC<AdminEditorProps> = ({ gameUpgrades, onUpdate
         }
     };
 
+    const duplicateNameIds = useMemo(() => {
+        const byName = new Map<string, string[]>();
+        for (const u of gameUpgrades) {
+            const key = String(u.name || '').trim().toLowerCase();
+            if (!key) continue;
+            const list = byName.get(key) || [];
+            list.push(u.id);
+            byName.set(key, list);
+        }
+        const dup = new Set<string>();
+        for (const ids of byName.values()) {
+            if (ids.length > 1) ids.forEach((id) => dup.add(id));
+        }
+        return dup;
+    }, [gameUpgrades]);
+
     const filteredItems = gameUpgrades.filter((u) => {
-        if (editorFilter === 'all') return true;
-        if (editorFilter === 'nft') return !!u.isNft;
-        return u.type === editorFilter;
+        if (editorFilter !== 'all') {
+            if (editorFilter === 'nft') {
+                if (!u.isNft) return false;
+            } else if (u.type !== editorFilter) {
+                return false;
+            }
+        }
+        const q = catalogSearch.trim().toLowerCase();
+        if (!q) return true;
+        return (
+            String(u.id || '').toLowerCase().includes(q) ||
+            String(u.name || '').toLowerCase().includes(q) ||
+            String(u.category || '').toLowerCase().includes(q)
+        );
     });
 
     const infrastructureItems = gameUpgrades.filter(u => u.type === 'infrastructure');
@@ -281,26 +309,53 @@ export const AdminEditor: React.FC<AdminEditorProps> = ({ gameUpgrades, onUpdate
                 <button onClick={() => setEditorFilter('nft')} className={`px-3 py-2 rounded text-xs font-bold uppercase flex items-center gap-2 whitespace-nowrap transition-colors ${editorFilter === 'nft' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}><Hexagon size={14} /> NFT</button>
             </div>
 
+            <p className="text-xs text-slate-400 mb-4 -mt-2">
+                Lojinha Miner / Mercado Negro — tabela <span className="font-mono text-slate-300">upgrades</span>. Não confundir com
+                Utilizadores → Upgrades (passes USDC em <span className="font-mono text-slate-300">admin_upgrades</span>).
+            </p>
+
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="bg-slate-800 border border-slate-700 rounded-xl p-4 flex flex-col h-[70vh]">
-                    <div className="flex justify-between items-center mb-4">
+                    <div className="flex justify-between items-center mb-3 gap-2">
                         <h3 className="font-bold text-white">
                             {editorFilter === 'all'
                                 ? 'Catálogo Completo'
                                 : editorFilter === 'nft'
                                   ? 'Itens NFT'
                                   : `Editando: ${editorFilter.toUpperCase()}`}
+                            <span className="text-slate-500 font-normal text-xs ml-1">({filteredItems.length})</span>
                         </h3>
-                        <button onClick={handleNewItem} className="bg-green-600 hover:bg-green-500 text-white text-xs px-2 py-1 rounded flex items-center gap-1"><PlusCircle size={12} /> NOVO</button>
+                        <button onClick={handleNewItem} className="bg-green-600 hover:bg-green-500 text-white text-xs px-2 py-1 rounded flex items-center gap-1 shrink-0"><PlusCircle size={12} /> NOVO</button>
                     </div>
+                    <input
+                        type="search"
+                        value={catalogSearch}
+                        onChange={(e) => setCatalogSearch(e.target.value)}
+                        placeholder="Pesquisar nome, id ou categoria (ex.: krypto, ultimate)…"
+                        className="w-full mb-3 rounded-lg bg-slate-950 border border-slate-600 px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500/40"
+                    />
                     <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2">
+                        {filteredItems.length === 0 ? (
+                            <p className="text-sm text-slate-500 text-center py-6">Nenhum item neste filtro.</p>
+                        ) : null}
                         {filteredItems.map(u => (
                             <div key={u.id} className="bg-slate-900 p-2 rounded border border-slate-700 hover:border-amber-500 cursor-pointer" onClick={() => handleEditItem(u)}>
-                                <div className="flex justify-between items-center">
-                                    <div>
+                                <div className="flex justify-between items-center gap-2">
+                                    <div className="min-w-0">
                                         <span className="font-bold text-sm text-white">{u.name}</span>
                                         <div className="flex gap-2 mt-1 items-center flex-wrap">
-                                            <span className="text-xs text-slate-500">{u.id}</span>
+                                            <span className="text-xs text-slate-500 font-mono">{u.id}</span>
+                                            <span className="text-xs text-amber-400/90 font-mono">${Number(u.baseCost || 0).toFixed(3)}</span>
+                                            {duplicateNameIds.has(u.id) && (
+                                                <span className="text-[9px] uppercase font-bold text-amber-300 border border-amber-700/50 rounded px-1 py-0.5" title="Outro produto usa o mesmo nome de exibição">
+                                                    Nome duplicado
+                                                </span>
+                                            )}
+                                            {u.isActive === false && (
+                                                <span className="text-[9px] uppercase font-bold text-slate-400 border border-slate-600 rounded px-1 py-0.5">
+                                                    Inactivo
+                                                </span>
+                                            )}
                                             {u.isNft && (
                                                 <span className="text-[9px] uppercase font-bold text-orange-400 border border-orange-700/60 rounded px-1 py-0.5 flex items-center gap-0.5">
                                                     <Hexagon size={8} /> NFT
@@ -313,7 +368,7 @@ export const AdminEditor: React.FC<AdminEditorProps> = ({ gameUpgrades, onUpdate
                                             )}
                                         </div>
                                     </div>
-                                    {u.image && <div className={`w-8 ${u.type === 'infrastructure' ? 'h-10' : 'h-8'} rounded bg-slate-800 overflow-hidden shrink-0`}><img src={u.image} className={`w-full h-full ${u.type === 'infrastructure' ? 'object-contain' : 'object-cover'}`} /></div>}
+                                    {u.image && <div className={`w-8 ${u.type === 'infrastructure' ? 'h-10' : 'h-8'} rounded bg-slate-800 overflow-hidden shrink-0`}><img src={u.image} className={`w-full h-full ${u.type === 'infrastructure' ? 'object-contain' : 'object-cover'}`} alt="" /></div>}
                                 </div>
                             </div>
                         ))}

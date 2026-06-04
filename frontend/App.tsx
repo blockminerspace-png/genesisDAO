@@ -1430,7 +1430,7 @@ export default function App() {
     };
   }, []);
 
-  // Re-fetch upgrades if user is authenticated but gameUpgrades is empty (e.g., JWT expired at bootstrap time)
+  // Jogador: re-fetch se o catálogo veio vazio (ex.: JWT expirado no bootstrap).
   useEffect(() => {
     if (!user || user.isAdmin || gameUpgrades.length > 0) return;
     let cancelled = false;
@@ -1446,6 +1446,25 @@ export default function App() {
     })();
     return () => { cancelled = true; };
   }, [user, gameUpgrades.length]);
+
+  /** Admin vê catálogo completo (incl. inactivos) — o bootstrap inicial pode ser só `is_active=1`. */
+  useEffect(() => {
+    if (!user?.isAdmin) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const ups = await getUpgrades();
+        if (!cancelled && Array.isArray(ups) && ups.length > 0) {
+          setGameUpgrades(ups);
+        }
+      } catch {
+        /* silent */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.isAdmin, user?.id]);
 
   // WebSocket: cabeçalho do jogo — saldos (coin_balances + USDC) e hashrate alinhados à BD (~3,5s)
   useEffect(() => {
