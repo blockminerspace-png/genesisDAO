@@ -32,6 +32,29 @@
         }
         sessionStorage.setItem(key, stamp);
       } catch (e) { /* ignore */ }
+
+      function gmHardReloadEarly() {
+        try {
+          var u = new URL(window.location.href);
+          u.searchParams.set('_v', String(Date.now()));
+          window.location.replace(u.pathname + u.search + u.hash);
+        } catch (e2) {
+          window.location.reload();
+        }
+      }
+
+      window.addEventListener(
+        'error',
+        function (event) {
+          var target = event.target;
+          if (!target || target.tagName !== 'SCRIPT' && target.tagName !== 'LINK') return;
+          var src = target.src || target.href || '';
+          if (src && /\/assets\//.test(src)) {
+            gmHardReloadEarly();
+          }
+        },
+        true
+      );
     })();
   </script>
   <style>

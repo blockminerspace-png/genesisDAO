@@ -3,13 +3,18 @@ const BUILD_STAMP_KEY = 'gm_app_build_stamp_v1';
 const HTML_BUILD_STAMP_KEY = 'gm_html_build_stamp_v1';
 const BOUNDARY_RECOVERY_KEY = 'gm_boundary_recovery_v1';
 const MAX_AUTO_RELOADS = 3;
+const MAX_FORCE_RELOADS = 8;
+
+const CHUNK_ERROR_PATTERNS =
+  /Failed to fetch dynamically imported module|ChunkLoadError|Loading chunk \d+ failed|Unable to preload CSS|Importing a module script failed|error loading dynamically imported module|Falha ao buscar o módulo importado dinamicamente|Error al importar un módulo dinámicamente|Erro ao importar um módulo dinamicamente/i;
+
+const STALE_ASSET_URL_PATTERN = /\/assets\/[^'"\s)]+\.(?:js|css)/i;
 
 export function isChunkLikeLoadError(err: unknown): boolean {
   if (err == null) return false;
   const msg = err instanceof Error ? err.message : String(err);
-  return /Failed to fetch dynamically imported module|ChunkLoadError|Loading chunk \d+ failed|Unable to preload CSS|Importing a module script failed|error loading dynamically imported module/i.test(
-    msg
-  );
+  if (!msg) return false;
+  return CHUNK_ERROR_PATTERNS.test(msg) || STALE_ASSET_URL_PATTERN.test(msg);
 }
 
 function jsBuildStamp(): string {
@@ -106,11 +111,18 @@ export function hardReloadWithCacheBust(clearCaches = false): void {
   }
 }
 
-async function probeFreshHtmlBuildStamp(): Promise<string | null> {
+/** Busca o stamp do `index.html` no servidor (ignora cache do edge/browser). */
+export async function probeFreshHtmlBuildStamp(): Promise<string | null> {
   if (typeof window === 'undefined') return null;
   try {
-    const path = window.location.pathname + window.location.search;
-    const res = await fetch(path || '/', { cache: 'no-store', credentials: 'same-origin' });
+    const path = window.location.pathname || '/';
+    const u = new URL(path, window.location.origin);
+    u.searchParams.set('_gm_probe', String(Date.now()));
+    const res = await fetch(u.pathname + u.search, {
+      cache: 'no-store',
+      credentials: 'same-origin',
+      headers: { Pragma: 'no-cache', 'Cache-Control': 'no-cache' },
+    });
     if (!res.ok) return null;
     const html = await res.text();
     const match = html.match(/<meta\s+name="gm-build-id"\s+content="([^"]+)"/i);
@@ -118,6 +130,20 @@ async function probeFreshHtmlBuildStamp(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+function shouldClearCachesBeforeReload(options?: {
+  aggressive?: boolean;
+  force?: boolean;
+  staleBundle?: boolean;
+  count?: number;
+}): boolean {
+  return (
+    options?.force === true ||
+    options?.aggressive === true ||
+    options?.staleBundle === true ||
+    (options?.count ?? 0) >= 1
+  );
 }
 
 function registerCleanupServiceWorker(): void {
@@ -137,10 +163,19 @@ export function tryAutoRecoverFromStaleChunk(options?: { aggressive?: boolean; f
     syncBuildStampWithSession();
     const staleBundle = isStaleJsBundleLoaded();
     const count = reloadCount();
-    if (!options?.force && !staleBundle && count >= MAX_AUTO_RELOADS) return false;
+    const maxReloads = options?.force ? MAX_FORCE_RELOADS : MAX_AUTO_RELOADS;
+    if (!options?.force && !staleBundle && count >= maxReloads) return false;
+    if (options?.force && count >= MAX_FORCE_RELOADS) return false;
 
     sessionStorage.setItem(CHUNK_RELOAD_KEY, String(count + 1));
-    hardReloadWithCacheBust(staleBundle || count >= 1 || options?.aggressive === true || options?.force === true);
+    hardReloadWithCacheBust(
+      shouldClearCachesBeforeReload({
+        aggressive: options?.aggressive,
+        force: options?.force,
+        staleBundle,
+        count,
+      })
+    );
     return true;
   } catch {
     hardReloadWithCacheBust(true);
@@ -153,7 +188,7 @@ export function tryAutoRecoverFromStaleChunkError(err: unknown): boolean {
   if (!isChunkLikeLoadError(err)) return false;
   return tryAutoRecoverFromStaleChunk({
     aggressive: true,
-    force: isStaleJsBundleLoaded(),
+    force: true,
   });
 }
 
@@ -172,12 +207,18 @@ export function tryBoundaryStaleChunkRecovery(): boolean {
   }
 }
 
+/** Compara stamp remoto com o bundle JS carregado; devolve true se há deploy mais recente. */
+export async function remoteBuildStampDiffersFromLoadedJs(): Promise<boolean> {
+  if (!import.meta.env.PROD) return false;
+  const remote = await probeFreshHtmlBuildStamp();
+  if (!remote) return false;
+  const js = jsBuildStamp();
+  return js !== 'dev' && remote !== js;
+}
+
 async function verifyFreshBuildStamp(): Promise<void> {
   if (!import.meta.env.PROD) return;
-  const remote = await probeFreshHtmlBuildStamp();
-  if (!remote) return;
-  const js = jsBuildStamp();
-  if (js !== 'dev' && remote !== js) {
+  if (await remoteBuildStampDiffersFromLoadedJs()) {
     tryAutoRecoverFromStaleChunk({ aggressive: true, force: true });
   }
 }
@@ -215,7 +256,7 @@ export function initChunkRecoveryBoot(): void {
               ? target.href
               : '';
         if (src && /\/assets\//.test(src)) {
-          if (tryAutoRecoverFromStaleChunk({ aggressive: true })) {
+          if (tryAutoRecoverFromStaleChunk({ aggressive: true, force: true })) {
             event.preventDefault();
           }
         }
@@ -223,6 +264,12 @@ export function initChunkRecoveryBoot(): void {
     },
     true
   );
+
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted) {
+      void verifyFreshBuildStamp();
+    }
+  });
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {

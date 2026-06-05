@@ -77,6 +77,7 @@ import { gpuDupLog } from './utils/gpuDupDebug';
 import { HomePage } from './components/HomePage';
 import { Footer } from './components/Footer';
 import { lazyWithReload } from './lib/lazyWithReload';
+import { useAppBuildVersionWatch } from './hooks/useAppBuildVersionWatch';
 import { Wallet, TrendingUp, RefreshCw, DollarSign, Coins, Server, ShoppingCart, LayoutDashboard, Package, LogOut, BookOpen, User as UserIcon, Skull, Shield, Crown, Gift, ChevronDown, ChevronUp, Menu, X, Play, Wrench, Gamepad2, Trophy, Scale, Sparkles, Battery, LifeBuoy, Clapperboard, Construction, Grid3X3, History } from 'lucide-react';
 import { DiscordCommunityLink, DiscordIcon, TelegramCommunityLink, TelegramIcon } from './components/icons/SocialBrandIcons';
 import { DISCORD_COMMUNITY_URL, TELEGRAM_COMMUNITY_URL } from './constants/communityLinks';
@@ -447,6 +448,8 @@ function gameNavTabClass(isActive: boolean, accent: GameNavTabAccent): string {
 }
 
 export default function App() {
+  useAppBuildVersionWatch();
+
   const resolveInitialPublicView = (): GlobalView => {
     if (typeof window === 'undefined') return 'home';
     const params = new URLSearchParams(window.location.search || '');

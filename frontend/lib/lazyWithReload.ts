@@ -13,7 +13,7 @@ export function lazyWithReload<T extends ComponentType<unknown>>(
       return await importer();
     } catch (err) {
       if (typeof window !== 'undefined' && isChunkLikeLoadError(err)) {
-        const reloading = tryAutoRecoverFromStaleChunk({ aggressive: true });
+        const reloading = tryAutoRecoverFromStaleChunk({ aggressive: true, force: true });
         if (reloading) {
           return await new Promise<{ default: T }>(() => {});
         }

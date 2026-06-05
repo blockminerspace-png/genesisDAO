@@ -7,25 +7,57 @@ import {
 } from '../lib/chunkRecovery';
 
 type Props = { children: ReactNode };
-type State = { err: Error | null; recovering: boolean };
+type State = { err: Error | null; recovering: boolean; autoReloadSec: number | null };
+
+const STALE_CHUNK_AUTO_RELOAD_SEC = 3;
 
 /**
  * Evita ecrã totalmente vazio se algum componente da árvore rebentar no render.
  */
 export class AppErrorBoundary extends Component<Props, State> {
-  state: State = { err: null, recovering: false };
+  state: State = { err: null, recovering: false, autoReloadSec: null };
 
-  static getDerivedStateFromError(e: Error): State {
+  private autoReloadTimer: ReturnType<typeof setInterval> | null = null;
+
+  static getDerivedStateFromError(e: Error): Partial<State> {
     if (isChunkLikeLoadError(e)) {
-      return { err: e, recovering: true };
+      return { err: e, recovering: true, autoReloadSec: null };
     }
-    return { err: e, recovering: false };
+    return { err: e, recovering: false, autoReloadSec: null };
+  }
+
+  componentWillUnmount(): void {
+    this.clearAutoReloadTimer();
+  }
+
+  private clearAutoReloadTimer(): void {
+    if (this.autoReloadTimer != null) {
+      clearInterval(this.autoReloadTimer);
+      this.autoReloadTimer = null;
+    }
+  }
+
+  private scheduleStaleChunkAutoReload(): void {
+    this.clearAutoReloadTimer();
+    this.setState({ autoReloadSec: STALE_CHUNK_AUTO_RELOAD_SEC });
+    this.autoReloadTimer = setInterval(() => {
+      this.setState((prev) => {
+        const next = (prev.autoReloadSec ?? STALE_CHUNK_AUTO_RELOAD_SEC) - 1;
+        if (next <= 0) {
+          this.clearAutoReloadTimer();
+          hardReloadWithCacheBust(true);
+          return { ...prev, autoReloadSec: 0 };
+        }
+        return { ...prev, autoReloadSec: next };
+      });
+    }, 1000);
   }
 
   componentDidCatch(e: Error, info: ErrorInfo): void {
     console.error('[AppErrorBoundary]', e?.message || e, info?.componentStack);
     if (isChunkLikeLoadError(e) && !tryBoundaryStaleChunkRecovery()) {
       this.setState({ recovering: false });
+      this.scheduleStaleChunkAutoReload();
     }
   }
 
@@ -56,6 +88,11 @@ export class AppErrorBoundary extends Component<Props, State> {
               {staleChunkRecoveryHint()}
             </p>
           ) : null}
+          {isStaleChunk && this.state.autoReloadSec != null && this.state.autoReloadSec > 0 ? (
+            <p className="text-center text-amber-300/80 text-xs max-w-md">
+              A recarregar automaticamente em {this.state.autoReloadSec}s…
+            </p>
+          ) : null}
           {msg ? (
             <p
               className="max-w-lg rounded-lg border border-amber-900/40 bg-black/40 px-4 py-3 text-left text-xs text-amber-200/80 font-mono break-words"
@@ -68,7 +105,7 @@ export class AppErrorBoundary extends Component<Props, State> {
             <button
               type="button"
               onClick={() =>
-                isStaleChunk ? hardReloadWithCacheBust(true) : this.setState({ err: null })
+                isStaleChunk ? hardReloadWithCacheBust(true) : this.setState({ err: null, autoReloadSec: null })
               }
               className="rounded-lg border border-slate-600 bg-slate-800/60 px-5 py-2.5 text-sm font-bold text-slate-200 hover:bg-slate-700/80 transition"
             >
