@@ -1,6 +1,7 @@
 import { AccessLevel, GameState, LootBox, SystemNews, Upgrade, User, Web3Settings, MiningCoin, SeasonPass, SeasonPurchase, AdminUpgrade, MarketListing, RigRoom, MonetizationSettings, EconomySettings, SecurityStats, ReferralModel, GameUserActivityEntry, TransparencyEntry, TransparencyCategory, DeviceFingerprintPayload, AdminDeviceFingerprintLog, PlacedRack, StoredBattery, P2PMarketTradeHistory, P2PMarketTradeHistoryEntry, WheelItem } from '../types';
 import { GAME_NAV_LABEL_KEYS } from '../constants/gameNavLabels';
 import type { DashboardState, DashboardStateResult } from '../types/dashboard';
+import { isSafeHttpsLink, normalizeSafeInAppImagePath } from '../utils/inAppAnnouncementSafe';
 
 const base = '/api';
 const SESSION_HINT_KEY = 'genesis_has_session';
@@ -3092,7 +3093,14 @@ function parseMarketListingRow(raw: unknown): MarketListing | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   const id = typeof r.id === 'string' ? r.id.trim() : '';
-  const sellerName = typeof r.sellerName === 'string' ? r.sellerName : '';
+  const sellerName = typeof r.sellerName === 'string' ? r.sellerName.trim() : '';
+  const sellerIdRaw = r.sellerId ?? r.seller_id;
+  const sellerId =
+    typeof sellerIdRaw === 'number' && Number.isFinite(sellerIdRaw) && sellerIdRaw > 0
+      ? Math.floor(sellerIdRaw)
+      : typeof sellerIdRaw === 'string' && /^\d+$/.test(sellerIdRaw.trim())
+        ? parseInt(sellerIdRaw.trim(), 10)
+        : undefined;
   const itemId = typeof r.itemId === 'string' ? r.itemId.trim() : '';
   if (!id || !itemId) return null;
   const price = Number(r.price);
@@ -3101,6 +3109,7 @@ function parseMarketListingRow(raw: unknown): MarketListing | null {
     r.lineTotal != null && Number.isFinite(Number(r.lineTotal)) ? Number(r.lineTotal) : price * qty;
   return {
     id,
+    sellerId,
     sellerName,
     itemId,
     price: Number.isFinite(price) ? price : 0,
@@ -4677,6 +4686,136 @@ export async function getAdminUserSessionSnapshots(
   }
 }
 
+export type AdminAccountTraceSummary = {
+  userId: number;
+  username: string;
+  email: string;
+  accountCreatedAtMs: number | null;
+  lastSaveAtMs: number | null;
+  usdc: number;
+  blackMarketBalance: number;
+  totalUsdcDeposited: number | null;
+  totalCryptoWithdrawn: number | null;
+  totalHash: number;
+};
+
+export type AdminAccountTraceItemDisposition = {
+  itemId: string;
+  itemName: string;
+  acquired: number;
+  inStock: number;
+  onRigs: Array<{ rackId: string; slotIndex: number; roomId: string | null }>;
+  listedP2p: number;
+  soldP2p: number;
+  unaccounted: number;
+  hint: string;
+};
+
+export type AdminAccountTraceTimelineEvent = {
+  id: string;
+  atMs: number;
+  source: string;
+  kind: string;
+  action: string;
+  title: string;
+  summary: string;
+  lines?: string[];
+  severity: string;
+  category: string;
+  meta?: Record<string, unknown>;
+};
+
+export type AdminAccountTraceResponse = {
+  summary: AdminAccountTraceSummary;
+  currentInventory: Array<{ itemId: string; itemName: string; qty: number }>;
+  currentRigs: Array<{
+    rackId: string;
+    chassisId: string;
+    chassisName: string;
+    roomId: string | null;
+    slotIndex: number | null;
+    miners: Array<{ slotIndex: number; itemId: string; itemName: string }>;
+  }>;
+  currentMarket: Array<{
+    listingId: string;
+    itemId: string;
+    itemName: string;
+    qty: number;
+    price: number;
+    status: string;
+    expiresAtMs: number | null;
+    reservedBy: number | null;
+  }>;
+  p2p: {
+    sold: Array<{
+      id: string;
+      atMs: number;
+      role: string;
+      itemId: string;
+      itemName: string;
+      qty: number;
+      unitPrice: number;
+      totalUsdc: number;
+      counterpartyUserId: number;
+    }>;
+    bought: Array<{
+      id: string;
+      atMs: number;
+      role: string;
+      itemId: string;
+      itemName: string;
+      qty: number;
+      unitPrice: number;
+      totalUsdc: number;
+      counterpartyUserId: number;
+    }>;
+    activeListings: AdminAccountTraceResponse['currentMarket'];
+  };
+  shopPurchases: Array<{
+    atMs: number;
+    totalCost: number;
+    newUsdc: number;
+    lines: Array<{ id: string; qty: number; name?: string }>;
+  }>;
+  boxOpenings: Array<{ id: string; atMs: number; boxId: string; rewards: unknown; gainedUsdc: number }>;
+  itemDisposition: AdminAccountTraceItemDisposition[];
+  timeline: AdminAccountTraceTimelineEvent[];
+  timelineHasMore: boolean;
+  timelineNextCursor: number | null;
+};
+
+export async function getAdminUserAccountTrace(
+  userId: number,
+  opts?: {
+    fromMs?: number;
+    toMs?: number;
+    timelineLimit?: number;
+    timelineBeforeMs?: number;
+  }
+): Promise<{ data: AdminAccountTraceResponse | null; error?: string }> {
+  const q = new URLSearchParams();
+  if (opts?.fromMs) q.set('fromMs', String(opts.fromMs));
+  if (opts?.toMs) q.set('toMs', String(opts.toMs));
+  if (opts?.timelineLimit) q.set('timelineLimit', String(opts.timelineLimit));
+  if (opts?.timelineBeforeMs) q.set('timelineBeforeMs', String(opts.timelineBeforeMs));
+  try {
+    const res = await apiFetch(`${base}/admin/users/${userId}/account-trace?${q}`);
+    if (!res.ok) {
+      let msg = `Erro ${res.status}`;
+      try {
+        const j = (await res.json()) as { error?: string };
+        if (j.error) msg = j.error;
+      } catch {
+        /* ignore */
+      }
+      return { data: null, error: msg };
+    }
+    return { data: (await res.json()) as AdminAccountTraceResponse };
+  } catch {
+    return { data: null, error: 'Erro de rede.' };
+  }
+}
+
 export type AdminDormantMiningRow = {
   id: number;
   username: string;
@@ -4808,6 +4947,7 @@ export type AdminSuspiciousEmailsReport = {
     deadAccounts: number;
     referralOnly: number;
     highRisk: number;
+    totalActiveFiltered?: number;
   };
   trustedDomains?: string[];
   domainStats: Array<{ domain: string; count: number; reason: string }>;
@@ -4840,6 +4980,7 @@ export async function getAdminSuspiciousEmails(opts?: {
     deadAccounts: 0,
     referralOnly: 0,
     highRisk: 0,
+    totalActiveFiltered: 0,
   };
   const q = new URLSearchParams();
   if (opts?.q) q.set('q', opts.q.slice(0, 200));
@@ -4925,6 +5066,51 @@ export function getAdminSuspiciousEmailsExportUrl(opts?: {
   if (opts?.sort) q.set('sort', opts.sort);
   const qs = q.toString();
   return `${base}/admin/users/suspicious-emails/export.csv${qs ? `?${qs}` : ''}`;
+}
+
+export async function postAdminDeactivateFilteredSuspiciousUsers(opts: {
+  q?: string;
+  reason?: string;
+  status?: string;
+  domain?: string;
+  activity?: string;
+  expectedCount: number;
+}): Promise<{
+  ok: boolean;
+  deactivated?: number;
+  alreadyBlocked?: number;
+  error?: string;
+  code?: string;
+}> {
+  try {
+    const res = await apiFetch(`${base}/admin/users/suspicious-emails/deactivate-filtered`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        q: opts.q,
+        reason: opts.reason,
+        status: opts.status,
+        domain: opts.domain,
+        activity: opts.activity,
+        expectedCount: Math.floor(Number(opts.expectedCount) || 0),
+      }),
+    });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: typeof data.error === 'string' ? data.error : `Erro ${res.status}`,
+        code: typeof data.code === 'string' ? data.code : undefined,
+      };
+    }
+    return {
+      ok: true,
+      deactivated: typeof data.deactivated === 'number' ? data.deactivated : undefined,
+      alreadyBlocked: typeof data.alreadyBlocked === 'number' ? data.alreadyBlocked : undefined,
+    };
+  } catch {
+    return { ok: false, error: 'Erro de rede.' };
+  }
 }
 
 export async function setMonetizationSettings(settings: MonetizationSettings): Promise<void> {
@@ -6149,22 +6335,22 @@ export type InAppAnnouncementAdminPayload = InAppAnnouncementPayload & {
   readCount: number;
 };
 
+const IN_APP_ANNOUNCEMENT_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function parseInAppAnnouncement(raw: unknown): InAppAnnouncementPayload | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
   const id = typeof o.id === 'string' ? o.id.trim() : '';
   const title = typeof o.title === 'string' ? o.title.trim() : '';
   const message = typeof o.message === 'string' ? o.message : '';
-  if (!id || !title) return null;
-  const link =
-    typeof o.link === 'string' && o.link.trim()
-      ? o.link.trim()
-      : o.link === null
-        ? null
-        : null;
+  if (!id || !title || !message) return null;
+  if (!IN_APP_ANNOUNCEMENT_ID_RE.test(id)) return null;
+  const rawLink = typeof o.link === 'string' && o.link.trim() ? o.link.trim() : null;
+  const link = rawLink && isSafeHttpsLink(rawLink) ? rawLink : null;
   const imageUrlRaw = o.imageUrl ?? o.image_url;
   const imageUrl =
-    typeof imageUrlRaw === 'string' && imageUrlRaw.trim() ? imageUrlRaw.trim() : null;
+    typeof imageUrlRaw === 'string' ? normalizeSafeInAppImagePath(imageUrlRaw) : null;
   return { id, title, message, link, imageUrl };
 }
 

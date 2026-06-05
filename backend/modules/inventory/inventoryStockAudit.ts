@@ -34,14 +34,35 @@ export async function auditStockSaveDelta(
   }
 
   const allIds = new Set([...prevMap.keys(), ...nextMap.keys()]);
+  const catalogSet = new Set<string>();
+  if (allIds.size > 0) {
+    const catalogRes = await client.query<{ id: string }>(
+      `SELECT id FROM upgrades WHERE id = ANY($1::text[])`,
+      [[...allIds]]
+    );
+    for (const row of catalogRes.rows) catalogSet.add(String(row.id));
+  }
+
   for (const itemId of allIds) {
     const before = prevMap.get(itemId) ?? 0;
     const after = nextMap.get(itemId) ?? 0;
     if (before === after) continue;
 
     const delta = after - before;
+    const unknownCatalog = !catalogSet.has(itemId);
     const itemName = hooks.resolveItemName?.(itemId) ?? itemId;
-    const meta = { itemId, itemName, before, after, delta, source: 'save-game' };
+    const meta: Record<string, unknown> = {
+      itemId,
+      itemName,
+      before,
+      after,
+      delta,
+      source: 'save-game',
+      unknownCatalog,
+      ...(delta < 0
+        ? { dispositionHint: unknownCatalog ? 'unknown_catalog' : 'stock_only' }
+        : {})
+    };
 
     await recordInventoryMovement({
       userId: uid,

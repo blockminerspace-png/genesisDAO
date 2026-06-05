@@ -17,6 +17,7 @@ import {
   diffSnapshotInventory,
   type PlayerStateSnapshotPayload
 } from '../services/playerStateSnapshot.service.js';
+import { getAdminUserAccountTrace } from '../services/adminUserAccountTrace.service.js';
 
 export type AdminUserAuditDeps = {
   isAdmin: RequestHandler;
@@ -198,6 +199,49 @@ export function registerAdminUserAuditRoutes(app: Express, deps: AdminUserAuditD
     } catch (e) {
       console.error('[AdminSessionSnapshots]', e);
       res.status(500).json({ error: 'Falha ao carregar snapshots de sessão' });
+    }
+  });
+
+  app.get('/api/admin/users/:userId/account-trace', isAdmin, async (req: Request, res: Response) => {
+    try {
+      const userId = parseInt(String(req.params.userId), 10);
+      if (!Number.isFinite(userId) || userId <= 0) {
+        return res.status(400).json({ error: 'userId inválido' });
+      }
+      const fromMs = parseInt(String(req.query.fromMs || ''), 10);
+      const toMs = parseInt(String(req.query.toMs || ''), 10);
+      const timelineLimit = parseInt(String(req.query.timelineLimit || '100'), 10) || 100;
+      const timelineBeforeMs = parseInt(String(req.query.timelineBeforeMs || req.query.cursor || ''), 10);
+      const sectionsRaw = String(req.query.sections || '').trim();
+      const sections = sectionsRaw ? sectionsRaw.split(',').map((s) => s.trim()).filter(Boolean) : null;
+
+      const data = await getAdminUserAccountTrace({
+        userId,
+        fromMs: Number.isFinite(fromMs) && fromMs > 0 ? fromMs : null,
+        toMs: Number.isFinite(toMs) && toMs > 0 ? toMs : null,
+        timelineLimit,
+        timelineBeforeMs: Number.isFinite(timelineBeforeMs) && timelineBeforeMs > 0 ? timelineBeforeMs : null,
+        sections
+      });
+
+      if (!data) return res.status(404).json({ error: 'Utilizador não encontrado' });
+
+      if (sections && sections.length > 0) {
+        const out: Record<string, unknown> = {};
+        for (const key of sections) {
+          if (key in data) out[key] = (data as Record<string, unknown>)[key];
+        }
+        if (!sections.includes('timeline')) {
+          out.timelineHasMore = data.timelineHasMore;
+          out.timelineNextCursor = data.timelineNextCursor;
+        }
+        return res.json(out);
+      }
+
+      res.json(data);
+    } catch (e) {
+      console.error('[AdminAccountTrace]', e);
+      res.status(500).json({ error: 'Falha ao carregar rastreio da conta' });
     }
   });
 }

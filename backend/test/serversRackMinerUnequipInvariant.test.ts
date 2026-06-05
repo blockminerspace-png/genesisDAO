@@ -15,7 +15,7 @@ const machineUpgrades = [
     isActive: 1,
     name: 'Chassi A',
     image: null,
-    compatibleRacks: []
+    compatibleRacks: ['chassis_a']
   },
   {
     id: 'gpu_x',
@@ -26,8 +26,42 @@ const machineUpgrades = [
     name: 'GPU X',
     image: null,
     compatibleRacks: ['chassis_a']
+  },
+  {
+    id: 'asic_timed',
+    type: 'machine',
+    category: 'mining',
+    isActive: 1,
+    powerConsumption: 50,
+    name: 'ASIC Temporário',
+    image: null,
+    compatibleRacks: ['chassis_a'],
+    asicDurationAmount: 7,
+    asicDurationUnit: 'day',
+    asicDurationKind: 'daily'
   }
 ];
+
+function makeRackWithTimedAsic(slotIndex = 0, leaseId = 'lease-uuid-1'): PlacedRackLoaded {
+  const slots: string[] = ['', '', ''];
+  slots[slotIndex] = 'asic_timed';
+  const slotLeaseIds: string[] = ['', '', ''];
+  slotLeaseIds[slotIndex] = leaseId;
+  return {
+    id: 'rack_unequip_test',
+    itemId: 'chassis_a',
+    slots,
+    slotLeaseIds,
+    multiplierSlots: [],
+    wiringId: null,
+    batteryId: null,
+    currentCharge: 0,
+    isOn: true,
+    selectedCoinId: null,
+    roomId: 'room_initial',
+    slotIndex: 0
+  };
+}
 
 function makeRackWithGpu(slotIndex = 0): PlacedRackLoaded {
   const slots: string[] = ['', '', ''];
@@ -128,5 +162,19 @@ describe('GPU duplication invariants — unequip / equip cycles', () => {
     expect(inSlots + inStock).toBe(1);
     expect(inSlots).toBe(0);
     expect(inStock).toBe(1);
+  });
+
+  it('ASIC timed: apply in-memory não incrementa stock (postApply sync leases)', () => {
+    const prev = {
+      stock: {} as Record<string, number>,
+      storedBatteries: [],
+      placedRacks: [makeRackWithTimedAsic(0)]
+    };
+    const out = applyRackMinerUnequip(prev, 'rack_unequip_test', 0, machineUpgrades);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.stock.asic_timed).toBeUndefined();
+    expect(out.placedRacks[0].slots[0]).toBe('');
+    expect(out.placedRacks[0].slotLeaseIds?.[0]).toBe('');
   });
 });

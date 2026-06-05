@@ -203,8 +203,8 @@ export const PartnersPage: React.FC = () => {
           {activeTab === 'videos'
             ? 'Vitrine com os vídeos aprovados pela equipa — explora, subscreve e apoia os criadores.'
             : isPartner
-              ? 'Gere o teu canal parceiro, envia vídeos (1/dia UTC) e acompanha a Sala NFT.'
-              : 'Candidata o teu canal YouTube, desbloqueia a Sala NFT e passa a submeter conteúdo após aprovação.'}
+              ? 'Gere o teu canal parceiro, envia vídeos (1/dia UTC) e acompanha a Sala Streamer.'
+              : 'Candidata o teu canal YouTube, desbloqueia a Sala Streamer e passa a submeter conteúdo após aprovação.'}
         </p>
 
         <div

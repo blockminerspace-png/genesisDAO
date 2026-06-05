@@ -42,14 +42,17 @@ import { normalizePublicAssetUrl } from './dist/lib/publicAssetUrl.js';
 import { recoverOrphanRackBatteryStorageRows } from './dist/modules/batteries/batteries.recovery.js';
 import { ensureStoredBatteriesIntegrity } from './dist/modules/batteries/batteries.integrity.js';
 import {
+  buildStableLegacyTempUpgradeId,
   CANONICAL_1000WH_BATTERY_ID,
   isKnownInfiniteBatteryCatalogId,
   normalizeKnown1000WhBatteryCatalogId
 } from './dist/modules/batteries/batteries.catalog.js';
+import { remapPurgedAndTempLegacyStockToEstelar } from './lib/stockPurgedRemap.js';
 import { orphanRackBatteryAutoRecoverEnabled } from './dist/lib/orphanRackBatteryRecoveryGate.js';
 import {
   fetchSuspiciousEmailsReport,
-  buildSuspiciousEmailsCsv
+  buildSuspiciousEmailsCsv,
+  deactivateFilteredSuspiciousUsers
 } from './dist/modules/admin/suspiciousEmails/suspiciousEmailsAdmin.service.js';
 
 /** Tempo de bloco fixo na economia do simulador (10 minutos) — alinhado ao admin / frontend. */
@@ -447,6 +450,17 @@ async function ensureStockItemIdsSane() {
   }
 
   try {
+    const purgedRemap = await remapPurgedAndTempLegacyStockToEstelar(db);
+    if (
+      purgedRemap.estelarMergedRows > 0 ||
+      purgedRemap.purgedDeletedRows > 0 ||
+      purgedRemap.tempStockDeletedRows > 0
+    ) {
+      console.log(
+        `[Migration] stock purge→${CANONICAL_1000WH_BATTERY_ID}: merge ${purgedRemap.estelarMergedRows}, del ${purgedRemap.purgedDeletedRows}, temp ${purgedRemap.tempStockDeletedRows}`
+      );
+    }
+
     // 2) item_id com espaços → id canónico se existir upgrade e não houver colisão de PK
     const trimRes = await db.query(`
       UPDATE stock s
@@ -491,18 +505,11 @@ async function ensureStockItemIdsSane() {
     );
     if ((brokenRes.rowCount ?? 0) === 0) return;
 
-    let seq = 0;
     for (const row of brokenRes.rows) {
-      seq += 1;
       const original = typeof row.item_id === 'string' ? row.item_id : '';
       const normalizedOriginal = original.trim() || 'sem-id';
-      const slug = normalizedOriginal
-        .toLowerCase()
-        .replace(/[^a-z0-9_.-]+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        .slice(0, 80) || 'sem-id';
-      const tempId = `temp_legacy_${row.user_id}_${seq}_${slug}`.slice(0, 200);
-      const label = `Item temporario recuperado #${row.user_id}-${seq}`;
+      const tempId = buildStableLegacyTempUpgradeId(Number(row.user_id), normalizedOriginal);
+      const label = `Item temporario recuperado (${normalizedOriginal})`;
       const desc = `Placeholder criado automaticamente para preservar inventario legado. original=${normalizedOriginal} email=${String(row.email || '').slice(0, 120)}`;
 
       await db.query(
@@ -5418,6 +5425,61 @@ app.get('/api/admin/users/suspicious-emails/export.csv', isAdmin, async (req, re
   }
 });
 
+app.post('/api/admin/users/suspicious-emails/deactivate-filtered', isAdmin, async (req, res) => {
+  try {
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+    const expectedCount = Math.floor(Number(body.expectedCount) || 0);
+    const adminUserId = Number(req.userId);
+    if (!Number.isFinite(adminUserId) || adminUserId <= 0) {
+      return res.status(401).json({ ok: false, error: 'Não autenticado.' });
+    }
+    const result = await deactivateFilteredSuspiciousUsers(
+      db,
+      {
+        q: body.q != null ? String(body.q) : undefined,
+        reason: body.reason != null ? String(body.reason) : undefined,
+        status: body.status != null ? String(body.status) : undefined,
+        domain: body.domain != null ? String(body.domain) : undefined,
+        activity: body.activity != null ? String(body.activity) : undefined,
+      },
+      { expectedCount, adminUserId }
+    );
+    if (!result.ok) {
+      if (result.code === 'COUNT_MISMATCH') {
+        return res.status(409).json({
+          ok: false,
+          code: 'COUNT_MISMATCH',
+          error: `Contagem desactualizada: esperado ${result.expected}, actual ${result.actual}. Actualize a lista.`,
+          expected: result.expected,
+          actual: result.actual,
+        });
+      }
+      return res.status(400).json({ ok: false, error: result.error || 'Pedido inválido.' });
+    }
+    dashboardStatsCache = null;
+    lastDashboardFetch = 0;
+    await appendGameActivityLog(db, adminUserId, 'suspicious_emails_bulk_deactivate', {
+      deactivated: result.deactivated,
+      alreadyBlocked: result.alreadyBlocked,
+      expectedCount,
+      filters: {
+        q: body.q,
+        reason: body.reason,
+        status: body.status,
+        domain: body.domain,
+        activity: body.activity,
+      },
+    });
+    res.json({
+      ok: true,
+      deactivated: result.deactivated,
+      alreadyBlocked: result.alreadyBlocked,
+    });
+  } catch (e) {
+    sendInternalErrorOrPrisma(res, req.originalUrl || 'api', e);
+  }
+});
+
 app.get('/api/admin/users/:userId/wallet-history', isAdmin, async (req, res) => {
   const userId = parseInt(String(req.params.userId), 10);
   if (!Number.isFinite(userId) || userId <= 0) {
@@ -5501,7 +5563,12 @@ app.post('/api/admin/access-level-referral-assignments', isAdmin, async (req, re
 });
 
 async function computeAdminDashboardStatsUncached() {
-  const totalUsersRes = await db.query('SELECT COUNT(*) FROM users WHERE is_admin = 0');
+  const totalUsersRes = await db.query(
+    'SELECT COUNT(*) FROM users WHERE is_admin = 0 AND COALESCE(is_blocked, 0) = 0'
+  );
+  const deactivatedUsersRes = await db.query(
+    'SELECT COUNT(*) FROM users WHERE is_admin = 0 AND COALESCE(is_blocked, 0) <> 0'
+  );
   const nowMs = Date.now();
   const onlineCutoff = nowMs - 4 * 60 * 1000;
   const onlineUsersRes = await db.query(`
@@ -5613,6 +5680,7 @@ async function computeAdminDashboardStatsUncached() {
 
   return {
     totalUsers: parseInt(String(totalUsersRes.rows[0]?.count ?? 0), 10) || 0,
+    deactivatedUsers: parseInt(String(deactivatedUsersRes.rows[0]?.count ?? 0), 10) || 0,
     onlineUsers: parseInt(String(onlineUsersRes.rows[0]?.count ?? 0), 10) || 0,
     totalDeposited: Number(depositsRes.rows[0]?.total) || 0,
     totalWithdrawn: Number(withdrawnRes.rows[0]?.total) || 0,
@@ -6756,6 +6824,7 @@ app.get('/api/game-state/:email', async (req, res) => {
       const unit = Number(r.price);
       return {
         id: r.id,
+        sellerId: uid,
         sellerName: sellerLabel,
         itemId: r.item_id,
         price: unit,
@@ -7146,22 +7215,6 @@ async function validatePlacedRacksForSave(dbq, racks, userId) {
           mergeStoredBatteryRowIntoMap(row);
         }
       }
-    } else if (Number.isFinite(uidNum) && uidNum > 0 && Array.isArray(racks)) {
-      let uuidBatt = 0;
-      for (const r of racks) {
-        const b = String(r?.batteryId ?? '').trim();
-        if (b && isRackBatteryInstanceUuid(b)) uuidBatt++;
-      }
-      if (uuidBatt > 0) {
-        console.warn(
-          JSON.stringify({
-            event: 'legacy_save_orphan_risk_scan',
-            userId: uidNum,
-            racksReferencingInstanceUuid: uuidBatt,
-            autoRecover: false
-          })
-        );
-      }
     }
   } catch (eRec) {
     console.warn(
@@ -7170,6 +7223,40 @@ async function validatePlacedRacksForSave(dbq, racks, userId) {
     );
   }
   await refreshOwnedStoredBatteryIds();
+  if (
+    !orphanRackBatteryAutoRecoverEnabled() &&
+    Number.isFinite(uidNum) &&
+    uidNum > 0 &&
+    Array.isArray(racks)
+  ) {
+    let orphanBatteryCount = 0;
+    for (const r of racks) {
+      const b = String(r?.batteryId ?? '').trim();
+      if (b && isRackBatteryInstanceUuid(b) && !ownedStoredBatteryIds.has(b)) orphanBatteryCount += 1;
+    }
+    if (orphanBatteryCount > 0) {
+      console.warn(
+        JSON.stringify({
+          event: 'legacy_save_orphan_risk_scan',
+          userId: uidNum,
+          racksReferencingInstanceUuid: orphanBatteryCount,
+          autoRecover: false
+        })
+      );
+      try {
+        await appendGameActivityLogMongo(uidNum, 'orphan_risk_detected', {
+          kind: 'rack_battery_uuid',
+          count: orphanBatteryCount,
+          autoRecover: false
+        });
+      } catch (eLog) {
+        console.warn(
+          '[validatePlacedRacksForSave] orphan_risk_detected log:',
+          eLog instanceof Error ? eLog.message : String(eLog)
+        );
+      }
+    }
+  }
   const nftRoomIds = await resolveNftAutoArmario1OnlyRoomIds(dbq);
   const upgradeIds = new Set();
   const coinIds = new Set();

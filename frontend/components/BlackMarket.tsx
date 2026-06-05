@@ -49,12 +49,36 @@ function p2pLineTotal(l: Pick<MarketListing, 'price' | 'qty' | 'lineTotal'>): nu
   return (Number.isFinite(u) ? u : 0) * q;
 }
 
+function formatSellerLabel(listing: Pick<MarketListing, 'sellerId' | 'sellerName'>): string {
+  const name = listing.sellerName?.trim() || '—';
+  const sid = listing.sellerId;
+  if (sid != null && Number.isFinite(sid) && sid > 0) {
+    return `#${sid} · ${name}`;
+  }
+  return name;
+}
+
+function isOwnListing(
+  listing: Pick<MarketListing, 'sellerId' | 'sellerName'>,
+  currentUserId?: number,
+  currentUserName?: string,
+  currentUserEmail?: string
+): boolean {
+  if (currentUserId != null && listing.sellerId != null && listing.sellerId > 0) {
+    return listing.sellerId === currentUserId;
+  }
+  const sn = listing.sellerName?.trim();
+  if (!sn) return false;
+  return sn === (currentUserName?.trim() || '') || sn === (currentUserEmail?.trim() || '');
+}
+
 interface BlackMarketProps {
   gameState: GameState;
   onBuyListing: (listing: MarketListing) => void;
   onCreateListing?: (itemId: string, price: number, qty: number) => void;
   onCancelListing?: (listingId: string) => void;
   upgrades: Upgrade[];
+  currentUserId?: number;
   currentUserName?: string;
   currentUserEmail?: string;
   isEnabled?: boolean;
@@ -64,7 +88,20 @@ interface BlackMarketProps {
   priceBandPercent?: number;
 }
 
-export const BlackMarket: React.FC<BlackMarketProps> = ({ gameState, onBuyListing: _onBuyListing, onCreateListing, onCancelListing, upgrades, currentUserName, currentUserEmail, isEnabled = true, onClaimSuccess, refreshTrigger = 0, priceBandPercent: priceBandProp = 20 }) => {
+export const BlackMarket: React.FC<BlackMarketProps> = ({
+  gameState,
+  onBuyListing: _onBuyListing,
+  onCreateListing,
+  onCancelListing,
+  upgrades,
+  currentUserId,
+  currentUserName,
+  currentUserEmail,
+  isEnabled = true,
+  onClaimSuccess,
+  refreshTrigger = 0,
+  priceBandPercent: priceBandProp = 20
+}) => {
   const [bmPriceBandPercent, setBmPriceBandPercent] = useState<number | null>(null);
   const band = Math.min(90, Math.max(1, Number(bmPriceBandPercent ?? priceBandProp) || 20));
   const minFactor = 1 - band / 100;
@@ -77,6 +114,7 @@ export const BlackMarket: React.FC<BlackMarketProps> = ({ gameState, onBuyListin
   const modeRef = useRef(mode);
   useEffect(() => { modeRef.current = mode; }, [mode]);
   const [marketListings, setMarketListings] = useState<MarketListing[]>([]);
+  const [myActiveListings, setMyActiveListings] = useState<MarketListing[]>([]);
   const [listingsTotal, setListingsTotal] = useState(0);
   const [buyFilterCategoriesServer, setBuyFilterCategoriesServer] = useState<string[]>([]);
   const [bmSnapshotUsdc, setBmSnapshotUsdc] = useState<number | null>(null);
@@ -239,6 +277,7 @@ export const BlackMarket: React.FC<BlackMarketProps> = ({ gameState, onBuyListin
         setBmSnapshotBmb(st.blackMarketBalance);
         setBmPriceBandPercent(st.priceBandPercent);
         setBuyFilterCategoriesServer(st.buyFilterCategories);
+        setMyActiveListings(st.myActiveListings);
 
         if (mode === 'buy') {
           const f = buyFiltersRef.current;
@@ -482,13 +521,12 @@ export const BlackMarket: React.FC<BlackMarketProps> = ({ gameState, onBuyListin
     return marketListings.filter((listing) => {
       const item = upgrades.find((u) => u.id === listing.itemId);
       if (!item || item.sellInBlackMarket === false) return false;
-      if (!useServerBuyBook) {
-        const isOwn = listing.sellerName === currentUserName || listing.sellerName === currentUserEmail;
-        if (isOwn) return false;
+      if (!useServerBuyBook && isOwnListing(listing, currentUserId, currentUserName, currentUserEmail)) {
+        return false;
       }
       return true;
     });
-  }, [marketListings, upgrades, currentUserName, currentUserEmail, useServerBuyBook]);
+  }, [marketListings, upgrades, currentUserId, currentUserName, currentUserEmail, useServerBuyBook]);
 
   const filteredBuyListings = useMemo(() => {
     if (useServerBuyBook) return buyListingsFromOthers;
@@ -758,15 +796,19 @@ export const BlackMarket: React.FC<BlackMarketProps> = ({ gameState, onBuyListin
                   const item = upgrades.find(u => u.id === listing.itemId);
                   if (!item) return null;
                   if (item.sellInBlackMarket === false) return null;
-                  const isOwn = listing.sellerName === currentUserName || listing.sellerName === currentUserEmail;
-                  if (isOwn) return null; // Hide own listings from buy view
+                  if (isOwnListing(listing, currentUserId, currentUserName, currentUserEmail)) {
+                    return null;
+                  }
 
                   const lineTotal = p2pLineTotal(listing);
                   const unitPrice = Number(listing.price);
                   const canAffordFull = walletUsdcDisplay >= lineTotal;
                   const canAffordAny =
                     Number.isFinite(unitPrice) && unitPrice > 0 && walletUsdcDisplay >= unitPrice;
-                  const isReservedForOther = listing.reservedBy && listing.reservedBy !== currentUserName && listing.reservedBy !== currentUserEmail;
+                  const isReservedForOther =
+                    listing.reservedBy &&
+                    listing.reservedBy !== (currentUserName?.trim() || '') &&
+                    listing.reservedBy !== (currentUserEmail?.trim() || '');
                   const hasImage = item.image;
                   return (
                     <div key={listing.id} className="bg-slate-900/70 border border-slate-800 hover:border-red-600/40 hover:shadow-lg hover:shadow-red-900/10 rounded-xl p-4 flex items-center justify-between gap-3 group transition-all">
@@ -783,8 +825,11 @@ export const BlackMarket: React.FC<BlackMarketProps> = ({ gameState, onBuyListin
                               </span>
                             )}
                           </h3>
-                          <div className="mt-1 text-[11px] text-slate-500 truncate" title={listing.sellerName}>
-                            Vendedor: <span className="text-slate-400">{listing.sellerName}</span>
+                          <div
+                            className="mt-1 text-[11px] text-slate-500 truncate"
+                            title={formatSellerLabel(listing)}
+                          >
+                            Vendedor: <span className="text-slate-400">{formatSellerLabel(listing)}</span>
                           </div>
                           <UpgradeMarketSpecLine item={item} catalog={upgrades} className="mt-1" />
                         </div>
@@ -1147,13 +1192,18 @@ export const BlackMarket: React.FC<BlackMarketProps> = ({ gameState, onBuyListin
               <ShieldCheck size={10} /> Itens ficam bloqueados no cofre até vender ou cancelar.
             </p>
 
-            {gameState.playerListings.length === 0 ? (
+            {(() => {
+              const sellRows =
+                useServerBuyBook && myActiveListings.length > 0
+                  ? myActiveListings
+                  : gameState.playerListings.filter((l) => !l.status || l.status === 'active');
+              return sellRows.length === 0 ? (
               <div className="text-center py-8 text-slate-600 border border-dashed border-slate-800 rounded-lg">
                 Nenhuma linha ativa no book.
               </div>
             ) : (
               <div className="space-y-2">
-                {gameState.playerListings.filter(l => !l.status || l.status === 'active').map(listing => {
+                {sellRows.map(listing => {
                   const item = upgrades.find(u => u.id === listing.itemId);
                   if (!item) return null;
 
@@ -1185,7 +1235,8 @@ export const BlackMarket: React.FC<BlackMarketProps> = ({ gameState, onBuyListin
                   )
                 })}
               </div>
-            )}
+            );
+            })()}
           </div>
         </div>
       )}
@@ -1219,7 +1270,9 @@ export const BlackMarket: React.FC<BlackMarketProps> = ({ gameState, onBuyListin
                             <span className="ml-1 text-xs font-normal text-slate-500">(até {maxQ} un.)</span>
                           )}
                         </div>
-                        <div className="text-xs text-slate-500">Vendedor: {confirmListing.sellerName}</div>
+                        <div className="text-xs text-slate-500">
+                          Vendedor: {formatSellerLabel(confirmListing)}
+                        </div>
                         {item && <UpgradeMarketSpecLine item={item} catalog={upgrades} className="mt-1" compact={false} />}
                       </div>
                     </div>

@@ -4,6 +4,7 @@ import {
   getAdminSuspiciousEmails,
   getAdminSuspiciousEmailsExportUrl,
   getAdminUserActivity,
+  postAdminDeactivateFilteredSuspiciousUsers,
   toggleUserBlocked,
   type AdminSuspiciousEmailsReport,
   type AdminSuspiciousEmailUserRow,
@@ -207,7 +208,7 @@ export const AdminSuspiciousEmailsPanel: React.FC<Props> = ({ requestOpenUserInE
   const handleBulkBlock = async () => {
     if (selectedById.size === 0) return;
     const emails = Array.from(selectedById.values()).map((v) => v.email);
-    if (!window.confirm(`Bloquear ${emails.length} conta(s) seleccionada(s)?`)) return;
+    if (!window.confirm(`Desactivar ${emails.length} conta(s) seleccionada(s)?`)) return;
     setBulkBusy(true);
     let ok = 0;
     const failed: string[] = [];
@@ -220,18 +221,57 @@ export const AdminSuspiciousEmailsPanel: React.FC<Props> = ({ requestOpenUserInE
     await load();
     if (failed.length === 0) {
       clearSelection();
-      setNotice({ variant: 'success', title: 'Bloqueio', message: `${ok} conta(s) bloqueada(s).` });
+      setNotice({ variant: 'success', title: 'Desactivação', message: `${ok} conta(s) desactivada(s).` });
     } else {
       const sample = failed.slice(0, 5).join(', ');
       setNotice({
         variant: 'error',
-        title: 'Bloqueio em massa',
+        title: 'Desactivação em massa',
         message:
           failed.length > 5
-            ? `Bloqueados: ${ok}. Falharam: ${failed.length} (ex.: ${sample}…).`
-            : `Bloqueados: ${ok}. Falharam: ${failed.length} (${sample}).`,
+            ? `Desactivados: ${ok}. Falharam: ${failed.length} (ex.: ${sample}…).`
+            : `Desactivados: ${ok}. Falharam: ${failed.length} (${sample}).`,
       });
     }
+  };
+
+  const handleDeactivateFiltered = async () => {
+    const n = report?.summary?.totalActiveFiltered ?? 0;
+    if (n < 1 || bulkBusy) return;
+    if (
+      !window.confirm(
+        `Desactivar ${n} conta(s) activa(s) com os filtros actuais?\n\nNão apaga dados. Deixam de entrar no jogo e de contar no dashboard.`
+      )
+    ) {
+      return;
+    }
+    setBulkBusy(true);
+    const domainParam = reason === 'specific_domain' ? specificDomain.trim().toLowerCase() : undefined;
+    const res = await postAdminDeactivateFilteredSuspiciousUsers({
+      q: q.trim() || undefined,
+      reason,
+      activity,
+      status,
+      domain: domainParam,
+      expectedCount: n,
+    });
+    setBulkBusy(false);
+    if (!res.ok) {
+      setNotice({
+        variant: 'error',
+        title: 'Desactivar filtrados',
+        message: res.error || 'Falha ao desactivar contas.',
+      });
+      if (res.code === 'COUNT_MISMATCH') await load();
+      return;
+    }
+    await load();
+    clearSelection();
+    setNotice({
+      variant: 'success',
+      title: 'Desactivação em massa',
+      message: `${res.deactivated ?? n} conta(s) desactivada(s).`,
+    });
   };
 
   const handleBulkDelete = async () => {
@@ -448,7 +488,7 @@ export const AdminSuspiciousEmailsPanel: React.FC<Props> = ({ requestOpenUserInE
           >
             <option value="all">Todos</option>
             <option value="active">Activos</option>
-            <option value="blocked">Bloqueados</option>
+            <option value="blocked">Desactivados</option>
           </select>
         </div>
         <div className="flex flex-col gap-1">
@@ -490,6 +530,16 @@ export const AdminSuspiciousEmailsPanel: React.FC<Props> = ({ requestOpenUserInE
         >
           <Download size={16} />
           Exportar CSV
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleDeactivateFiltered()}
+          disabled={bulkBusy || loading || (report?.summary?.totalActiveFiltered ?? 0) < 1}
+          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-orange-800 hover:bg-orange-700 text-white text-sm font-bold h-[38px] self-end disabled:opacity-50"
+          title="Desactiva todas as contas activas que correspondem aos filtros actuais (is_blocked=1)"
+        >
+          {bulkBusy ? <Loader2 className="animate-spin" size={16} /> : <Lock size={16} />}
+          Desactivar filtrados activos ({report?.summary?.totalActiveFiltered ?? 0})
         </button>
       </div>
 
@@ -533,7 +583,7 @@ export const AdminSuspiciousEmailsPanel: React.FC<Props> = ({ requestOpenUserInE
             className="inline-flex items-center gap-1.5 rounded-lg bg-amber-700 px-3 py-2 text-xs font-bold text-white hover:bg-amber-600 disabled:opacity-50"
           >
             {bulkBusy ? <Loader2 className="animate-spin" size={14} /> : <Lock size={14} />}
-            Bloquear
+            Desactivar seleccionados
           </button>
           <button
             type="button"
@@ -654,7 +704,7 @@ export const AdminSuspiciousEmailsPanel: React.FC<Props> = ({ requestOpenUserInE
                           row.status === 'blocked' ? 'bg-red-900/50 text-red-200' : 'bg-emerald-900/40 text-emerald-200'
                         }`}
                       >
-                        {row.status === 'blocked' ? 'Bloq.' : 'Activo'}
+                        {row.status === 'blocked' ? 'Desactiv.' : 'Activo'}
                       </span>
                     </td>
                     <td className="px-2 py-2 text-slate-300 text-xs truncate" title={row.accessLevel ?? ''}>

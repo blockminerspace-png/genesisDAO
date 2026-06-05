@@ -15,6 +15,10 @@ import type {
   PlayerInventorySnapshot
 } from './inventory.types.js';
 import { shouldExposeBatteryInInventoryWarehouse } from '../batteries/batteryInvariant.service.js';
+import {
+  CANONICAL_1000WH_BATTERY_ID,
+  PURGED_LEGACY_STOCK_REMAP_TO_ESTELAR
+} from '../batteries/batteries.catalog.js';
 
 function stockRowsToMap(rows: { item_id: string; qty: number }[]): Record<string, number> {
   const stock: Record<string, number> = {};
@@ -105,12 +109,21 @@ export async function resolveStackableRowsForStock(
         : false;
     if (isLegacy) {
       const origId = parseLegacyOriginalIdFromDescription(u.description);
+      if (origId && PURGED_LEGACY_STOCK_REMAP_TO_ESTELAR.has(origId)) {
+        const estelar = upgradeById.get(CANONICAL_1000WH_BATTERY_ID);
+        if (estelar?.name) {
+          const base = mapUpgradeToStackRow(stockKey, qty, estelar);
+          rows.push({ ...base, stockKey, catalogItemId: CANONICAL_1000WH_BATTERY_ID });
+          continue;
+        }
+      }
       const real = origId ? upgradeById.get(origId) : undefined;
       if (real?.name) {
         const base = mapUpgradeToStackRow(stockKey, qty, real);
         rows.push({ ...base, stockKey, catalogItemId: real.id });
         continue;
       }
+      continue;
     }
     rows.push(mapUpgradeToStackRow(stockKey, qty, u));
   }
@@ -217,7 +230,7 @@ export async function buildInventoryStateV1(pool: Pool, userId: number): Promise
   const stock = stockRowsToMap(stockRows);
   const stockKeys = Object.keys(stock);
   const batItemIds = [...new Set(batRowsRaw.map((b) => String(b.item_id || '').trim()).filter(Boolean))];
-  const allUpgradeIds = [...new Set([...stockKeys, ...batItemIds])];
+  const allUpgradeIds = [...new Set([...stockKeys, ...batItemIds, CANONICAL_1000WH_BATTERY_ID])];
 
   const upgrades =
     allUpgradeIds.length === 0

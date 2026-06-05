@@ -145,6 +145,9 @@ export function resolveAdminRouteRequirement(method: string, rawPath: string): A
   if (method.toUpperCase() === 'GET' && /^\/api\/admin\/users\/[^/]+\/session-snapshots$/.test(p)) {
     return { kind: 'tab', tab: 'users' };
   }
+  if (method.toUpperCase() === 'GET' && /^\/api\/admin\/users\/[^/]+\/account-trace$/.test(p)) {
+    return { kind: 'tab', tab: 'users' };
+  }
   if (p === '/api/admin/update-coin-balance' || p === '/api/admin/bulk-update-coin-balance') return { kind: 'tab', tab: 'users' };
   if (p === '/api/admin/ranking-exclusion') return { kind: 'tab', tab: 'users' };
 
@@ -161,6 +164,9 @@ export function resolveAdminRouteRequirement(method: string, rawPath: string): A
     method.toUpperCase() === 'GET' &&
     (p === '/api/admin/users/suspicious-emails' || p === '/api/admin/users/suspicious-emails/export.csv')
   ) {
+    return { kind: 'tab', tab: 'users' };
+  }
+  if (method.toUpperCase() === 'POST' && p === '/api/admin/users/suspicious-emails/deactivate-filtered') {
     return { kind: 'tab', tab: 'users' };
   }
   if (p.startsWith('/api/admin/economy-stats')) return { kind: 'tab', tab: 'reports' };

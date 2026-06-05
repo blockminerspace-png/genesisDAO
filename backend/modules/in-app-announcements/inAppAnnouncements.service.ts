@@ -1,10 +1,17 @@
 import crypto from 'node:crypto';
 import { prisma } from '../../config/prisma.js';
+import {
+  PENDING_MAX,
+  parseAnnouncementId,
+  parseOptionalHttpsLink,
+  parseOptionalSelfImagePath,
+  validateScheduleRange,
+  type ValidatedCreateInAppAnnouncement,
+  type ValidatedUpdateInAppAnnouncement
+} from '../../validation/inAppAnnouncementValidation.js';
 import type {
-  CreateInAppAnnouncementInput,
   InAppAnnouncementAdminDto,
-  InAppAnnouncementDto,
-  UpdateInAppAnnouncementInput
+  InAppAnnouncementDto
 } from './inAppAnnouncements.types.js';
 
 function nowMs(): number {
@@ -28,12 +35,24 @@ function toPlayerDto(row: {
   priority: number;
   created_at: bigint;
 }): InAppAnnouncementDto {
+  let link: string | null = null;
+  let imageUrl: string | null = null;
+  try {
+    link = parseOptionalHttpsLink(row.link);
+  } catch {
+    link = null;
+  }
+  try {
+    imageUrl = parseOptionalSelfImagePath(row.image_url);
+  } catch {
+    imageUrl = null;
+  }
   return {
     id: row.id,
     title: row.title,
     message: row.message,
-    link: row.link && String(row.link).trim() ? String(row.link).trim() : null,
-    imageUrl: row.image_url && String(row.image_url).trim() ? String(row.image_url).trim() : null,
+    link,
+    imageUrl,
     priority: Number(row.priority) || 0,
     createdAt: Number(row.created_at) || nowMs()
   };
@@ -66,31 +85,37 @@ function toAdminDto(
 }
 
 export async function listPendingAnnouncementsForUser(userId: number): Promise<InAppAnnouncementDto[]> {
-  const at = nowMs();
-  const readRows = await prisma.in_app_announcement_reads.findMany({
-    where: { user_id: userId },
-    select: { announcement_id: true }
-  });
-  const readIds = new Set(readRows.map((r) => r.announcement_id));
+  const at = BigInt(nowMs());
 
   const rows = await prisma.in_app_announcements.findMany({
-    where: { is_active: 1 },
-    orderBy: [{ priority: 'desc' }, { created_at: 'desc' }]
+    where: {
+      is_active: 1,
+      reads: { none: { user_id: userId } },
+      AND: [
+        { OR: [{ starts_at: null }, { starts_at: { lte: at } }] },
+        { OR: [{ ends_at: null }, { ends_at: { gte: at } }] }
+      ]
+    },
+    orderBy: [{ priority: 'desc' }, { created_at: 'desc' }],
+    take: PENDING_MAX
   });
 
-  const pending = rows
-    .filter((r) => !readIds.has(r.id) && isWithinSchedule(r.starts_at, r.ends_at, at))
-    .map(toPlayerDto);
-
-  return pending;
+  return rows.filter((r) => isWithinSchedule(r.starts_at, r.ends_at, Number(at))).map(toPlayerDto);
 }
 
-export async function dismissAnnouncementForUser(userId: number, announcementId: string): Promise<boolean> {
-  const id = String(announcementId || '').trim();
-  if (!id) return false;
+export async function dismissAnnouncementForUser(
+  userId: number,
+  announcementIdRaw: string
+): Promise<'ok' | 'not_found' | 'invalid_id'> {
+  let id: string;
+  try {
+    id = parseAnnouncementId(announcementIdRaw);
+  } catch {
+    return 'invalid_id';
+  }
 
   const exists = await prisma.in_app_announcements.findUnique({ where: { id }, select: { id: true } });
-  if (!exists) return false;
+  if (!exists) return 'not_found';
 
   await prisma.in_app_announcement_reads.upsert({
     where: {
@@ -106,7 +131,7 @@ export async function dismissAnnouncementForUser(userId: number, announcementId:
     }
   });
 
-  return true;
+  return 'ok';
 }
 
 export async function listAnnouncementsAdmin(): Promise<InAppAnnouncementAdminDto[]> {
@@ -124,28 +149,22 @@ export async function listAnnouncementsAdmin(): Promise<InAppAnnouncementAdminDt
 }
 
 export async function createAnnouncementAdmin(
-  input: CreateInAppAnnouncementInput
+  input: ValidatedCreateInAppAnnouncement,
+  createdBy: number | null
 ): Promise<InAppAnnouncementAdminDto> {
-  const title = String(input.title || '').trim();
-  const message = String(input.message || '').trim();
-  if (!title || !message) {
-    throw new Error('TITLE_MESSAGE_REQUIRED');
-  }
-
   const row = await prisma.in_app_announcements.create({
     data: {
       id: crypto.randomUUID(),
-      title,
-      message,
-      link: input.link && String(input.link).trim() ? String(input.link).trim() : null,
-      image_url:
-        input.imageUrl && String(input.imageUrl).trim() ? String(input.imageUrl).trim() : null,
-      is_active: input.isActive === false ? 0 : 1,
-      priority: Number(input.priority) || 0,
+      title: input.title,
+      message: input.message,
+      link: input.link,
+      image_url: input.imageUrl,
+      is_active: input.isActive ? 1 : 0,
+      priority: input.priority,
       starts_at: input.startsAt != null ? BigInt(input.startsAt) : null,
       ends_at: input.endsAt != null ? BigInt(input.endsAt) : null,
       created_at: BigInt(nowMs()),
-      created_by: input.createdBy ?? null
+      created_by: createdBy
     }
   });
 
@@ -153,34 +172,33 @@ export async function createAnnouncementAdmin(
 }
 
 export async function updateAnnouncementAdmin(
-  id: string,
-  input: UpdateInAppAnnouncementInput
+  idRaw: string,
+  input: ValidatedUpdateInAppAnnouncement
 ): Promise<InAppAnnouncementAdminDto | null> {
-  const announcementId = String(id || '').trim();
-  if (!announcementId) return null;
+  let announcementId: string;
+  try {
+    announcementId = parseAnnouncementId(idRaw);
+  } catch {
+    return null;
+  }
 
   const existing = await prisma.in_app_announcements.findUnique({ where: { id: announcementId } });
   if (!existing) return null;
 
+  const mergedStarts =
+    input.startsAt !== undefined ? input.startsAt : existing.starts_at != null ? Number(existing.starts_at) : null;
+  const mergedEnds =
+    input.endsAt !== undefined ? input.endsAt : existing.ends_at != null ? Number(existing.ends_at) : null;
+  if (input.startsAt !== undefined || input.endsAt !== undefined) {
+    validateScheduleRange(mergedStarts, mergedEnds);
+  }
+
   const data: Record<string, unknown> = {};
-  if (input.title !== undefined) {
-    const t = String(input.title).trim();
-    if (!t) throw new Error('TITLE_MESSAGE_REQUIRED');
-    data.title = t;
-  }
-  if (input.message !== undefined) {
-    const m = String(input.message).trim();
-    if (!m) throw new Error('TITLE_MESSAGE_REQUIRED');
-    data.message = m;
-  }
-  if (input.link !== undefined) {
-    data.link = input.link && String(input.link).trim() ? String(input.link).trim() : null;
-  }
-  if (input.imageUrl !== undefined) {
-    data.image_url =
-      input.imageUrl && String(input.imageUrl).trim() ? String(input.imageUrl).trim() : null;
-  }
-  if (input.priority !== undefined) data.priority = Number(input.priority) || 0;
+  if (input.title !== undefined) data.title = input.title;
+  if (input.message !== undefined) data.message = input.message;
+  if (input.link !== undefined) data.link = input.link;
+  if (input.imageUrl !== undefined) data.image_url = input.imageUrl;
+  if (input.priority !== undefined) data.priority = input.priority;
   if (input.isActive !== undefined) data.is_active = input.isActive ? 1 : 0;
   if (input.startsAt !== undefined) data.starts_at = input.startsAt != null ? BigInt(input.startsAt) : null;
   if (input.endsAt !== undefined) data.ends_at = input.endsAt != null ? BigInt(input.endsAt) : null;
@@ -197,9 +215,13 @@ export async function updateAnnouncementAdmin(
   return toAdminDto(row, readCount);
 }
 
-export async function deleteAnnouncementAdmin(id: string): Promise<boolean> {
-  const announcementId = String(id || '').trim();
-  if (!announcementId) return false;
+export async function deleteAnnouncementAdmin(idRaw: string): Promise<boolean> {
+  let announcementId: string;
+  try {
+    announcementId = parseAnnouncementId(idRaw);
+  } catch {
+    return false;
+  }
   try {
     await prisma.in_app_announcements.delete({ where: { id: announcementId } });
     return true;

@@ -121,6 +121,53 @@ describe('servers.rackAuxIntent.service', () => {
     expect(out.stock.gpu1).toBe(1);
   });
 
+  it('desmontar rig: ASIC timed não entra no bump in-memory (stock vem dos leases)', () => {
+    const rackUpgrades = [
+      ...upgrades,
+      {
+        id: 'chassis',
+        type: 'machine_chassis',
+        category: 'infra',
+        name: 'Ch',
+        image: null
+      },
+      {
+        id: 'gpu1',
+        type: 'machine',
+        category: 'mining',
+        name: 'G1',
+        image: null
+      },
+      {
+        id: 'asic_timed',
+        type: 'machine',
+        category: 'mining',
+        name: 'ASIC',
+        image: null,
+        asicDurationAmount: 30,
+        asicDurationUnit: 'day',
+        asicDurationKind: 'daily'
+      }
+    ];
+    const rack: PlacedRackLoaded = {
+      ...baseRack(),
+      slots: ['asic_timed', 'gpu1'],
+      wiringId: 'wire1'
+    };
+    const prev = {
+      stock: {},
+      storedBatteries: [],
+      placedRacks: [rack]
+    };
+    const out = applyRemoveRackToStock(prev, 'rack1', rackUpgrades, null);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.stock.asic_timed).toBeUndefined();
+    expect(out.stock.gpu1).toBe(1);
+    expect(out.stock.chassis).toBe(1);
+    expect(out.stock.wire1).toBe(1);
+  });
+
   it('double equip com mesma lógica: segundo sem stock falha', () => {
     const prev = {
       stock: { bat1: 1 },

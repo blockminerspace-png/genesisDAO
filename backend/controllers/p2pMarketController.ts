@@ -14,7 +14,9 @@ import {
   isP2PMarketEnabled,
   MARKET_LISTING_TTL_MS,
   MARKET_RESERVE_MS,
+  mapCustodyListingForClient,
   mapListingForClient,
+  P2P_LISTING_SELECT_SQL,
   parseUsdFromDb,
   timestampMsFromDb,
   type PlayerListingRow
@@ -42,6 +44,23 @@ function uidNum(req: Request): number | null {
   if (v == null) return null;
   const n = typeof v === 'number' ? v : parseInt(String(v), 10);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+async function enrichP2pLogMeta(meta: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const itemId = String(meta.itemId ?? '').trim();
+  const out: Record<string, unknown> = { ...meta };
+  if (!itemId) return out;
+  try {
+    const row = await prisma.upgrades.findUnique({ where: { id: itemId }, select: { name: true } });
+    out.itemName = row?.name ?? itemId;
+  } catch {
+    out.itemName = itemId;
+  }
+  return out;
+}
+
+function logP2pUserAction(userId: number, action: string, meta: Record<string, unknown>): void {
+  void enrichP2pLogMeta(meta).then((m) => logUserAction(userId, action, m));
 }
 
 function listingQtyFromRow(qty: unknown): number {
@@ -95,9 +114,9 @@ export function registerP2pMarketRoutes(app: Express, deps: P2pMarketDeps): void
         now
       );
       const rows = await prisma.$queryRawUnsafe(
-        `SELECT l.*, u.username, u.email, ru.username AS reserver_username
+        `SELECT ${P2P_LISTING_SELECT_SQL}
          FROM player_listings l
-         JOIN users u ON l.user_id = u.id
+         JOIN users usr ON l.user_id = usr.id
          LEFT JOIN users ru ON ru.id = l.reserved_by
          WHERE l.status = 'active' AND l.expires_at > $1`,
         now
@@ -309,7 +328,24 @@ export function registerP2pMarketRoutes(app: Express, deps: P2pMarketDeps): void
         txOpts
       );
       emitMarketWs({ type: 'market', event: 'listing_created', listingId: lid });
-      logUserAction(userId, 'p2p_listing_create', { listingId: lid, itemId, qty, price });
+      let sellerUsername: string | null = null;
+      try {
+        const u = await prisma.users.findUnique({
+          where: { id: userId },
+          select: { username: true, email: true }
+        });
+        sellerUsername = u?.username?.trim() || u?.email?.trim() || null;
+      } catch {
+        /* best-effort audit */
+      }
+      logP2pUserAction(userId, 'p2p_listing_create', {
+        listingId: lid,
+        itemId,
+        qty,
+        price,
+        sellerId: userId,
+        sellerUsername
+      });
       res.json({ ok: true, listingId: lid });
     } catch (e: unknown) {
       if (e instanceof P2pUserError) {
@@ -335,7 +371,7 @@ export function registerP2pMarketRoutes(app: Express, deps: P2pMarketDeps): void
       return;
     }
     try {
-      await prisma.$transaction(
+      const cancelled = await prisma.$transaction(
         async (tx) => {
           await tx.$queryRawUnsafe('SELECT 1 FROM game_states WHERE user_id = $1 FOR UPDATE', userId);
           const lr = await tx.$queryRawUnsafe('SELECT * FROM player_listings WHERE id = $1 FOR UPDATE', listingId);
@@ -346,6 +382,7 @@ export function registerP2pMarketRoutes(app: Express, deps: P2pMarketDeps): void
                 status?: string;
                 item_id?: string;
                 qty?: number;
+                price?: number;
                 reserved_by?: number | null;
                 reserved_until?: string | number | bigint | null;
               }
@@ -365,6 +402,8 @@ export function registerP2pMarketRoutes(app: Express, deps: P2pMarketDeps): void
             });
           }
           const q = listingQtyFromRow(l.qty);
+          const itemId = String(l.item_id ?? '');
+          const price = Number(l.price) || 0;
           await tx.$executeRawUnsafe(
             `INSERT INTO stock (user_id, item_id, qty) VALUES ($1, $2, $3)
              ON CONFLICT (user_id, item_id) DO UPDATE SET qty = stock.qty + EXCLUDED.qty`,
@@ -379,11 +418,12 @@ export function registerP2pMarketRoutes(app: Express, deps: P2pMarketDeps): void
             bumpAt,
             userId
           );
+          return { itemId, qty: q, price };
         },
         txOpts
       );
       emitMarketWs({ type: 'market', event: 'listing_cancelled', listingId });
-      logUserAction(userId, 'p2p_listing_cancel', { listingId });
+      logP2pUserAction(userId, 'p2p_listing_cancel', { listingId, ...cancelled });
       res.json({ ok: true });
     } catch (e: unknown) {
       if (e instanceof P2pUserError) {
@@ -439,7 +479,7 @@ export function registerP2pMarketRoutes(app: Express, deps: P2pMarketDeps): void
         return;
       }
       emitMarketWs({ type: 'market', event: 'listing_reserved', listingId });
-      logUserAction(userId, 'p2p_listing_reserve', { listingId, reservedUntil });
+      logP2pUserAction(userId, 'p2p_listing_reserve', { listingId, reservedUntil });
       res.json({ ok: true, reservedUntil });
     } catch (e: unknown) {
       sendInternalErrorShapeOrPrisma(res, req.originalUrl || 'p2p', e, { ok: false }, 'Erro.');
@@ -473,7 +513,7 @@ export function registerP2pMarketRoutes(app: Express, deps: P2pMarketDeps): void
       }, txOpts);
       if (n > 0) {
         emitMarketWs({ type: 'market', event: 'listing_unreserved', listingId });
-        logUserAction(userId, 'p2p_reserve_cancel', { listingId });
+        logP2pUserAction(userId, 'p2p_reserve_cancel', { listingId });
       }
       res.json({ ok: true });
     } catch (e: unknown) {
@@ -758,11 +798,13 @@ export function registerP2pMarketRoutes(app: Express, deps: P2pMarketDeps): void
         txOptsMarketBuy
       );
       emitMarketWs({ type: 'market', event: 'listing_sold', listingId });
-      logUserAction(buyerId, 'p2p_listing_buy', {
+      logP2pUserAction(buyerId, 'p2p_listing_buy', {
         listingId: out.listingId,
         sellerId: out.sellerId,
+        counterpartyUserId: out.sellerId,
         itemId: out.itemId,
         buyQty: out.buyQty,
+        qty: out.buyQty,
         totalUsdc: out.totalPrice,
         unitPrice: out.unitPrice
       });
@@ -820,7 +862,7 @@ export function registerP2pMarketRoutes(app: Express, deps: P2pMarketDeps): void
         txOpts
       );
       emitMarketWs({ type: 'market', event: 'black_market_proceeds_claimed' });
-      logUserAction(userId, 'p2p_proceeds_claim', { claimedUsdc: claimed });
+      logP2pUserAction(userId, 'p2p_proceeds_claim', { claimedUsdc: claimed });
       res.json({ ok: true, claimed });
     } catch (e: unknown) {
       if (e instanceof P2pUserError) {
@@ -840,33 +882,17 @@ export function registerP2pMarketRoutes(app: Express, deps: P2pMarketDeps): void
     try {
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
       res.setHeader('Pragma', 'no-cache');
+      const nowCustody = Date.now();
       const rows = await prisma.$queryRawUnsafe(
-        `SELECT l.*, u.username, u.email
+        `SELECT ${P2P_LISTING_SELECT_SQL}
          FROM player_listings l
-         JOIN users u ON l.user_id = u.id
+         JOIN users usr ON l.user_id = usr.id
+         LEFT JOIN users ru ON ru.id = l.reserved_by
          WHERE l.status = 'awaiting_pickup' AND l.reserved_by = $1`,
         userId
       );
       const list = Array.isArray(rows) ? rows : [];
-      res.json(
-        list.map((l: PlayerListingRow & { buyer_paid_usdc?: number | string | null }) => {
-          const qty = Math.max(1, parseInt(String(l.qty ?? 1), 10) || 1);
-          const unit = Number(l.price);
-          const paidRaw = l.buyer_paid_usdc;
-          const paid =
-            paidRaw != null && paidRaw !== '' && Number.isFinite(Number(paidRaw)) ? Number(paidRaw) : undefined;
-          return {
-            id: l.id,
-            sellerName: l.username || l.email,
-            itemId: l.item_id,
-            price: unit,
-            qty,
-            lineTotal: unit * qty,
-            buyerPaidUsdc: paid,
-            expiresAt: timestampMsFromDb(l.expires_at)
-          };
-        })
-      );
+      res.json(list.map((l: PlayerListingRow) => mapCustodyListingForClient(l, nowCustody)));
     } catch (e: unknown) {
       sendInternalErrorSafeMessageOrPrisma(res, req.originalUrl || 'p2p', e, 'Erro.');
     }
@@ -923,7 +949,7 @@ export function registerP2pMarketRoutes(app: Express, deps: P2pMarketDeps): void
         txOpts
       );
       emitMarketWs({ type: 'market', event: 'custody_claimed_all', claimed: claimedIds.length });
-      logUserAction(userId, 'p2p_custody_claim_all', { claimed: claimedIds.length, listingIds: claimedIds });
+      logP2pUserAction(userId, 'p2p_custody_claim_all', { claimed: claimedIds.length, listingIds: claimedIds });
       res.json({
         ok: true,
         claimed: claimedIds.length,
@@ -953,7 +979,7 @@ export function registerP2pMarketRoutes(app: Express, deps: P2pMarketDeps): void
       return;
     }
     try {
-      await prisma.$transaction(
+      const claimed = await prisma.$transaction(
         async (tx) => {
           await tx.$queryRawUnsafe('SELECT 1 FROM game_states WHERE user_id = $1 FOR UPDATE', userId);
           const lr = await tx.$queryRawUnsafe(
@@ -982,11 +1008,12 @@ export function registerP2pMarketRoutes(app: Express, deps: P2pMarketDeps): void
             bumpAt,
             userId
           );
+          return { itemId: String(l.item_id ?? ''), qty: q };
         },
         txOpts
       );
       emitMarketWs({ type: 'market', event: 'custody_claimed', listingId });
-      logUserAction(userId, 'p2p_custody_claim', { listingId });
+      logP2pUserAction(userId, 'p2p_custody_claim', { listingId, ...claimed });
       res.json({ ok: true });
     } catch (e: unknown) {
       if (e instanceof P2pUserError) {

@@ -78,6 +78,18 @@ describe('saveGameEconomyValidate', () => {
     expect(client.query).not.toHaveBeenCalled();
   });
 
+  it('validateStockForSave remapeia battery_car para battery_estelar', async () => {
+    const client = {
+      query: vi.fn().mockResolvedValue({ rows: [{ id: 'battery_estelar' }], rowCount: 1 })
+    };
+    const r = await validateStockForSave(client as never, { battery_car: 3, battery_wall: 1 });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.itemIds).toEqual(['battery_estelar']);
+      expect(r.qtys).toEqual([4]);
+    }
+  });
+
   it('validateStockForSave aceita itens fora do catálogo (stock legado) e consulta upgrades', async () => {
     const client = {
       query: vi.fn().mockResolvedValue({ rows: [{ id: 'known_a' }], rowCount: 1 })

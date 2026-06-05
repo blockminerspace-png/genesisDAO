@@ -8,8 +8,7 @@ import {
   Package,
   Activity,
   AlertTriangle,
-  ChevronDown,
-  ChevronUp
+  Search
 } from 'lucide-react';
 import type { GameUserActivityEntry } from '../types';
 import {
@@ -26,39 +25,10 @@ import {
   formatActivityEvent,
   type ActivityEventDisplay
 } from '../utils/activityEventFormatter';
+import { formatActivityLogBrt, AdminActivityLogTable } from './AdminActivityLogTable';
+import { AdminUserAccountTracePanel } from './AdminUserAccountTracePanel';
 
-function formatBrt(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return '—';
-  try {
-    return new Intl.DateTimeFormat('pt-BR', {
-      dateStyle: 'short',
-      timeStyle: 'medium',
-      timeZone: 'America/Sao_Paulo'
-    }).format(new Date(ms));
-  } catch {
-    return '—';
-  }
-}
-
-const SEVERITY_DOT: Record<string, string> = {
-  info: 'bg-slate-400',
-  success: 'bg-emerald-400',
-  warning: 'bg-amber-400',
-  danger: 'bg-red-400'
-};
-
-const CATEGORY_LABEL: Record<string, string> = {
-  auth: 'Conta',
-  inventory: 'Inventário',
-  rigs: 'Rigs',
-  economy: 'Economia',
-  boxes: 'Caixas',
-  session: 'Sessão',
-  p2p: 'P2P',
-  other: 'Outro'
-};
-
-type AuditSubTab = 'activity' | 'inventory' | 'state';
+type AuditSubTab = 'activity' | 'inventory' | 'state' | 'trace';
 
 export type AdminUserAuditPanelProps = {
   userId: number | null;
@@ -224,6 +194,16 @@ export const AdminUserAuditPanel: React.FC<AdminUserAuditPanelProps> = ({ userId
         </button>
         <button
           type="button"
+          onClick={() => setAuditSubTab('trace')}
+          className={`px-3 py-1.5 text-xs font-bold rounded flex items-center gap-1.5 ${
+            auditSubTab === 'trace' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400'
+          }`}
+        >
+          <Search size={14} />
+          Rastreio
+        </button>
+        <button
+          type="button"
           onClick={() => {
             if (auditSubTab === 'activity') void loadActivity();
             if (auditSubTab === 'inventory') void loadInventory(inventoryPage);
@@ -290,92 +270,14 @@ export const AdminUserAuditPanel: React.FC<AdminUserAuditPanelProps> = ({ userId
             </div>
           )}
 
-          {activityLoading && activityLogs.length === 0 ? (
-            <div className="flex justify-center py-8">
-              <Loader2 className="animate-spin text-slate-500" />
-            </div>
-          ) : (
-            <div className="rounded-lg border border-slate-700 overflow-hidden">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-950 text-slate-500 uppercase text-[10px] font-bold">
-                  <tr>
-                    <th className="px-2 py-2 w-8" />
-                    <th className="px-2 py-2">Data (BRT)</th>
-                    <th className="px-2 py-2">Evento</th>
-                    <th className="px-2 py-2">Resumo</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800">
-                  {filteredActivity.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} className="px-4 py-8 text-center text-slate-500 italic">
-                        Nenhum evento.
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredActivity.map((row) => {
-                      const d = displayFor(row);
-                      return (
-                        <React.Fragment key={row.id}>
-                          <tr className="hover:bg-slate-800/40 align-top">
-                            <td className="px-2 py-2">
-                              <span
-                                className={`inline-block w-2 h-2 rounded-full ${SEVERITY_DOT[d.severity] || SEVERITY_DOT.info}`}
-                                title={d.severity}
-                              />
-                            </td>
-                            <td className="px-2 py-2 text-[10px] text-slate-400 whitespace-nowrap font-mono">
-                              {formatBrt(row.createdAt)}
-                            </td>
-                            <td className="px-2 py-2">
-                              <div className="font-bold text-slate-200">{d.title}</div>
-                              <div className="text-[9px] text-slate-500 mt-0.5">
-                                <span className="rounded bg-slate-800 px-1">
-                                  {CATEGORY_LABEL[d.category] || d.category}
-                                </span>
-                                <span className="ml-1 font-mono text-slate-600" title="código técnico">
-                                  {row.action}
-                                </span>
-                              </div>
-                            </td>
-                            <td className="px-2 py-2 text-slate-300">
-                              <div>{d.summary}</div>
-                              {d.lines?.map((line, i) => (
-                                <div key={i} className="text-[10px] text-slate-500 mt-0.5">
-                                  · {line}
-                                </div>
-                              ))}
-                              <button
-                                type="button"
-                                className="mt-1 text-[9px] text-slate-600 hover:text-slate-400 flex items-center gap-0.5"
-                                onClick={() =>
-                                  setExpandedTech((p) => ({ ...p, [row.id]: !p[row.id] }))
-                                }
-                              >
-                                {expandedTech[row.id] ? (
-                                  <ChevronUp size={10} />
-                                ) : (
-                                  <ChevronDown size={10} />
-                                )}
-                                JSON técnico
-                              </button>
-                            </td>
-                          </tr>
-                          {expandedTech[row.id] && (
-                            <tr className="bg-slate-950/80">
-                              <td colSpan={4} className="px-3 py-2 font-mono text-[10px] text-slate-500 break-all">
-                                {JSON.stringify(row.meta ?? {}, null, 2)}
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <AdminActivityLogTable
+            rows={filteredActivity}
+            loading={activityLoading}
+            emptyMessage="Nenhum evento."
+            expandedTech={expandedTech}
+            setExpandedTech={setExpandedTech}
+            displayFor={displayFor}
+          />
 
           {hasMoreActivity && (
             <button
@@ -431,7 +333,7 @@ export const AdminUserAuditPanel: React.FC<AdminUserAuditPanelProps> = ({ userId
                       inventoryRows.map((r) => (
                         <tr key={r.id} className="hover:bg-slate-800/30">
                           <td className="px-2 py-2 font-mono text-slate-500 whitespace-nowrap">
-                            {formatBrt(r.createdAtMs)}
+                            {formatActivityLogBrt(r.createdAtMs)}
                           </td>
                           <td className="px-2 py-2 text-white">{r.itemName || r.catalogItemId || '—'}</td>
                           <td className="px-2 py-2 font-mono">
@@ -496,7 +398,7 @@ export const AdminUserAuditPanel: React.FC<AdminUserAuditPanelProps> = ({ userId
                   <div key={s.id} className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
                     <div className="flex justify-between gap-2">
                       <div className="font-bold text-white">{disp.title}</div>
-                      <span className="text-[10px] font-mono text-slate-500">{formatBrt(s.createdAt)}</span>
+                      <span className="text-[10px] font-mono text-slate-500">{formatActivityLogBrt(s.createdAt)}</span>
                     </div>
                     <p className="text-sm text-slate-300 mt-2">{disp.summary}</p>
                     {diff?.fingerprintChanged && idx < snapshots.length - 1 && (
@@ -530,6 +432,8 @@ export const AdminUserAuditPanel: React.FC<AdminUserAuditPanelProps> = ({ userId
           )}
         </>
       )}
+
+      {auditSubTab === 'trace' && <AdminUserAccountTracePanel userId={userId} />}
     </div>
   );
 };

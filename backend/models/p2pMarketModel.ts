@@ -128,8 +128,30 @@ export async function isP2PMarketEnabled(): Promise<boolean> {
   }
 }
 
+/**
+ * Colunas explícitas para listagens P2P + vendedor (sem `l.*` — evita ambiguidade no mapeamento).
+ * Alias do vendedor na query deve ser `usr`.
+ */
+export const P2P_LISTING_SELECT_SQL = `
+  l.id,
+  l.user_id AS seller_id,
+  l.item_id,
+  l.price,
+  l.qty,
+  l.expires_at,
+  l.status,
+  l.reserved_by,
+  l.reserved_until,
+  l.is_player,
+  l.buyer_paid_usdc,
+  COALESCE(NULLIF(TRIM(usr.username), ''), usr.email::text, '') AS seller_display_name,
+  ru.username AS reserver_username
+`;
+
 export type PlayerListingRow = {
   id: string;
+  seller_id?: number | string;
+  seller_display_name?: string | null;
   username?: string;
   email?: string;
   reserver_username?: string | null;
@@ -141,24 +163,42 @@ export type PlayerListingRow = {
   status?: string;
   user_id?: number;
   reserved_by?: number | null;
+  buyer_paid_usdc?: number | string | null;
+  is_player?: number | null;
 };
 
-export function mapListingForClient(
-  l: PlayerListingRow,
-  now: number
-): {
+export type MarketListingClientDto = {
   id: string;
+  sellerId: number;
   sellerName: string;
   itemId: string;
-  /** USDC por unidade */
   price: number;
   qty: number;
-  /** USDC total do lote (preço unitário × quantidade) */
   lineTotal: number;
   expiresAt: number;
   reservedBy?: string;
   reservedUntil?: number;
-} {
+};
+
+export function resolveSellerIdFromListingRow(l: PlayerListingRow): number {
+  const raw = l.seller_id ?? l.user_id;
+  const n = typeof raw === 'number' ? raw : parseInt(String(raw ?? ''), 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+export function resolveSellerDisplayNameFromListingRow(l: PlayerListingRow): string {
+  const explicit =
+    l.seller_display_name != null && String(l.seller_display_name).trim()
+      ? String(l.seller_display_name).trim()
+      : '';
+  if (explicit) return explicit;
+  const u = l.username != null ? String(l.username).trim() : '';
+  if (u) return u;
+  const e = l.email != null ? String(l.email).trim() : '';
+  return e;
+}
+
+export function mapListingForClient(l: PlayerListingRow, now: number): MarketListingClientDto {
   const exp = timestampMsFromDb(l.expires_at);
   const resUntil = timestampMsFromDb(l.reserved_until);
   let reservedBy: string | undefined;
@@ -169,7 +209,8 @@ export function mapListingForClient(
   const qty = Math.max(1, parseInt(String(l.qty ?? 1), 10) || 1);
   return {
     id: l.id,
-    sellerName: l.username || l.email || '',
+    sellerId: resolveSellerIdFromListingRow(l),
+    sellerName: resolveSellerDisplayNameFromListingRow(l),
     itemId: l.item_id,
     price: unitPrice,
     qty,
@@ -178,4 +219,15 @@ export function mapListingForClient(
     reservedBy,
     reservedUntil: l.reserved_until != null && resUntil > now ? resUntil : undefined
   };
+}
+
+export function mapCustodyListingForClient(
+  l: PlayerListingRow,
+  now: number
+): MarketListingClientDto & { buyerPaidUsdc?: number } {
+  const base = mapListingForClient(l, now);
+  const paidRaw = l.buyer_paid_usdc;
+  const paid =
+    paidRaw != null && paidRaw !== '' && Number.isFinite(Number(paidRaw)) ? Number(paidRaw) : undefined;
+  return paid !== undefined ? { ...base, buyerPaidUsdc: paid } : base;
 }

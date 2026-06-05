@@ -1,6 +1,9 @@
 import type { PoolClient } from 'pg';
 import { STORED_BATTERY_CATALOG_PENDING_ID } from '../modules/batteries/batteries.constants.js';
-import { normalizeKnown1000WhBatteryCatalogId } from '../modules/batteries/batteries.catalog.js';
+import {
+  normalizeKnown1000WhBatteryCatalogId,
+  normalizeStockCatalogItemId
+} from '../modules/batteries/batteries.catalog.js';
 
 /** Alinhado a `RACK_ID_RE` no servidor — IDs de item / instância. */
 export const SAVE_GAME_ITEM_ID_RE = /^[a-zA-Z0-9_.-]{1,200}$/;
@@ -88,7 +91,8 @@ export async function validateStockForSave(
   const badQtyKeys: string[] = [];
   for (const k of keys) {
     const rawItemId = String(k);
-    const itemId = normalizeKnown1000WhBatteryCatalogId(rawItemId);
+    const itemId = normalizeStockCatalogItemId(rawItemId);
+    if (!itemId) continue;
     const q = parseIntQty(stock[k]);
     if (q === null || q < 0 || q > MAX_STOCK_QTY) {
       badQtyKeys.push(rawItemId);

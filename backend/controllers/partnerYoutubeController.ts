@@ -534,7 +534,7 @@ export function registerPartnerYoutubeRoutes(app: Express, deps: PartnerYoutubeD
       );
       if (!roomOwnRes.rows[0]) {
         await client.query('ROLLBACK');
-        res.status(404).json({ error: 'Este utilizador não tem a sala NFT ativa.' });
+        res.status(404).json({ error: 'Este utilizador não tem a Sala Streamer ativa.' });
         return;
       }
 
@@ -586,7 +586,7 @@ export function registerPartnerYoutubeRoutes(app: Express, deps: PartnerYoutubeD
         res,
         'POST /api/admin/partner-youtube-partners/:userId/deactivate-nft-room',
         e,
-        'Erro ao desativar a sala NFT.'
+        'Erro ao desativar a Sala Streamer.'
       );
     } finally {
       client.release();

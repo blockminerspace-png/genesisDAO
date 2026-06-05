@@ -28,7 +28,9 @@ import {
 } from '../services/api';
 import { SUPPORT_TICKET_MESSAGE_MAX } from '../constants/formLimits';
 import type { GameUserActivityEntry } from '../types';
-import { formatUserActivityMeta, ACTIVITY_LOG_FILTER_GROUPS, filterUserActivityLogs, formatAccountCreatedBrt } from '../utils/adminUserActivityLog';
+import { ACTIVITY_LOG_FILTER_GROUPS, filterUserActivityLogs, formatAccountCreatedBrt } from '../utils/adminUserActivityLog';
+import { AdminActivityLogTable } from './AdminActivityLogTable';
+import { AdminUserAccountTracePanel } from './AdminUserAccountTracePanel';
 import { safeSupportAttachmentHref } from '../utils/supportAttachmentUrls';
 
 export type AdminSupportOpenPlayerPayload = { userId: number; email: string; username: string };
@@ -111,13 +113,14 @@ export const AdminSupport: React.FC<AdminSupportProps> = ({
   const [replyFiles, setReplyFiles] = useState<File[]>([]);
   const [replying, setReplying] = useState(false);
   const [replyErr, setReplyErr] = useState<string | null>(null);
-  const [detailTab, setDetailTab] = useState<'thread' | 'activity'>('thread');
+  const [detailTab, setDetailTab] = useState<'thread' | 'activity' | 'trace'>('thread');
   const [activityLogs, setActivityLogs] = useState<GameUserActivityEntry[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState<string | null>(null);
   const [activityFilterId, setActivityFilterId] = useState('all');
   const [activitySearch, setActivitySearch] = useState('');
   const [activityAccountCreatedAtMs, setActivityAccountCreatedAtMs] = useState<number | null>(null);
+  const [activityExpandedTech, setActivityExpandedTech] = useState<Record<string, boolean>>({});
   const [copiedTicketId, setCopiedTicketId] = useState<string | null>(null);
   type SupportListTab = 'open' | 'archived' | 'userHistory';
   const [listTab, setListTab] = useState<SupportListTab>('open');
@@ -290,6 +293,7 @@ export const AdminSupport: React.FC<AdminSupportProps> = ({
     setActivityLogs([]);
     setActivityError(null);
     setActivityAccountCreatedAtMs(null);
+    setActivityExpandedTech({});
   }, [openId]);
 
   useEffect(() => {
@@ -532,6 +536,17 @@ export const AdminSupport: React.FC<AdminSupportProps> = ({
             >
               <History size={12} /> Atividade
             </button>
+            <button
+              type="button"
+              onClick={() => setDetailTab('trace')}
+              className={`px-3 py-1.5 inline-flex items-center gap-1 ${
+                detailTab === 'trace'
+                  ? 'bg-amber-600 text-white'
+                  : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Search size={12} /> Rastreio
+            </button>
           </div>
           <button
             type="button"
@@ -680,7 +695,7 @@ export const AdminSupport: React.FC<AdminSupportProps> = ({
             )}
           </div>
         </>
-      ) : (
+      ) : detailTab === 'activity' ? (
         <div className="space-y-3">
           <p className="text-[11px] text-slate-500">
             Eventos Mongo <span className="font-mono text-slate-400">game_activity_logs</span> +{' '}
@@ -720,14 +735,14 @@ export const AdminSupport: React.FC<AdminSupportProps> = ({
             </div>
             <div className="min-w-0 flex-1 flex-col gap-1 sm:min-w-[12rem] sm:flex-[2]">
               <label className="text-[9px] font-bold uppercase tracking-wider text-slate-500" htmlFor={`activity-search-${t.id}`}>
-                Pesquisar (ação ou JSON)
+                Pesquisar no resumo legível…
               </label>
               <input
                 id={`activity-search-${t.id}`}
                 type="search"
                 value={activitySearch}
                 onChange={(e) => setActivitySearch(e.target.value)}
-                placeholder="ex: deposit, rackId…"
+                placeholder="ex: compra, rig, item sumiu, checkout…"
                 className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1.5 font-mono text-[11px] text-slate-200 placeholder:text-slate-600 focus:border-amber-500 focus:outline-none"
               />
             </div>
@@ -741,46 +756,17 @@ export const AdminSupport: React.FC<AdminSupportProps> = ({
             <div className="rounded-lg border border-amber-700/50 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">{activityError}</div>
           )}
           {!activityLoading && !activityError && (
-            <div className="rounded-lg border border-slate-700 overflow-hidden">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-950 text-slate-500 uppercase text-[10px] tracking-wider font-bold">
-                  <tr>
-                    <th className="px-2 py-2">Data</th>
-                    <th className="px-2 py-2">Ação</th>
-                    <th className="px-2 py-2">Detalhes</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800">
-                  {activityLogs.length > 0 ? (
-                    filteredActivityLogs.length > 0 ? (
-                      filteredActivityLogs.map((row) => (
-                        <tr key={row.id} className="hover:bg-slate-800/40">
-                          <td className="px-2 py-2 text-[10px] text-slate-400 font-mono whitespace-nowrap align-top">
-                            {new Date(row.createdAt).toLocaleString('pt-PT')}
-                          </td>
-                          <td className="px-2 py-2 font-mono text-emerald-400 align-top">{row.action}</td>
-                          <td className="px-2 py-2 text-[10px] text-slate-400 font-mono break-all max-w-md align-top">
-                            {formatUserActivityMeta(row.meta)}
-                          </td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={3} className="px-4 py-8 text-center text-slate-500 italic">
-                          Nenhum evento corresponde ao filtro.
-                        </td>
-                      </tr>
-                    )
-                  ) : (
-                    <tr>
-                      <td colSpan={3} className="px-4 py-8 text-center text-slate-500 italic">
-                        Nenhum evento registado para esta conta.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+            <AdminActivityLogTable
+              rows={filteredActivityLogs}
+              loading={activityLoading}
+              emptyMessage={
+                activityLogs.length > 0
+                  ? 'Nenhum evento corresponde ao filtro.'
+                  : 'Nenhum evento registado para esta conta.'
+              }
+              expandedTech={activityExpandedTech}
+              setExpandedTech={setActivityExpandedTech}
+            />
           )}
           {!activityLoading && !activityError && (
             <button
@@ -792,6 +778,8 @@ export const AdminSupport: React.FC<AdminSupportProps> = ({
             </button>
           )}
         </div>
+      ) : (
+        <AdminUserAccountTracePanel userId={ticketUserNumericId(t) > 0 ? ticketUserNumericId(t) : null} />
       )}
     </div>
   );
@@ -1191,6 +1179,17 @@ export const AdminSupport: React.FC<AdminSupportProps> = ({
                         >
                           <History size={12} /> Atividade
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => setDetailTab('trace')}
+                          className={`px-3 py-1.5 inline-flex items-center gap-1 ${
+                            detailTab === 'trace'
+                              ? 'bg-amber-600 text-white'
+                              : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          <Search size={12} /> Rastreio
+                        </button>
                       </div>
                       <button
                         type="button"
@@ -1341,7 +1340,7 @@ export const AdminSupport: React.FC<AdminSupportProps> = ({
                         )}
                       </div>
                     </>
-                  ) : (
+                  ) : detailTab === 'activity' ? (
                     <div className="space-y-3">
                       <p className="text-[11px] text-slate-500">
                         Eventos Mongo <span className="font-mono text-slate-400">game_activity_logs</span> +{' '}
@@ -1384,7 +1383,7 @@ export const AdminSupport: React.FC<AdminSupportProps> = ({
                         </div>
                         <div className="min-w-0 flex-1 flex-col gap-1 sm:min-w-[12rem] sm:flex-[2]">
                           <label className="text-[9px] font-bold uppercase tracking-wider text-slate-500" htmlFor={`activity-search-${t.id}`}>
-                            Pesquisar (ação ou JSON)
+                            Pesquisar no resumo legível…
                           </label>
                           <input
                             id={`activity-search-${t.id}`}
@@ -1410,49 +1409,17 @@ export const AdminSupport: React.FC<AdminSupportProps> = ({
                         <div className="rounded-lg border border-amber-700/50 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">{activityError}</div>
                       )}
                       {!activityLoading && !activityError && (
-                        <div className="rounded-lg border border-slate-700 overflow-hidden">
-                          <table className="w-full text-left text-xs">
-                            <thead className="bg-slate-950 text-slate-500 uppercase text-[10px] tracking-wider font-bold">
-                              <tr>
-                                <th className="px-2 py-2">Data</th>
-                                <th className="px-2 py-2">Ação</th>
-                                <th className="px-2 py-2">Detalhes</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-800">
-                              {activityLogs.length > 0 ? (
-                                filteredActivityLogs.length > 0 ? (
-                                  filteredActivityLogs.map((row) => (
-                                    <tr key={row.id} className="hover:bg-slate-800/40">
-                                      <td className="px-2 py-2 text-[10px] text-slate-400 font-mono whitespace-nowrap align-top">
-                                        {new Date(row.createdAt).toLocaleString('pt-PT')}
-                                      </td>
-                                      <td className="px-2 py-2 font-mono text-emerald-400 align-top">{row.action}</td>
-                                      <td
-                                        className="px-2 py-2 text-[10px] text-slate-400 font-mono break-all max-w-md align-top"
-                                        title={formatUserActivityMeta(row.meta)}
-                                      >
-                                        {formatUserActivityMeta(row.meta)}
-                                      </td>
-                                    </tr>
-                                  ))
-                                ) : (
-                                  <tr>
-                                    <td colSpan={3} className="px-4 py-8 text-center text-slate-500 italic">
-                                      Nenhum evento corresponde ao filtro ou à pesquisa. Ajuste o tipo ou limpe a pesquisa.
-                                    </td>
-                                  </tr>
-                                )
-                              ) : (
-                                <tr>
-                                  <td colSpan={3} className="px-4 py-8 text-center text-slate-500 italic">
-                                    Nenhum evento registado para esta conta (ou a tabela de logs ainda não recebeu dados).
-                                  </td>
-                                </tr>
-                              )}
-                            </tbody>
-                          </table>
-                        </div>
+                        <AdminActivityLogTable
+                          rows={filteredActivityLogs}
+                          loading={activityLoading}
+                          emptyMessage={
+                            activityLogs.length > 0
+                              ? 'Nenhum evento corresponde ao filtro ou à pesquisa. Ajuste o tipo ou limpe a pesquisa.'
+                              : 'Nenhum evento registado para esta conta (ou a tabela de logs ainda não recebeu dados).'
+                          }
+                          expandedTech={activityExpandedTech}
+                          setExpandedTech={setActivityExpandedTech}
+                        />
                       )}
                       {!activityLoading && !activityError && (
                         <button
@@ -1464,6 +1431,8 @@ export const AdminSupport: React.FC<AdminSupportProps> = ({
                         </button>
                       )}
                     </div>
+                  ) : (
+                    <AdminUserAccountTracePanel userId={ticketUserNumericId(t) > 0 ? ticketUserNumericId(t) : null} />
                   )}
                 </div>
               )}

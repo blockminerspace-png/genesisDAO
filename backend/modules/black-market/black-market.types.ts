@@ -2,6 +2,7 @@
 
 export type BlackMarketListingClientDto = {
   id: string;
+  sellerId: number;
   sellerName: string;
   itemId: string;
   price: number;
@@ -14,6 +15,7 @@ export type BlackMarketListingClientDto = {
 
 export type BlackMarketCustodyDto = {
   id: string;
+  sellerId: number;
   sellerName: string;
   itemId: string;
   price: number;

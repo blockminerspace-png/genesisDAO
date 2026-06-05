@@ -3398,7 +3398,7 @@ export default function App() {
                     <div className="flex-1 flex flex-col p-4 animate-in fade-in slide-in-from-right-4 duration-300">
                       <div className="flex-1 min-h-0" style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-y' }}>
                         <Suspense fallback={<LazyRouteFallback />}>
-                          <BlackMarket gameState={gameState} onBuyListing={handleP2PBuy} onCreateListing={handleCreateListing} onCancelListing={handleCancelListing} upgrades={gameUpgrades} currentUserName={user?.username} currentUserEmail={user?.email} isEnabled={economySettings.blackMarketEnabled} onClaimSuccess={handleReloadGameState} refreshTrigger={marketRefreshTrigger} priceBandPercent={economySettings.blackMarketPriceBandPercent ?? 20} />
+                          <BlackMarket gameState={gameState} onBuyListing={handleP2PBuy} onCreateListing={handleCreateListing} onCancelListing={handleCancelListing} upgrades={gameUpgrades} currentUserId={user?.id != null && String(user.id).trim() !== '' ? Number(user.id) : undefined} currentUserName={user?.username} currentUserEmail={user?.email} isEnabled={economySettings.blackMarketEnabled} onClaimSuccess={handleReloadGameState} refreshTrigger={marketRefreshTrigger} priceBandPercent={economySettings.blackMarketPriceBandPercent ?? 20} />
                         </Suspense>
                       </div>
                       <Footer />

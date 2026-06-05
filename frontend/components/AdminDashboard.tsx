@@ -37,6 +37,7 @@ const calculateUserProduction = (placedRacks: PlacedRack[], upgradesList: Upgrad
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ users, gameUpgrades }) => {
     const [stats, setStats] = useState<{
         totalUsers: number;
+        deactivatedUsers: number;
         onlineUsers: number;
         totalHashrate: number;
         top10: { username: string; email: string; power: number; coinBalances?: Record<string, number> }[];
@@ -52,6 +53,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ users, gameUpgra
         topWithdrawalsByCoin: Array<{ coinId: string; coinName: string; top: { username: string; email: string; total: number }[] }>;
     }>({
         totalUsers: 0,
+        deactivatedUsers: 0,
         onlineUsers: 0,
         totalHashrate: 0,
         top10: [],
@@ -85,6 +87,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ users, gameUpgra
         setStats(prev => ({
             ...prev,
             totalUsers: data.totalUsers,
+            deactivatedUsers: Number(data.deactivatedUsers) || 0,
             onlineUsers: data.onlineUsers,
             dbTotalDeposited: data.totalDeposited,
             totalDeposited: useChain ? snap!.totalDeposited : data.totalDeposited,
@@ -305,11 +308,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ users, gameUpgra
                     <h3 className="text-slate-400 text-xs uppercase tracking-widest font-bold">Usuários Cadastrados</h3>
                     <div className="text-4xl font-bold text-white mt-2">{stats.totalUsers}</div>
                     <div
-                        className="text-xs text-green-500 mt-2 flex items-center gap-1"
-                        title="Apenas contas jogador (não-admin). Sessão válida em BD e última atividade na API nos últimos 4 minutos (last_seen_at). Zero é normal se ninguém acabou de usar o site."
+                        className="text-xs text-green-500 mt-2 flex items-center gap-1 flex-wrap"
+                        title="Apenas contas jogador activas (não-admin, não desactivadas). Sessão válida em BD e última atividade na API nos últimos 4 minutos (last_seen_at). Zero é normal se ninguém acabou de usar o site."
                     >
                         <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
                         {stats.onlineUsers} com sessão ativa
+                        {stats.deactivatedUsers > 0 && (
+                            <span className="text-slate-500">
+                                · {stats.deactivatedUsers.toLocaleString('pt-PT')} desactivados excluídos
+                            </span>
+                        )}
                     </div>
                 </div>
 

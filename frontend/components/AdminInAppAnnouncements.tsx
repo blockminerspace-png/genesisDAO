@@ -8,6 +8,7 @@ import {
   uploadAdImage,
   type InAppAnnouncementAdminPayload
 } from '../services/api';
+import { isSafeInAppImagePath, normalizeSafeInAppImagePath } from '../utils/inAppAnnouncementSafe';
 import { RemoteBannerImage } from './RemoteBannerImage';
 
 const emptyForm = () => ({
@@ -91,7 +92,7 @@ export const AdminInAppAnnouncements: React.FC = () => {
         title: form.title.trim(),
         message: form.message.trim(),
         link: form.link.trim() || undefined,
-        imageUrl: form.imageUrl.trim() || null,
+        imageUrl: normalizeSafeInAppImagePath(form.imageUrl),
         priority: Number(form.priority) || 0,
         isActive: form.isActive,
         startsAt: parseOptionalMs(form.startsAt),
@@ -191,10 +192,11 @@ export const AdminInAppAnnouncements: React.FC = () => {
             <div className="relative flex-1 min-w-[200px]">
               <ImageIcon size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
               <input
-                className="w-full rounded-lg border border-slate-600 bg-slate-950 pl-9 pr-3 py-2 text-sm text-white"
-                placeholder="URL ou suba ficheiro abaixo"
+                readOnly
+                className="w-full rounded-lg border border-slate-600 bg-slate-950/80 pl-9 pr-3 py-2 text-sm text-slate-400 cursor-not-allowed"
+                placeholder="Suba uma imagem (PNG, JPG ou GIF)"
                 value={form.imageUrl}
-                onChange={(e) => setForm((f) => ({ ...f, imageUrl: e.target.value }))}
+                title="A imagem só pode vir do upload interno — URLs externas não são permitidas."
               />
             </div>
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-amber-600/60 bg-amber-950/40 px-4 py-2 text-xs font-bold uppercase text-amber-200 hover:bg-amber-900/50">
@@ -212,8 +214,10 @@ export const AdminInAppAnnouncements: React.FC = () => {
                   setSaveError(null);
                   try {
                     const res = await uploadAdImage(file);
-                    if (res.ok && res.imageUrl) {
+                    if (res.ok && res.imageUrl && isSafeInAppImagePath(res.imageUrl)) {
                       setForm((f) => ({ ...f, imageUrl: res.imageUrl! }));
+                    } else if (res.ok && res.imageUrl) {
+                      setSaveError('URL de imagem devolvida pelo servidor é inválida.');
                     } else {
                       setSaveError(res.error || 'Erro no upload da imagem.');
                     }
@@ -225,10 +229,10 @@ export const AdminInAppAnnouncements: React.FC = () => {
               />
             </label>
           </div>
-          {form.imageUrl.trim() ? (
+          {normalizeSafeInAppImagePath(form.imageUrl) ? (
             <div className="mt-3 rounded-lg border border-slate-700 bg-slate-950 p-2 flex justify-center max-h-48 overflow-hidden">
               <RemoteBannerImage
-                src={form.imageUrl.trim()}
+                src={normalizeSafeInAppImagePath(form.imageUrl)!}
                 alt="Pré-visualização"
                 className="max-h-44 w-auto object-contain rounded"
                 failureHint="Imagem indisponível"
@@ -327,10 +331,10 @@ export const AdminInAppAnnouncements: React.FC = () => {
                   <span className="text-[10px] text-slate-500">{row.readCount} leituras</span>
                 </div>
                 <p className="mt-1 text-sm text-slate-400 line-clamp-3 whitespace-pre-wrap">{row.message}</p>
-                {row.imageUrl ? (
+                {normalizeSafeInAppImagePath(row.imageUrl) ? (
                   <div className="mt-2 max-w-xs rounded border border-slate-700 overflow-hidden bg-slate-950">
                     <RemoteBannerImage
-                      src={row.imageUrl}
+                      src={normalizeSafeInAppImagePath(row.imageUrl)!}
                       alt={row.title}
                       className="max-h-24 w-full object-contain"
                       failureHint="Imagem indisponível"

@@ -28,7 +28,12 @@ import {
   type StoredBatteryRowSnap
 } from '../modules/batteries/batteries.repository.js';
 import { normalizeKnown1000WhBatteryCatalogId } from '../modules/batteries/batteries.catalog.js';
-import { reconcileTimedAsicStockLeases } from './asicLease.js';
+import {
+  reconcileTimedAsicStockLeases,
+  releaseAllEquippedLeasesOnRack,
+  loadAsicDurationConfig,
+  isTimedAsicDuration
+} from './asicLease.js';
 
 export { loadUserStoredBatteries, normalizePlacedRackRoomId };
 
@@ -226,9 +231,58 @@ async function ensureStoredBatteriesInChanges(
 }
 
 /**
+ * Libertar leases de rigs removidas no payload antes de reconciliar stock (evita apagar timed).
+ * @returns ids das rigs removidas em relação à BD
+ */
+async function releaseLeasesForRemovedPlacedRacks(
+  client: PoolClient,
+  uid: number | string,
+  placedRacks: NonNullable<GameStateChanges['placedRacks']>
+): Promise<string[]> {
+  const prevRes = await client.query(`SELECT id FROM placed_racks WHERE user_id = $1`, [uid]);
+  const nextIds = new Set(placedRacks.map((r) => r.id));
+  const removed = (prevRes.rows as { id: string }[]).filter((r) => !nextIds.has(r.id));
+  if (removed.length === 0) return [];
+  const nowMs = Date.now();
+  const userIdNum = Number(uid);
+  for (const row of removed) {
+    await releaseAllEquippedLeasesOnRack(client, userIdNum, row.id, nowMs);
+  }
+  return removed.map((r) => r.id);
+}
+
+/** Inclui qty de ASICs timed (leases em stock) no objeto stock antes de snapshot. */
+async function mergeTimedLeaseStockIntoChangesStock(
+  client: PoolClient,
+  uid: number | string,
+  stock: Record<string, number>
+): Promise<void> {
+  const nowMs = Date.now();
+  const leaseItems = await client.query(
+    `SELECT DISTINCT item_id FROM player_asic_leases WHERE user_id = $1`,
+    [uid]
+  );
+  for (const row of leaseItems.rows as { item_id: string }[]) {
+    const itemId = String(row.item_id || '').trim();
+    if (!itemId) continue;
+    const cfg = await loadAsicDurationConfig(client, itemId);
+    if (!isTimedAsicDuration(cfg)) continue;
+    const cntRes = await client.query(
+      `SELECT COUNT(*)::int AS n FROM player_asic_leases
+       WHERE user_id = $1 AND item_id = $2 AND status = 'stock' AND expires_at > $3`,
+      [uid, itemId, nowMs]
+    );
+    const qty = Number(cntRes.rows[0]?.n) || 0;
+    if (qty > 0) stock[itemId] = qty;
+    else delete stock[itemId];
+  }
+}
+
+/**
  * Quando `POST /api/game/save-servers` envia só `placedRacks` (sem `stock`), o servidor remove rigs
  * na BD mas não recebia os incrementos de estoque — os componentes «evaporavam».
- * Recupera chassis, fiação, slots, multiplicadores e bateria a partir do estado anterior em BD.
+ * Recupera chassis, fiação, slots permanentes, multiplicadores e bateria a partir do estado anterior em BD.
+ * ASICs timed/NFT: stock via leases após `releaseLeasesForRemovedPlacedRacks`.
  */
 async function applyDismantledRacksStockRecoveryWhenStockOmitted(
   client: PoolClient,
@@ -274,7 +328,11 @@ async function applyDismantledRacksStockRecoveryWhenStockOmitted(
       )
     ]);
     for (const s of slots.rows as { machine_item_id: string }[]) {
-      bump(s.machine_item_id, 1);
+      const itemId = String(s.machine_item_id || '').trim();
+      if (!itemId) continue;
+      const cfg = await loadAsicDurationConfig(client, itemId);
+      if (isTimedAsicDuration(cfg)) continue;
+      bump(itemId, 1);
     }
     for (const m of multis.rows as { multiplier_item_id: string }[]) {
       bump(m.multiplier_item_id, 1);
@@ -361,6 +419,16 @@ export async function persistStockStoredBatteriesPlacedRacks(
 ): Promise<void> {
   if (Array.isArray(changes.placedRacks) && changes.stock === undefined) {
     await applyDismantledRacksStockRecoveryWhenStockOmitted(client, uid, changes.placedRacks, changes);
+  }
+
+  if (Array.isArray(changes.placedRacks)) {
+    const removedRackIds = await releaseLeasesForRemovedPlacedRacks(client, uid, changes.placedRacks);
+    if (removedRackIds.length > 0) {
+      if (changes.stock === undefined) {
+        changes.stock = {};
+      }
+      await mergeTimedLeaseStockIntoChangesStock(client, uid, changes.stock);
+    }
   }
 
   const { stock, storedBatteries, placedRacks } = changes;

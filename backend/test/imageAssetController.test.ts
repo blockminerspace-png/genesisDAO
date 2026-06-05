@@ -179,7 +179,7 @@ describe('imageAssetController', () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as { ok?: boolean; imageUrl?: string };
       expect(body.ok).toBe(true);
-      expect(body.imageUrl).toMatch(/^\/img\/ad-/);
+      expect(body.imageUrl).toMatch(/^\/img\/uploads\/ad-/);
       const base = path.basename(String(body.imageUrl));
       expect(fs.existsSync(path.join(root, 'uploads', base))).toBe(true);
     });
@@ -190,6 +190,18 @@ describe('imageAssetController', () => {
       const form = new FormData();
       const res = await fetch(`${baseUrl}/api/admin/upload-ad`, { method: 'POST', body: form });
       expect(res.status).toBe(400);
+    });
+  });
+
+  it('POST /api/admin/upload-ad rejeita ficheiro que não é imagem (magic bytes)', async () => {
+    await withTempImgApp(async (baseUrl, root) => {
+      const form = new FormData();
+      form.append('image', new Blob(['<?php echo 1;'], { type: 'image/png' }), 'evil.png');
+      const res = await fetch(`${baseUrl}/api/admin/upload-ad`, { method: 'POST', body: form });
+      expect(res.status).toBe(400);
+      const uploads = path.join(root, 'uploads');
+      const left = fs.readdirSync(uploads).filter((n) => n.startsWith('ad-'));
+      expect(left.length).toBe(0);
     });
   });
 });

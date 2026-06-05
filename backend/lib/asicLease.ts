@@ -350,6 +350,7 @@ export async function releaseEquippedAsicLease(
   if (itemId) await syncTimedAsicStockForItem(client, userId, itemId, nowMs);
 }
 
+/** @deprecated Prefer `releaseAllEquippedLeasesOnRack` — purge apaga leases em vez de devolver ao stock. */
 export async function purgeEquippedLeasesOnRack(
   client: PoolClient,
   userId: number,
@@ -358,6 +359,179 @@ export async function purgeEquippedLeasesOnRack(
 ): Promise<void> {
   await client.query(`DELETE FROM player_asic_leases WHERE user_id = $1 AND rack_id = $2`, [userId, rackId]);
   await syncAllTimedAsicStock(client, userId, nowMs);
+}
+
+/** Repara slots timed desta rig sem `machine_lease_id` (legado / save-game). */
+export async function repairEquippedAsicLeasesForRack(
+  client: PoolClient,
+  userId: number,
+  rackId: string,
+  nowMs: number
+): Promise<number> {
+  const slotsRes = await client.query(
+    `SELECT s.rack_id, s.slot_index, s.machine_item_id
+     FROM rack_slots s
+     INNER JOIN placed_racks pr ON pr.id = s.rack_id AND pr.user_id = $1
+     WHERE s.rack_id = $2
+       AND s.machine_item_id IS NOT NULL
+       AND (s.machine_lease_id IS NULL OR BTRIM(s.machine_lease_id::text) = '')`,
+    [userId, rackId]
+  );
+  let repaired = 0;
+  for (const row of slotsRes.rows as {
+    rack_id: string;
+    slot_index: number;
+    machine_item_id: string;
+  }[]) {
+    const itemId = String(row.machine_item_id || '').trim();
+    if (!itemId) continue;
+    const cfg = await loadAsicDurationConfig(client, itemId);
+    if (!isTimedAsicDuration(cfg)) continue;
+
+    const existing = await client.query(
+      `SELECT id FROM player_asic_leases
+       WHERE user_id = $1 AND status = 'equipped' AND rack_id = $2 AND slot_index = $3 AND expires_at > $4
+       LIMIT 1`,
+      [userId, row.rack_id, row.slot_index, nowMs]
+    );
+    if (existing.rows[0]?.id) {
+      const leaseId = String(existing.rows[0].id);
+      await client.query(
+        `UPDATE rack_slots SET machine_lease_id = $3 WHERE rack_id = $1 AND slot_index = $2`,
+        [row.rack_id, row.slot_index, leaseId]
+      );
+      continue;
+    }
+
+    const expiresAt = computeAsicLeaseExpiresAt(cfg, nowMs);
+    if (expiresAt <= nowMs) continue;
+    const leaseId = crypto.randomUUID();
+    await client.query(
+      `INSERT INTO player_asic_leases (id, user_id, item_id, acquired_at, expires_at, status, rack_id, slot_index)
+       VALUES ($1, $2, $3, $4, $5, 'equipped', $6, $7)`,
+      [leaseId, userId, itemId, nowMs, expiresAt, row.rack_id, row.slot_index]
+    );
+    await client.query(
+      `UPDATE rack_slots SET machine_lease_id = $3 WHERE rack_id = $1 AND slot_index = $2`,
+      [row.rack_id, row.slot_index, leaseId]
+    );
+    repaired++;
+  }
+  if (repaired > 0) {
+    await syncAllTimedAsicStock(client, userId, nowMs);
+  }
+  return repaired;
+}
+
+/** Devolve todos os ASICs timed equipados na rig ao stock (leases `status='stock'`). */
+export async function releaseAllEquippedLeasesOnRack(
+  client: PoolClient,
+  userId: number,
+  rackId: string,
+  nowMs: number
+): Promise<void> {
+  await repairEquippedAsicLeasesForRack(client, userId, rackId, nowMs);
+
+  const slotsRes = await client.query(
+    `SELECT slot_index, machine_item_id, machine_lease_id FROM rack_slots
+     WHERE rack_id = $1 AND machine_item_id IS NOT NULL
+     ORDER BY slot_index`,
+    [rackId]
+  );
+
+  const affectedItems = new Set<string>();
+
+  for (const row of slotsRes.rows as {
+    slot_index: number;
+    machine_item_id: string;
+    machine_lease_id?: string | null;
+  }[]) {
+    const si = Math.floor(Number(row.slot_index) || 0);
+    const itemId = String(row.machine_item_id || '').trim();
+    let leaseId =
+      row.machine_lease_id != null && String(row.machine_lease_id).trim()
+        ? String(row.machine_lease_id).trim()
+        : '';
+
+    if (!leaseId) {
+      const existing = await client.query(
+        `SELECT id FROM player_asic_leases
+         WHERE user_id = $1 AND status = 'equipped' AND rack_id = $2 AND slot_index = $3 AND expires_at > $4
+         LIMIT 1`,
+        [userId, rackId, si, nowMs]
+      );
+      if (existing.rows[0]?.id) {
+        leaseId = String(existing.rows[0].id);
+      }
+    }
+
+    if (leaseId) {
+      await releaseEquippedAsicLeaseById(client, userId, leaseId, itemId, nowMs);
+    } else {
+      await releaseEquippedAsicLease(client, userId, rackId, si, nowMs);
+    }
+    if (itemId) affectedItems.add(itemId);
+  }
+
+  const orphanLeases = await client.query(
+    `SELECT id, item_id FROM player_asic_leases
+     WHERE user_id = $1 AND rack_id = $2 AND status = 'equipped' AND expires_at > $3`,
+    [userId, rackId, nowMs]
+  );
+  for (const row of orphanLeases.rows as { id: string; item_id: string }[]) {
+    await releaseEquippedAsicLeaseById(client, userId, String(row.id), String(row.item_id), nowMs);
+    const syncItem = String(row.item_id || '').trim();
+    if (syncItem) affectedItems.add(syncItem);
+  }
+
+  for (const itemId of affectedItems) {
+    await syncTimedAsicStockForItem(client, userId, itemId, nowMs);
+  }
+}
+
+/** Resolve lease equipado num slot (slot BD ou fallback por rack+slot). */
+export async function resolveEquippedLeaseIdForSlot(
+  client: PoolClient,
+  userId: number,
+  rackId: string,
+  slotIndex: number,
+  slotLeaseIdHint: string,
+  nowMs: number
+): Promise<string> {
+  const hint = String(slotLeaseIdHint || '').trim();
+  if (hint) return hint;
+
+  const slotRes = await client.query(
+    `SELECT machine_lease_id FROM rack_slots WHERE rack_id = $1 AND slot_index = $2`,
+    [rackId, Math.floor(slotIndex)]
+  );
+  const fromSlot = slotRes.rows[0] as { machine_lease_id?: string | null } | undefined;
+  const fromDb =
+    fromSlot?.machine_lease_id != null && String(fromSlot.machine_lease_id).trim()
+      ? String(fromSlot.machine_lease_id).trim()
+      : '';
+  if (fromDb) return fromDb;
+
+  await repairEquippedAsicLeasesForRack(client, userId, rackId, nowMs);
+
+  const afterRepair = await client.query(
+    `SELECT machine_lease_id FROM rack_slots WHERE rack_id = $1 AND slot_index = $2`,
+    [rackId, Math.floor(slotIndex)]
+  );
+  const repaired =
+    afterRepair.rows[0] as { machine_lease_id?: string | null } | undefined;
+  if (repaired?.machine_lease_id != null && String(repaired.machine_lease_id).trim()) {
+    return String(repaired.machine_lease_id).trim();
+  }
+
+  const existing = await client.query(
+    `SELECT id FROM player_asic_leases
+     WHERE user_id = $1 AND status = 'equipped' AND rack_id = $2 AND slot_index = $3 AND expires_at > $4
+     LIMIT 1`,
+    [userId, rackId, Math.floor(slotIndex), nowMs]
+  );
+  if (existing.rows[0]?.id) return String(existing.rows[0].id);
+  return '';
 }
 
 export async function releaseEquippedAsicLeaseById(

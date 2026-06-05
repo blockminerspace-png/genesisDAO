@@ -40,9 +40,10 @@ import {
   isTimedAsicDuration,
   loadAsicDurationConfig,
   normalizeAsicDurationConfig,
-  purgeEquippedLeasesOnRack,
+  releaseAllEquippedLeasesOnRack,
   releaseEquippedAsicLease,
   releaseEquippedAsicLeaseById,
+  resolveEquippedLeaseIdForSlot,
   applyTimedStockQtyToSnapshot
 } from '../../lib/asicLease.js';
 import {
@@ -398,8 +399,75 @@ async function runRackAuxMutation(
         rackId,
         scope,
         ok: true,
-        source: 'intent_api'
+        source: 'intent_api',
+        ...((): Record<string, unknown> => {
+          const equip = /^rack_miner_equip:[^:]+:(\d+)$/.exec(scope);
+          if (equip) {
+            const slot = Math.floor(Number(equip[1]));
+            const rackOut = out.placedRacks.find((r) => r.id === rackId);
+            const itemId = rackOut?.slots?.[slot] != null ? String(rackOut.slots[slot]).trim() : '';
+            const up = upgrades.find((u) => u.id === itemId);
+            return {
+              slotIndex: slot,
+              itemId,
+              itemName: up?.name ?? itemId,
+              stockBefore: itemId ? (prev.stock[itemId] ?? 0) : 0,
+              stockAfter: itemId ? (out.stock[itemId] ?? 0) : 0
+            };
+          }
+          const unequip = /^rack_miner_unequip:[^:]+:(\d+)$/.exec(scope);
+          if (unequip) {
+            const slot = Math.floor(Number(unequip[1]));
+            const rackPrev = prev.placedRacks.find((r) => r.id === rackId);
+            const itemId = rackPrev?.slots?.[slot] != null ? String(rackPrev.slots[slot]).trim() : '';
+            const up = upgrades.find((u) => u.id === itemId);
+            return {
+              slotIndex: slot,
+              itemId,
+              itemName: up?.name ?? itemId,
+              stockBefore: itemId ? (prev.stock[itemId] ?? 0) : 0,
+              stockAfter: itemId ? (out.stock[itemId] ?? 0) : 0
+            };
+          }
+          return {};
+        })()
       });
+      const minerEquip = /^rack_miner_equip:([^:]+):(\d+)$/.exec(scope);
+      if (minerEquip) {
+        const slot = Math.floor(Number(minerEquip[2]));
+        const rackOut = out.placedRacks.find((r) => r.id === rackId);
+        const itemId = rackOut?.slots?.[slot] != null ? String(rackOut.slots[slot]).trim() : '';
+        const up = upgrades.find((u) => u.id === itemId);
+        const stockBefore = itemId ? (prev.stock[itemId] ?? 0) : 0;
+        const stockAfter = itemId ? (out.stock[itemId] ?? 0) : 0;
+        await appendGameActivityLog(pool, userId, 'rack_miner_equip', {
+          rackId,
+          slotIndex: slot,
+          itemId,
+          itemName: up?.name ?? itemId,
+          stockBefore,
+          stockAfter,
+          source: 'intent_api'
+        });
+      }
+      const minerUnequip = /^rack_miner_unequip:([^:]+):(\d+)$/.exec(scope);
+      if (minerUnequip) {
+        const slot = Math.floor(Number(minerUnequip[2]));
+        const rackPrev = prev.placedRacks.find((r) => r.id === rackId);
+        const itemId = rackPrev?.slots?.[slot] != null ? String(rackPrev.slots[slot]).trim() : '';
+        const up = upgrades.find((u) => u.id === itemId);
+        const stockBefore = itemId ? (prev.stock[itemId] ?? 0) : 0;
+        const stockAfter = itemId ? (out.stock[itemId] ?? 0) : 0;
+        await appendGameActivityLog(pool, userId, 'rack_miner_unequip', {
+          rackId,
+          slotIndex: slot,
+          itemId,
+          itemName: up?.name ?? itemId,
+          stockBefore,
+          stockAfter,
+          source: 'intent_api'
+        });
+      }
     } catch (e) {
       console.warn('[servers/racks/aux] activity log failed after commit:', e instanceof Error ? e.message : String(e));
     }
@@ -525,8 +593,17 @@ export function registerServersRackAuxIntentRoutes(app: Application, deps: Serve
         scope: `srv_remove_rack:${rackId}`,
         clientStateVersion,
         apply: (prev, upgrades, rackHints) => applyRemoveRackToStock(prev, rackId, upgrades, rackHints),
-        postApply: async (client, { nowMs }) => {
-          await purgeEquippedLeasesOnRack(client, userId, rackId, nowMs);
+        postApply: async (client, { prev, out, nowMs }) => {
+          await releaseAllEquippedLeasesOnRack(client, userId, rackId, nowMs);
+          const rackPrev = prev.placedRacks.find((r) => r.id === rackId);
+          if (!rackPrev) return;
+          for (let si = 0; si < (rackPrev.slots?.length || 0); si++) {
+            const itemId = rackPrev.slots?.[si] != null ? String(rackPrev.slots[si]).trim() : '';
+            if (!itemId) continue;
+            const cfg = await loadAsicDurationConfig(client, itemId);
+            if (!isTimedAsicDuration(cfg)) continue;
+            await applyTimedStockQtyToSnapshot(client, userId, out.stock, itemId, nowMs);
+          }
         }
       });
       return res.status(r.status).json(r.body);
@@ -611,15 +688,26 @@ export function registerServersRackAuxIntentRoutes(app: Application, deps: Serve
           const rackPrev = prevSnap.placedRacks.find((r) => r.id === rackId);
           const itemId =
             rackPrev?.slots?.[si] != null ? String(rackPrev.slots[si]).trim() : '';
-          const leaseId =
+          const leaseHint =
             rackPrev?.slotLeaseIds?.[si] != null ? String(rackPrev.slotLeaseIds[si]).trim() : '';
+          const leaseId = await resolveEquippedLeaseIdForSlot(
+            client,
+            userId,
+            rackId,
+            si,
+            leaseHint,
+            nowMs
+          );
           if (leaseId) {
             await releaseEquippedAsicLeaseById(client, userId, leaseId, itemId, nowMs);
           } else if (itemId) {
             await releaseEquippedAsicLease(client, userId, rackId, si, nowMs);
           }
-          if (itemId && isTimedAsicDuration(await loadAsicDurationConfig(client, itemId))) {
-            await applyTimedStockQtyToSnapshot(client, userId, out.stock, itemId, nowMs);
+          if (itemId) {
+            const cfg = await loadAsicDurationConfig(client, itemId);
+            if (isTimedAsicDuration(cfg)) {
+              await applyTimedStockQtyToSnapshot(client, userId, out.stock, itemId, nowMs);
+            }
           }
         }
       });

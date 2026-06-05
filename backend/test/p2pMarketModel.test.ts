@@ -65,6 +65,40 @@ describe('p2pMarketModel', () => {
     expect(m.reservedBy).toBe('buyer');
   });
 
+  it('mapListingForClient usa seller_id e seller_display_name explícitos', () => {
+    const now = 1_000_000;
+    const m = mapListingForClient(
+      {
+        id: 'uuid-1',
+        seller_id: 42,
+        seller_display_name: 'VendedorA',
+        item_id: 'gpu_v4',
+        price: 10,
+        qty: 1,
+        expires_at: now + 60_000
+      },
+      now
+    );
+    expect(m.sellerId).toBe(42);
+    expect(m.sellerName).toBe('VendedorA');
+  });
+
+  it('mapListingForClient fallback email quando username vazio', () => {
+    const m = mapListingForClient(
+      {
+        id: 'x',
+        seller_id: 7,
+        seller_display_name: 'a@test.invalid',
+        item_id: 'i',
+        price: 1,
+        expires_at: Date.now() + 1000
+      },
+      Date.now()
+    );
+    expect(m.sellerId).toBe(7);
+    expect(m.sellerName).toBe('a@test.invalid');
+  });
+
   it('constantes de mercado', () => {
     expect(MARKET_RESERVE_MS).toBe(180_000);
     expect(MARKET_LISTING_TTL_MS).toBeGreaterThan(0);

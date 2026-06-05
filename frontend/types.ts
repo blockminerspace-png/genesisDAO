@@ -295,6 +295,8 @@ export interface StoredBattery {
 
 export interface MarketListing {
   id: string;
+  /** ID numérico do vendedor (fonte de verdade; não confundir com reservedBy). */
+  sellerId?: number;
   sellerName: string;
   itemId: string;
   /** USDC por unidade */

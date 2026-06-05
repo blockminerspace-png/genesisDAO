@@ -15,6 +15,7 @@ import {
   resolveLegacyFlatImgFilePath,
   sanitizeOriginalNameBase
 } from '../models/imageAssetModel.js';
+import { assertImageFileMagicBytes } from '../validation/inAppAnnouncementValidation.js';
 
 /** Extensões + mimetypes aceites no upload admin (multipart). */
 const ADMIN_UPLOAD_ALLOWED_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
@@ -74,25 +75,43 @@ export function runImageRootStartupOrganizeIfEnabled(imgDir: string): void {
   }
 }
 
+const AD_UPLOAD_ALLOWED_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif']);
+const AD_UPLOAD_ALLOWED_MIME = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/gif']);
+
+function normalizeAdUploadExt(originalName: string, mimetype: string): string | null {
+  const ext = path.extname(originalName || '').toLowerCase();
+  const mime = String(mimetype || '').toLowerCase();
+  if (!AD_UPLOAD_ALLOWED_EXT.has(ext) || !AD_UPLOAD_ALLOWED_MIME.has(mime)) return null;
+  if (ext === '.jpeg') return '.jpg';
+  return ext;
+}
+
 function createAdminAdMulter(uploadsDir: string): ReturnType<typeof multer> {
   const adStorage = multer.diskStorage({
     destination: (_req, _file, cb) => {
+      try {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      } catch {
+        /* idempotente */
+      }
       cb(null, uploadsDir);
     },
     filename: (_req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-      const ext = path.extname(file.originalname);
-      cb(null, 'ad-' + uniqueSuffix + ext);
+      const ext = normalizeAdUploadExt(file.originalname, file.mimetype);
+      if (!ext) {
+        cb(new Error('Formato de imagem inválido. Usa PNG, JPG ou GIF.'));
+        return;
+      }
+      const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+      cb(null, `ad-${uniqueSuffix}${ext}`);
     }
   });
   return multer({
     storage: adStorage,
-    limits: { fileSize: 5 * 1024 * 1024 },
+    limits: { fileSize: 5 * 1024 * 1024, files: 1 },
     fileFilter: (_req, file, cb) => {
-      const allowed = ['.png', '.jpg', '.jpeg', '.gif'];
-      const ext = path.extname(file.originalname).toLowerCase();
-      if (allowed.includes(ext)) cb(null, true);
-      else cb(new Error('Formato de arquivo não permitido'));
+      if (normalizeAdUploadExt(file.originalname, file.mimetype)) cb(null, true);
+      else cb(new Error('Formato de imagem inválido. Usa PNG, JPG ou GIF.'));
     }
   });
 }
@@ -275,7 +294,6 @@ export function registerImageAssetRoutes(app: Express, deps: ImageAssetControlle
   });
 
   app.post('/api/admin/upload-ad', isAdmin, (req: Request, res: Response) => {
-    console.log('[Upload] Starting upload process...');
     uploadAd.single('image')(req, res, async (err: unknown) => {
       if (err) {
         const msg = err instanceof Error ? err.message : 'Erro no upload';
@@ -283,17 +301,24 @@ export function registerImageAssetRoutes(app: Express, deps: ImageAssetControlle
         return res.status(400).json({ error: 'Erro no upload: ' + msg });
       }
       if (!req.file) {
-        console.log('[Upload] No file received');
         return res.status(400).json({ error: 'Nenhum arquivo enviado' });
       }
-      console.log('[Upload] Success:', req.file.filename);
-      const imageUrl = `/img/${req.file.filename}`;
+      const ext = path.extname(req.file.filename).toLowerCase();
       const absAd = path.join(uploadsDir, req.file.filename);
+      if (!assertImageFileMagicBytes(absAd, ext)) {
+        try {
+          fs.unlinkSync(absAd);
+        } catch {
+          /* ignore */
+        }
+        return res.status(400).json({ error: 'Ficheiro não é uma imagem válida (PNG, JPG ou GIF).' });
+      }
       try {
         await compressMediaFileInPlace(absAd);
       } catch {
         /* best-effort */
       }
+      const imageUrl = `/img/uploads/${req.file.filename}`;
       res.json({ ok: true, imageUrl });
     });
   });

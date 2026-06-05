@@ -1,6 +1,11 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/prisma.js';
-import { mapListingForClient, timestampMsFromDb, type PlayerListingRow } from '../../models/p2pMarketModel.js';
+import {
+  mapCustodyListingForClient,
+  mapListingForClient,
+  P2P_LISTING_SELECT_SQL,
+  type PlayerListingRow
+} from '../../models/p2pMarketModel.js';
 import { clampBlackMarketLimit, clampBlackMarketOffset } from './black-market.query.js';
 
 export type BlackMarketListingsQuery = {
@@ -73,7 +78,7 @@ export async function loadActiveBlackMarketListingsPage(
   const total = Number(countRows[0]?.c ?? 0n) || 0;
 
   const listRows = await prisma.$queryRaw<PlayerListingRow[]>(Prisma.sql`
-    SELECT l.*, usr.username, usr.email, ru.username AS reserver_username
+    SELECT ${Prisma.raw(P2P_LISTING_SELECT_SQL)}
     FROM player_listings l
     JOIN users usr ON l.user_id = usr.id
     LEFT JOIN users ru ON ru.id = l.reserved_by
@@ -92,9 +97,9 @@ export async function loadMyActiveListings(sellerId: number): Promise<ReturnType
   await clearExpiredReservations(nowMs);
   const now = BigInt(nowMs);
   const rows = await prisma.$queryRaw<PlayerListingRow[]>(Prisma.sql`
-    SELECT l.*, u.username, u.email, ru.username AS reserver_username
+    SELECT ${Prisma.raw(P2P_LISTING_SELECT_SQL)}
     FROM player_listings l
-    JOIN users u ON l.user_id = u.id
+    JOIN users usr ON l.user_id = usr.id
     LEFT JOIN users ru ON ru.id = l.reserved_by
     WHERE l.user_id = ${sellerId} AND l.status = 'active' AND l.expires_at > ${now}
     ORDER BY l.expires_at ASC
@@ -102,44 +107,19 @@ export async function loadMyActiveListings(sellerId: number): Promise<ReturnType
   return (Array.isArray(rows) ? rows : []).map((l) => mapListingForClient(l, nowMs));
 }
 
-export type CustodyRowDto = {
-  id: string;
-  sellerName: string;
-  itemId: string;
-  price: number;
-  qty: number;
-  lineTotal: number;
-  buyerPaidUsdc?: number;
-  expiresAt: number;
-};
+export type CustodyRowDto = ReturnType<typeof mapCustodyListingForClient>;
 
 export async function loadCustodyForBuyer(userId: number): Promise<CustodyRowDto[]> {
-  const rows = await prisma.$queryRaw<
-    (PlayerListingRow & { buyer_paid_usdc?: number | string | null })[]
-  >(Prisma.sql`
-    SELECT l.*, u.username, u.email
+  const nowMs = Date.now();
+  const rows = await prisma.$queryRaw<PlayerListingRow[]>(Prisma.sql`
+    SELECT ${Prisma.raw(P2P_LISTING_SELECT_SQL)}
     FROM player_listings l
-    JOIN users u ON l.user_id = u.id
+    JOIN users usr ON l.user_id = usr.id
+    LEFT JOIN users ru ON ru.id = l.reserved_by
     WHERE l.status = 'awaiting_pickup' AND l.reserved_by = ${userId}
   `);
   const list = Array.isArray(rows) ? rows : [];
-  return list.map((l) => {
-    const qty = Math.max(1, parseInt(String(l.qty ?? 1), 10) || 1);
-    const unit = Number(l.price);
-    const paidRaw = l.buyer_paid_usdc;
-    const paid =
-      paidRaw != null && paidRaw !== '' && Number.isFinite(Number(paidRaw)) ? Number(paidRaw) : undefined;
-    return {
-      id: l.id,
-      sellerName: l.username || l.email || '',
-      itemId: l.item_id,
-      price: unit,
-      qty,
-      lineTotal: unit * qty,
-      buyerPaidUsdc: paid,
-      expiresAt: timestampMsFromDb(l.expires_at)
-    };
-  });
+  return list.map((l) => mapCustodyListingForClient(l, nowMs));
 }
 
 export type SellableStockRow = { itemId: string; qty: number };

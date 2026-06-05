@@ -68,6 +68,8 @@ export type SuspiciousEmailsReport = {
     deadAccounts: number;
     referralOnly: number;
     highRisk: number;
+    /** Contas activas (não bloqueadas) no conjunto filtrado — alvo do botão desactivar em massa. */
+    totalActiveFiltered: number;
   };
   trustedDomains: readonly string[];
   domainStats: Array<{ domain: string; count: number; reason: SuspiciousEmailReasonCode | 'high_volume' }>;
@@ -289,42 +291,16 @@ type Internal = {
   referrer: SuspiciousEmailReferrer | null;
 };
 
-function internalToPublic(i: Internal, totalHash: number, reasons: SuspiciousEmailReasonCode[]): SuspiciousEmailUserRow {
-  const { score, riskLevel } = calculateUserSuspicionScore(reasons);
-  const dom = getEmailDomain(i.email);
-  const mined = totalHash > 1e-10 || i.coinBalanceSum > 1e-8 || i.sig.racksMiningOn > 0;
-  return {
-    id: i.id,
-    username: i.username,
-    email: i.email,
-    emailDomain: dom,
-    status: i.status,
-    accessLevel: i.accessLevel,
-    createdAt: i.createdAt,
-    lastLoginAt: i.lastLoginAt,
-    emailVerified: i.emailVerified,
-    walletAddress: i.walletAddress,
-    totalHash,
-    totalMinedUsd: i.coinBalanceSum,
-    totalDepositedUsdc: i.totalDepositedUsdc,
-    hasMinedFlag: mined,
-    referrer: i.referrer,
-    riskScore: score,
-    riskLevel,
-    reasons,
-  };
-}
+type ParsedSuspiciousQuery = {
+  reason: string;
+  activity: string;
+  status: string;
+  sort: string;
+  q: string;
+  specificDomain: string;
+};
 
-export async function fetchSuspiciousEmailsReport(
-  db: Pool,
-  query: SuspiciousEmailsListQuery,
-  opts?: { exportMode?: boolean }
-): Promise<SuspiciousEmailsReport> {
-  const exportMode = !!opts?.exportMode;
-  const page = clampInt(query.page, 1, 1, 1_000_000);
-  const cap = exportMode ? MAX_EXPORT : MAX_LIMIT;
-  const defaultLimit = exportMode ? MAX_EXPORT : 50;
-  const limit = clampInt(query.limit, defaultLimit, 1, cap);
+function parseSuspiciousEmailsQuery(query: SuspiciousEmailsListQuery): ParsedSuspiciousQuery {
   const reason = REASON_FILTERS.has(String(query.reason || '').trim())
     ? String(query.reason || 'all').trim()
     : 'all';
@@ -339,6 +315,92 @@ export async function fetchSuspiciousEmailsReport(
     .toLowerCase()
     .slice(0, 200)
     .replace(/\0/g, '');
+  return { reason, activity, status, sort, q, specificDomain };
+}
+
+function sortSuspiciousWorkingSet(working: Internal[], sort: string): Internal[] {
+  const cmpStr = (a: string | null, b: string | null, dir: number) => {
+    const sa = (a ?? '').toLowerCase();
+    const sb = (b ?? '').toLowerCase();
+    if (sa < sb) return -dir;
+    if (sa > sb) return dir;
+    return 0;
+  };
+
+  const sorted = [...working];
+  switch (sort) {
+    case 'risk_desc':
+      sorted.sort((a, b) => b.riskScore - a.riskScore || b.id - a.id);
+      break;
+    case 'risk_asc':
+      sorted.sort((a, b) => a.riskScore - b.riskScore || a.id - b.id);
+      break;
+    case 'last_login_desc':
+      sorted.sort((a, b) => {
+        const la = lastLoginMs(a._db) ?? 0;
+        const lb = lastLoginMs(b._db) ?? 0;
+        return lb - la || b.id - a.id;
+      });
+      break;
+    case 'total_mined_desc':
+      sorted.sort((a, b) => b.coinBalanceSum - a.coinBalanceSum || b.id - a.id);
+      break;
+    case 'total_deposited_desc':
+      sorted.sort((a, b) => b.totalDepositedUsdc - a.totalDepositedUsdc || b.id - a.id);
+      break;
+    case 'created_asc':
+      sorted.sort((a, b) => sortCreatedMs(a._db) - sortCreatedMs(b._db) || a.id - b.id);
+      break;
+    case 'domain_asc':
+      sorted.sort((a, b) => {
+        const da = getEmailDomain(a.email) || '';
+        const db = getEmailDomain(b.email) || '';
+        return cmpStr(da, db, 1) || b.id - a.id;
+      });
+      break;
+    case 'domain_desc':
+      sorted.sort((a, b) => {
+        const da = getEmailDomain(a.email) || '';
+        const db = getEmailDomain(b.email) || '';
+        return cmpStr(da, db, -1) || b.id - a.id;
+      });
+      break;
+    case 'username_asc':
+      sorted.sort((a, b) => cmpStr(a.username, b.username, 1) || b.id - a.id);
+      break;
+    case 'username_desc':
+      sorted.sort((a, b) => cmpStr(a.username, b.username, -1) || b.id - a.id);
+      break;
+    case 'created_desc':
+    default:
+      sorted.sort((a, b) => sortCreatedMs(b._db) - sortCreatedMs(a._db) || b.id - a.id);
+  }
+  return sorted;
+}
+
+function buildSuspiciousSummary(working: Internal[], total: number) {
+  return {
+    totalSuspicious: total,
+    domainNotTrusted: working.filter((u) => u.reasons.includes('domain_not_trusted')).length,
+    invalidFormat: working.filter((u) => u.reasons.includes('invalid_format')).length,
+    temporaryDomains: working.filter((u) => u.reasons.includes('temporary_domain')).length,
+    fakePatterns: working.filter((u) => u.reasons.includes('fake_pattern')).length,
+    duplicates: working.filter((u) => u.reasons.includes('duplicate_email')).length,
+    unverified: working.filter((u) => u.reasons.includes('unverified_email')).length,
+    suspiciousDomain: working.filter((u) => u.reasons.includes('suspicious_domain')).length,
+    deadAccounts: working.filter((u) => u.reasons.includes('dead_account')).length,
+    referralOnly: working.filter((u) => u.reasons.includes('referral_only')).length,
+    highRisk: working.filter((u) => u.riskLevel === 'high').length,
+    totalActiveFiltered: working.filter((u) => u.status === 'active').length,
+  };
+}
+
+export async function resolveSuspiciousUsersWorkingSet(
+  db: Pool,
+  query: SuspiciousEmailsListQuery
+): Promise<{ working: Internal[]; domainTotalCounts: Map<string, number>; parsed: ParsedSuspiciousQuery }> {
+  const parsed = parseSuspiciousEmailsQuery(query);
+  const { reason, activity, status, q, specificDomain } = parsed;
 
   const trusted = [...TRUSTED_EMAIL_DOMAINS].map((d) => d.toLowerCase());
   const trustedSet = new Set(trusted);
@@ -545,62 +607,104 @@ export async function fetchSuspiciousEmailsReport(
     });
   }
 
-  const cmpStr = (a: string | null, b: string | null, dir: number) => {
-    const sa = (a ?? '').toLowerCase();
-    const sb = (b ?? '').toLowerCase();
-    if (sa < sb) return -dir;
-    if (sa > sb) return dir;
-    return 0;
-  };
+  return { working, domainTotalCounts, parsed };
+}
 
-  const sorted = [...working];
-  switch (sort) {
-    case 'risk_desc':
-      sorted.sort((a, b) => b.riskScore - a.riskScore || b.id - a.id);
-      break;
-    case 'risk_asc':
-      sorted.sort((a, b) => a.riskScore - b.riskScore || a.id - b.id);
-      break;
-    case 'last_login_desc':
-      sorted.sort((a, b) => {
-        const la = lastLoginMs(a._db) ?? 0;
-        const lb = lastLoginMs(b._db) ?? 0;
-        return lb - la || b.id - a.id;
-      });
-      break;
-    case 'total_mined_desc':
-      sorted.sort((a, b) => b.coinBalanceSum - a.coinBalanceSum || b.id - a.id);
-      break;
-    case 'total_deposited_desc':
-      sorted.sort((a, b) => b.totalDepositedUsdc - a.totalDepositedUsdc || b.id - a.id);
-      break;
-    case 'created_asc':
-      sorted.sort((a, b) => sortCreatedMs(a._db) - sortCreatedMs(b._db) || a.id - b.id);
-      break;
-    case 'domain_asc':
-      sorted.sort((a, b) => {
-        const da = getEmailDomain(a.email) || '';
-        const db = getEmailDomain(b.email) || '';
-        return cmpStr(da, db, 1) || b.id - a.id;
-      });
-      break;
-    case 'domain_desc':
-      sorted.sort((a, b) => {
-        const da = getEmailDomain(a.email) || '';
-        const db = getEmailDomain(b.email) || '';
-        return cmpStr(da, db, -1) || b.id - a.id;
-      });
-      break;
-    case 'username_asc':
-      sorted.sort((a, b) => cmpStr(a.username, b.username, 1) || b.id - a.id);
-      break;
-    case 'username_desc':
-      sorted.sort((a, b) => cmpStr(a.username, b.username, -1) || b.id - a.id);
-      break;
-    case 'created_desc':
-    default:
-      sorted.sort((a, b) => sortCreatedMs(b._db) - sortCreatedMs(a._db) || b.id - a.id);
+const DEACTIVATE_BATCH_SIZE = 500;
+
+export async function deactivateSuspiciousActiveUserIds(db: Pool, activeIds: number[]): Promise<number> {
+  if (activeIds.length === 0) return 0;
+  let deactivated = 0;
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    for (let i = 0; i < activeIds.length; i += DEACTIVATE_BATCH_SIZE) {
+      const batch = activeIds.slice(i, i + DEACTIVATE_BATCH_SIZE);
+      const upd = await client.query(
+        `UPDATE users SET is_blocked = 1
+         WHERE id = ANY($1::int[]) AND COALESCE(is_blocked, 0) = 0`,
+        [batch]
+      );
+      deactivated += upd.rowCount ?? 0;
+      await client.query(`DELETE FROM sessions WHERE user_id = ANY($1::int[])`, [batch]);
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
   }
+  return deactivated;
+}
+
+export type DeactivateFilteredSuspiciousResult =
+  | { ok: true; deactivated: number; alreadyBlocked: number }
+  | { ok: false; code: 'COUNT_MISMATCH'; expected: number; actual: number }
+  | { ok: false; code: 'INVALID'; error: string };
+
+export async function deactivateFilteredSuspiciousUsers(
+  db: Pool,
+  query: SuspiciousEmailsListQuery,
+  opts: { expectedCount: number; adminUserId: number }
+): Promise<DeactivateFilteredSuspiciousResult> {
+  const expected = Math.floor(Number(opts.expectedCount) || 0);
+  if (expected < 1) {
+    return { ok: false, code: 'INVALID', error: 'expectedCount deve ser >= 1.' };
+  }
+
+  const { working } = await resolveSuspiciousUsersWorkingSet(db, query);
+  const activeIds = working.filter((u) => u.status === 'active').map((u) => u.id);
+  const alreadyBlocked = working.length - activeIds.length;
+
+  if (activeIds.length !== expected) {
+    return { ok: false, code: 'COUNT_MISMATCH', expected, actual: activeIds.length };
+  }
+
+  const deactivated = await deactivateSuspiciousActiveUserIds(db, activeIds);
+
+  return { ok: true, deactivated, alreadyBlocked: working.length - activeIds.length };
+}
+
+function internalToPublic(i: Internal, totalHash: number, reasons: SuspiciousEmailReasonCode[]): SuspiciousEmailUserRow {
+  const { score, riskLevel } = calculateUserSuspicionScore(reasons);
+  const dom = getEmailDomain(i.email);
+  const mined = totalHash > 1e-10 || i.coinBalanceSum > 1e-8 || i.sig.racksMiningOn > 0;
+  return {
+    id: i.id,
+    username: i.username,
+    email: i.email,
+    emailDomain: dom,
+    status: i.status,
+    accessLevel: i.accessLevel,
+    createdAt: i.createdAt,
+    lastLoginAt: i.lastLoginAt,
+    emailVerified: i.emailVerified,
+    walletAddress: i.walletAddress,
+    totalHash,
+    totalMinedUsd: i.coinBalanceSum,
+    totalDepositedUsdc: i.totalDepositedUsdc,
+    hasMinedFlag: mined,
+    referrer: i.referrer,
+    riskScore: score,
+    riskLevel,
+    reasons,
+  };
+}
+
+export async function fetchSuspiciousEmailsReport(
+  db: Pool,
+  query: SuspiciousEmailsListQuery,
+  opts?: { exportMode?: boolean }
+): Promise<SuspiciousEmailsReport> {
+  const exportMode = !!opts?.exportMode;
+  const page = clampInt(query.page, 1, 1, 1_000_000);
+  const cap = exportMode ? MAX_EXPORT : MAX_LIMIT;
+  const defaultLimit = exportMode ? MAX_EXPORT : 50;
+  const limit = clampInt(query.limit, defaultLimit, 1, cap);
+
+  const { working, domainTotalCounts, parsed } = await resolveSuspiciousUsersWorkingSet(db, query);
+  const sorted = sortSuspiciousWorkingSet(working, parsed.sort);
 
   const total = sorted.length;
   const offset = (page - 1) * limit;
@@ -629,19 +733,7 @@ export async function fetchSuspiciousEmailsReport(
     return internalToPublic({ ...row, reasons: refined, riskScore: score, riskLevel }, th, refined);
   });
 
-  const summary = {
-    totalSuspicious: total,
-    domainNotTrusted: working.filter((u) => u.reasons.includes('domain_not_trusted')).length,
-    invalidFormat: working.filter((u) => u.reasons.includes('invalid_format')).length,
-    temporaryDomains: working.filter((u) => u.reasons.includes('temporary_domain')).length,
-    fakePatterns: working.filter((u) => u.reasons.includes('fake_pattern')).length,
-    duplicates: working.filter((u) => u.reasons.includes('duplicate_email')).length,
-    unverified: working.filter((u) => u.reasons.includes('unverified_email')).length,
-    suspiciousDomain: working.filter((u) => u.reasons.includes('suspicious_domain')).length,
-    deadAccounts: working.filter((u) => u.reasons.includes('dead_account')).length,
-    referralOnly: working.filter((u) => u.reasons.includes('referral_only')).length,
-    highRisk: working.filter((u) => u.riskLevel === 'high').length,
-  };
+  const summary = buildSuspiciousSummary(working, total);
 
   const domainAgg = new Map<string, { count: number; reason: SuspiciousEmailReasonCode | 'high_volume' }>();
   for (const u of working) {

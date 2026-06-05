@@ -190,7 +190,7 @@ export const YoutubePartnerStudio: React.FC<Props> = ({ state, mySubs, onReload 
         <Youtube className="mx-auto mb-3 text-red-500" size={36} />
         <h2 className="text-lg font-black text-white">Queres ser parceiro YouTube?</h2>
         <p className="mt-2 text-sm text-slate-400 max-w-lg mx-auto">
-          Inicia sessão para candidatares o teu canal, enviar vídeos e desbloquear a Sala NFT.
+          Inicia sessão para candidatares o teu canal, enviar vídeos e desbloquear a Sala Streamer.
         </p>
       </section>
     );
@@ -221,7 +221,7 @@ export const YoutubePartnerStudio: React.FC<Props> = ({ state, mySubs, onReload 
             <div className="grid gap-3 sm:grid-cols-3">
               <div className="rounded-xl border border-emerald-800/40 bg-emerald-950/20 p-4">
                 <Gem className="text-emerald-400 mb-2" size={20} />
-                <div className="text-sm font-bold text-white">Sala NFT</div>
+                <div className="text-sm font-bold text-white">Sala Streamer</div>
                 <p className="text-xs text-slate-400 mt-1">Acesso exclusivo após aprovação da candidatura.</p>
               </div>
               <div className="rounded-xl border border-amber-800/40 bg-amber-950/20 p-4">
@@ -332,7 +332,7 @@ export const YoutubePartnerStudio: React.FC<Props> = ({ state, mySubs, onReload 
         <Clock className="mx-auto mb-3 text-amber-400 animate-pulse" size={40} />
         <h2 className="text-xl font-black text-white">Candidatura em análise</h2>
         <p className="mt-2 text-sm text-slate-300 max-w-md mx-auto">
-          Recebemos a candidatura de <strong className="text-amber-300">{application.channelName}</strong>. A equipa vai rever e activar a Sala NFT se for aprovada.
+          Recebemos a candidatura de <strong className="text-amber-300">{application.channelName}</strong>. A equipa vai rever e activar a Sala Streamer se for aprovada.
         </p>
         <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-amber-700/50 bg-amber-950/40 px-4 py-1.5 text-xs font-bold text-amber-200 uppercase">
           Pendente · enviada {fmtDate(application.createdAt)}
@@ -355,7 +355,7 @@ export const YoutubePartnerStudio: React.FC<Props> = ({ state, mySubs, onReload 
         >
           <Gem className={nftRoom.overdue ? 'text-red-400' : 'text-emerald-400'} size={22} />
           <div className="flex-1 min-w-[200px]">
-            <div className="text-sm font-bold text-white">Sala NFT {nftRoom.overdue ? '— em risco' : '— activa'}</div>
+            <div className="text-sm font-bold text-white">Sala Streamer {nftRoom.overdue ? '— em risco' : '— activa'}</div>
             <p className="text-xs text-slate-400 mt-0.5">
               {nftRoom.overdue
                 ? 'Sem vídeo aprovado nos últimos 60 dias. Envia conteúdo para manter a sala.'

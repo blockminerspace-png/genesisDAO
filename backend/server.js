@@ -26,7 +26,12 @@ import { mapUpgradeRowToApi, resolveAsicDurationUpsertFields } from './lib/upgra
 import { mapWithdrawalRequestRow } from './lib/withdrawalHistoryShape.js';
 import { recoverOrphanRackBatteryStorageRows } from './dist/modules/batteries/batteries.recovery.js';
 import { ensureStoredBatteriesIntegrity } from './dist/modules/batteries/batteries.integrity.js';
-import { normalizeKnown1000WhBatteryCatalogId } from './dist/modules/batteries/batteries.catalog.js';
+import {
+    buildStableLegacyTempUpgradeId,
+    CANONICAL_1000WH_BATTERY_ID,
+    normalizeKnown1000WhBatteryCatalogId
+} from './dist/modules/batteries/batteries.catalog.js';
+import { remapPurgedAndTempLegacyStockToEstelar } from './lib/stockPurgedRemap.js';
 import { orphanRackBatteryAutoRecoverEnabled } from './dist/lib/orphanRackBatteryRecoveryGate.js';
 import { fetchSuspiciousEmailsReport, buildSuspiciousEmailsCsv } from './dist/modules/admin/suspiciousEmails/suspiciousEmailsAdmin.service.js';
 /** Tempo de bloco fixo na economia do simulador (10 minutos) — alinhado ao admin / frontend. */
@@ -291,6 +296,12 @@ async function ensureStockItemIdsSane() {
         console.warn('[Migration] legacy-temp move:', e instanceof Error ? e.message : String(e));
     }
     try {
+        const purgedRemap = await remapPurgedAndTempLegacyStockToEstelar(db);
+        if (purgedRemap.estelarMergedRows > 0 ||
+            purgedRemap.purgedDeletedRows > 0 ||
+            purgedRemap.tempStockDeletedRows > 0) {
+            console.log(`[Migration] stock purge→${CANONICAL_1000WH_BATTERY_ID}: merge ${purgedRemap.estelarMergedRows}, del ${purgedRemap.purgedDeletedRows}, temp ${purgedRemap.tempStockDeletedRows}`);
+        }
         // 2) item_id com espaços → id canónico se existir upgrade e não houver colisão de PK
         const trimRes = await db.query(`
       UPDATE stock s
@@ -331,18 +342,11 @@ async function ensureStockItemIdsSane() {
         ORDER BY s.user_id, s.item_id NULLS FIRST`);
         if ((brokenRes.rowCount ?? 0) === 0)
             return;
-        let seq = 0;
         for (const row of brokenRes.rows) {
-            seq += 1;
             const original = typeof row.item_id === 'string' ? row.item_id : '';
             const normalizedOriginal = original.trim() || 'sem-id';
-            const slug = normalizedOriginal
-                .toLowerCase()
-                .replace(/[^a-z0-9_.-]+/g, '-')
-                .replace(/^-+|-+$/g, '')
-                .slice(0, 80) || 'sem-id';
-            const tempId = `temp_legacy_${row.user_id}_${seq}_${slug}`.slice(0, 200);
-            const label = `Item temporario recuperado #${row.user_id}-${seq}`;
+            const tempId = buildStableLegacyTempUpgradeId(Number(row.user_id), normalizedOriginal);
+            const label = `Item temporario recuperado (${normalizedOriginal})`;
             const desc = `Placeholder criado automaticamente para preservar inventario legado. original=${normalizedOriginal} email=${String(row.email || '').slice(0, 120)}`;
             await db.query(`INSERT INTO upgrades (
           id, name, category, type, base_cost, base_production, power_consumption, power_capacity,
@@ -6403,6 +6407,7 @@ app.get('/api/game-state/:email', async (req, res) => {
             const unit = Number(r.price);
             return {
                 id: r.id,
+                sellerId: uid,
                 sellerName: sellerLabel,
                 itemId: r.item_id,
                 price: unit,
@@ -6743,27 +6748,41 @@ async function validatePlacedRacksForSave(dbq, racks, userId) {
                 }
             }
         }
-        else if (Number.isFinite(uidNum) && uidNum > 0 && Array.isArray(racks)) {
-            let uuidBatt = 0;
-            for (const r of racks) {
-                const b = String(r?.batteryId ?? '').trim();
-                if (b && isRackBatteryInstanceUuid(b))
-                    uuidBatt++;
-            }
-            if (uuidBatt > 0) {
-                console.warn(JSON.stringify({
-                    event: 'legacy_save_orphan_risk_scan',
-                    userId: uidNum,
-                    racksReferencingInstanceUuid: uuidBatt,
-                    autoRecover: false
-                }));
-            }
         }
     }
     catch (eRec) {
         console.warn('[validatePlacedRacksForSave] recoverOrphanRackBatteryStorageRows:', eRec instanceof Error ? eRec.message : String(eRec));
     }
     await refreshOwnedStoredBatteryIds();
+    if (!orphanRackBatteryAutoRecoverEnabled() &&
+        Number.isFinite(uidNum) &&
+        uidNum > 0 &&
+        Array.isArray(racks)) {
+        let orphanBatteryCount = 0;
+        for (const r of racks) {
+            const b = String(r?.batteryId ?? '').trim();
+            if (b && isRackBatteryInstanceUuid(b) && !ownedStoredBatteryIds.has(b))
+                orphanBatteryCount += 1;
+        }
+        if (orphanBatteryCount > 0) {
+            console.warn(JSON.stringify({
+                event: 'legacy_save_orphan_risk_scan',
+                userId: uidNum,
+                racksReferencingInstanceUuid: orphanBatteryCount,
+                autoRecover: false
+            }));
+            try {
+                await appendGameActivityLogMongo(uidNum, 'orphan_risk_detected', {
+                    kind: 'rack_battery_uuid',
+                    count: orphanBatteryCount,
+                    autoRecover: false
+                });
+            }
+            catch (eLog) {
+                console.warn('[validatePlacedRacksForSave] orphan_risk_detected log:', eLog instanceof Error ? eLog.message : String(eLog));
+            }
+        }
+    }
     const nftRoomIds = await resolveNftAutoArmario1OnlyRoomIds(dbq);
     const upgradeIds = new Set();
     const coinIds = new Set();

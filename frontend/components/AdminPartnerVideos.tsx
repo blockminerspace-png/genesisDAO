@@ -649,7 +649,7 @@ export const AdminPartnerVideos: React.FC = () => {
                           className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold disabled:opacity-40"
                         >
                           {busyId === a.id ? <Loader2 className="animate-spin" size={14} /> : <Check size={14} />}
-                          Aprovar + Sala NFT
+                          Aprovar + Sala Streamer
                         </button>
                         <button
                           type="button"
@@ -793,27 +793,27 @@ export const AdminPartnerVideos: React.FC = () => {
                       )}
                       {p.nftRoom?.active ? (
                         <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded border border-violet-800/60 bg-violet-950/40 text-violet-200">
-                          Sala NFT ativa
+                          Sala Streamer ativa
                         </span>
                       ) : (
                         <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded border border-slate-600 text-slate-500">
-                          Sem sala NFT ativa
+                          Sem sala Streamer ativa
                         </span>
                       )}
                       {p.nftRoom?.active && p.nftRoom?.overdue ? (
                         <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded border border-red-800/70 bg-red-950/50 text-red-200">
-                          Sala NFT em falta
+                          Sala Streamer em falta
                         </span>
                       ) : p.nftRoom?.active ? (
                         <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded border border-emerald-800/60 bg-emerald-950/40 text-emerald-300">
-                          Sala NFT em dia
+                          Sala Streamer em dia
                         </span>
                       ) : null}
                     </div>
                     {p.nftRoom?.active && p.nftRoom?.overdue ? (
                       <div className="rounded-lg border border-red-900/60 bg-red-950/20 px-3 py-2 text-[11px] text-red-200">
                         Este parceiro está sem vídeo aprovado dentro da janela de 60 dias. O mínimo definido é 1 vídeo aprovado a
-                        cada 2 meses e 6 por ano para manter a sala NFT.
+                        cada 2 meses e 6 por ano para manter a sala Streamer.
                       </div>
                     ) : null}
                   </div>
@@ -825,7 +825,7 @@ export const AdminPartnerVideos: React.FC = () => {
                         onClick={() => {
                           if (
                             !window.confirm(
-                              `Desativar a sala NFT de «${p.username}»?\n\nIsto remove a sala NFT do utilizador e desmonta as rigs dessa sala em segurança, devolvendo os itens ao inventário/armazenamento.`
+                              `Desativar a sala Streamer de «${p.username}»?\n\nIsto remove a sala Streamer do utilizador e desmonta as rigs dessa sala em segurança, devolvendo os itens ao inventário/armazenamento.`
                             )
                           ) {
                             return;
@@ -835,10 +835,10 @@ export const AdminPartnerVideos: React.FC = () => {
                             try {
                               const r = await postAdminDeactivatePartnerNftRoom(p.userId);
                               if (!r.ok) {
-                                alert(r.error || 'Falha ao desativar a sala NFT.');
+                                alert(r.error || 'Falha ao desativar a sala Streamer.');
                                 return;
                               }
-                              alert(`Sala NFT desativada com sucesso. Rigs removidas da sala: ${r.removedRackCount ?? 0}.`);
+                              alert(`Sala Streamer desativada com sucesso. Rigs removidas da sala: ${r.removedRackCount ?? 0}.`);
                               void loadPartners();
                             } finally {
                               setDeactivateNftRoomBusyId(null);
@@ -852,7 +852,7 @@ export const AdminPartnerVideos: React.FC = () => {
                         ) : (
                           <X size={14} />
                         )}
-                        Desativar sala NFT
+                        Desativar sala Streamer
                       </button>
                     ) : null}
                     {p.allowlisted ? (

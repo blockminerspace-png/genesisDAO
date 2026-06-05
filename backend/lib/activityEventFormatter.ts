@@ -88,19 +88,143 @@ function formatSessionSnapshot(meta: Record<string, unknown>): ActivityEventDisp
   };
 }
 
-function formatStockDelta(meta: Record<string, unknown>): ActivityEventDisplay {
+function stockDeltaContextLines(meta: Record<string, unknown>): string[] {
+  const lines: string[] = [];
+  const source = str(meta.source);
+  if (source) {
+    lines.push(
+      source === 'save-game'
+        ? 'Origem: save-game (cliente enviou inventário)'
+        : `Origem: ${source}`
+    );
+  }
+  const after = num(meta.after ?? meta.quantity_after);
+  if (after === 0) {
+    lines.push(
+      'Quantidade zerada no stock — confirmar se foi para rig/sala, venda ou P2P; se não, item órfão ou bug de sync.'
+    );
+  }
+  if (meta.unknownCatalog === true || str(meta.dispositionHint) === 'unknown_catalog') {
+    lines.push('ID fora do catálogo (possível item legado/órfão).');
+  }
+  return lines;
+}
+
+function formatStockDelta(meta: Record<string, unknown>, opts?: { lossAlert?: boolean }): ActivityEventDisplay {
   const itemId = str(meta.itemId || meta.catalogItemId);
   const name = str(meta.itemName) || itemId;
   const before = num(meta.before ?? meta.quantity_before);
   const after = num(meta.after ?? meta.quantity_after);
   const delta = num(meta.delta) ?? (before != null && after != null ? after - before : null);
   const isLoss = delta != null && delta < 0;
+  const lossAlert = opts?.lossAlert === true;
+  const contextLines = stockDeltaContextLines(meta);
   return {
     category: 'inventory',
-    severity: isLoss ? 'warning' : delta != null && delta > 0 ? 'success' : 'info',
-    title: isLoss ? 'Inventário: perda de item' : delta != null && delta > 0 ? 'Inventário: ganho de item' : 'Inventário alterado',
+    severity: lossAlert ? 'danger' : isLoss ? 'warning' : delta != null && delta > 0 ? 'success' : 'info',
+    title: lossAlert
+      ? 'Alerta: item sumiu do inventário'
+      : isLoss
+        ? 'Inventário: perda de item'
+        : delta != null && delta > 0
+          ? 'Inventário: ganho de item'
+          : 'Inventário alterado',
     summary: `${name}: ${fmtQty(before)} → ${fmtQty(after)}${delta != null ? ` (Δ ${delta > 0 ? '+' : ''}${delta})` : ''}`,
-    lines: [str(meta.source) ? `Origem: ${meta.source}` : ''].filter(Boolean),
+    lines: contextLines.length > 0 ? contextLines : undefined,
+    technicalMeta: meta
+  };
+}
+
+function formatHardwareBuy(meta: Record<string, unknown>): ActivityEventDisplay {
+  const linesRaw = Array.isArray(meta.lines) ? meta.lines : [];
+  const itemLines = linesRaw
+    .map((ln) => {
+      if (ln == null || typeof ln !== 'object') return '';
+      const o = ln as Record<string, unknown>;
+      const qty = num(o.qty) ?? 1;
+      const name = str(o.name) || str(o.id);
+      return name ? `${qty}× ${name}` : '';
+    })
+    .filter(Boolean);
+  const source = str(meta.source);
+  const sourceLabel =
+    source === 'shop_checkout' ? 'Loja (checkout)' : source === 'upgrades_buy' ? 'Compra directa' : source;
+  return {
+    category: 'economy',
+    severity: 'success',
+    title: 'Comprou hardware',
+    summary: `Pagou ${fmtUsdc(meta.totalUsdc ?? meta.totalPaid)} USDC · saldo ${fmtUsdc(meta.newUsdc)} USDC`,
+    lines: [
+      itemLines.length > 0 ? `Itens: ${itemLines.join(', ')}` : '',
+      sourceLabel ? `Canal: ${sourceLabel}` : ''
+    ].filter(Boolean),
+    technicalMeta: meta
+  };
+}
+
+function formatShopCheckoutOk(meta: Record<string, unknown>): ActivityEventDisplay {
+  const cached = meta.cached === true;
+  return {
+    category: 'economy',
+    severity: 'success',
+    title: 'Checkout concluído',
+    summary: `Pago ${fmtUsdc(meta.totalPaid)} USDC · saldo ${fmtUsdc(meta.newUsdc)} USDC${cached ? ' (pedido repetido — cache)' : ''}`,
+    technicalMeta: meta
+  };
+}
+
+function formatShopCheckoutAttempt(meta: Record<string, unknown>): ActivityEventDisplay {
+  const n = num(meta.lineCount);
+  return {
+    category: 'economy',
+    severity: 'info',
+    title: 'Tentativa de checkout',
+    summary: n != null ? `${n} linha(s) no carrinho` : 'Iniciou checkout na loja',
+    technicalMeta: meta
+  };
+}
+
+function formatShopCheckoutDenied(meta: Record<string, unknown>): ActivityEventDisplay {
+  return {
+    category: 'economy',
+    severity: 'warning',
+    title: 'Checkout recusado',
+    summary: str(meta.error) || str(meta.code) || 'Compra não concluída',
+    lines: [str(meta.code) ? `Código: ${meta.code}` : ''].filter(Boolean),
+    technicalMeta: meta
+  };
+}
+
+function formatShopCartEvent(action: string, meta: Record<string, unknown>): ActivityEventDisplay {
+  return {
+    category: 'economy',
+    severity: 'info',
+    title: 'Carrinho alterado',
+    summary: action.replace(/^shop_cart_/, '').replace(/_/g, ' ') || 'Alteração no carrinho',
+    lines: [
+      meta.productId ? `Produto: ${str(meta.productId)}` : '',
+      meta.qty != null ? `Quantidade: ${fmtQty(meta.qty)}` : ''
+    ].filter(Boolean),
+    technicalMeta: meta
+  };
+}
+
+function formatOrphanRiskDetected(meta: Record<string, unknown>): ActivityEventDisplay {
+  const count = num(meta.count) ?? 0;
+  const kind = str(meta.kind) || 'desconhecido';
+  return {
+    category: 'inventory',
+    severity: 'danger',
+    title: 'Risco de item órfão',
+    summary:
+      kind === 'rack_battery_uuid'
+        ? `${count} bateria(s) na rig sem registo válido no armazém`
+        : `${count} referência(s) órfã(s) detectada(s)`,
+    lines: [
+      meta.autoRecover === false
+        ? 'Recuperação automática desactivada — verificar rigs e stored_batteries.'
+        : ''
+    ].filter(Boolean),
     technicalMeta: meta
   };
 }
@@ -131,6 +255,93 @@ function rackContextLine(meta: Record<string, unknown>): string | undefined {
   const rackId = str(meta.rackId);
   if (rackId) return `Ref. interna da rig: ${rackId.slice(0, 8)}…`;
   return undefined;
+}
+
+function formatRackMinerEquipEvent(meta: Record<string, unknown>): ActivityEventDisplay {
+  const name = str(meta.itemName) || str(meta.itemId) || 'item';
+  const slot = num(meta.slotIndex);
+  const rackShort = str(meta.rackId).slice(0, 8);
+  return {
+    category: 'inventory',
+    severity: 'info',
+    title: 'Equipou na rig',
+    summary: `${name} → rig ${rackShort}${rackShort ? '…' : ''} slot ${slot ?? '?'}`,
+    lines: [
+      meta.stockBefore != null && meta.stockAfter != null
+        ? `Stock: ${fmtQty(meta.stockBefore)} → ${fmtQty(meta.stockAfter)}`
+        : ''
+    ].filter(Boolean),
+    technicalMeta: meta
+  };
+}
+
+function formatRackMinerUnequipEvent(meta: Record<string, unknown>): ActivityEventDisplay {
+  const name = str(meta.itemName) || str(meta.itemId) || 'item';
+  const slot = num(meta.slotIndex);
+  const rackShort = str(meta.rackId).slice(0, 8);
+  return {
+    category: 'inventory',
+    severity: 'info',
+    title: 'Desequipou da rig',
+    summary: `${name} ← rig ${rackShort}${rackShort ? '…' : ''} slot ${slot ?? '?'}`,
+    lines: [
+      meta.stockBefore != null && meta.stockAfter != null
+        ? `Stock: ${fmtQty(meta.stockBefore)} → ${fmtQty(meta.stockAfter)}`
+        : ''
+    ].filter(Boolean),
+    technicalMeta: meta
+  };
+}
+
+function formatP2pAction(action: string, meta: Record<string, unknown>): ActivityEventDisplay {
+  const itemName = str(meta.itemName) || str(meta.itemId);
+  const qty = num(meta.qty) ?? num(meta.buyQty) ?? num(meta.purchasedQty);
+  const price = num(meta.price) ?? num(meta.unitPrice);
+  const total = num(meta.totalUsdc) ?? num(meta.buyerPaidUsdc);
+  const counterparty =
+    meta.sellerId != null
+      ? `#${meta.sellerId}`
+      : meta.buyerId != null
+        ? `#${meta.buyerId}`
+        : meta.counterpartyUserId != null
+          ? `#${meta.counterpartyUserId}`
+          : '';
+  const titleMap: Record<string, string> = {
+    p2p_listing_create: 'Anúncio P2P criado',
+    p2p_listing_cancel: 'Anúncio P2P cancelado',
+    p2p_listing_reserve: 'Reserva P2P',
+    p2p_reserve_cancel: 'Reserva P2P cancelada',
+    p2p_listing_buy: 'Compra P2P',
+    p2p_proceeds_claim: 'Levantamento P2P (vendedor)',
+    p2p_custody_claim: 'Item retirado do cofre P2P',
+    p2p_custody_claim_all: 'Itens retirados do cofre P2P'
+  };
+  const title = titleMap[action] || 'Mercado P2P';
+  let summary = action.replace(/^p2p_/, '').replace(/_/g, ' ');
+  if (action === 'p2p_listing_create' && itemName) {
+    summary = `Listou ${qty ?? 1}× ${itemName}${price != null ? ` · ${fmtUsdc(price)} USDC/un.` : ''}`;
+  } else if (action === 'p2p_listing_buy' && itemName) {
+    summary = `Comprou ${qty ?? 1}× ${itemName}${total != null ? ` · ${fmtUsdc(total)} USDC` : ''}`;
+  } else if (action === 'p2p_listing_cancel' && itemName) {
+    summary = `Cancelou anúncio de ${itemName}`;
+  } else if (action === 'p2p_proceeds_claim') {
+    summary = `Levantou ${fmtUsdc(meta.claimedUsdc)} USDC`;
+  } else if (action === 'p2p_custody_claim_all') {
+    summary = `Retirou ${num(meta.claimed) ?? 0} item(ns) do cofre`;
+  }
+  const lines = [
+    itemName ? `Item: ${itemName}` : '',
+    counterparty ? `Contraparte: ${counterparty}` : '',
+    str(meta.listingId) ? `Anúncio: ${str(meta.listingId).slice(0, 8)}…` : ''
+  ].filter(Boolean);
+  return {
+    category: 'p2p',
+    severity: action === 'p2p_listing_buy' ? 'success' : 'info',
+    title,
+    summary,
+    lines: lines.length > 0 ? lines : undefined,
+    technicalMeta: meta
+  };
 }
 
 function humanizeRackChanged(meta: Record<string, unknown>): string[] {
@@ -171,25 +382,45 @@ function formatRackAuxIntent(meta: Record<string, unknown>): ActivityEventDispla
   }
   const minerEquip = /^rack_miner_equip:[^:]+:(\d+)$/.exec(scope);
   if (minerEquip) {
-    const slot = minerEquip[1];
+    const slot = str(meta.slotIndex) || minerEquip[1];
+    const name = str(meta.itemName) || str(meta.itemId);
     return {
-      category: 'rigs',
+      category: 'inventory',
       severity: ok ? 'success' : 'warning',
-      title: 'GPU / ASIC montado',
-      summary: ok ? `Equipou miner no slot ${slot}` : `Falha ao equipar miner no slot ${slot}`,
-      lines: lines.length ? lines : undefined,
+      title: 'Equipou na rig',
+      summary: ok
+        ? name
+          ? `${name} → slot ${slot}`
+          : `Equipou miner no slot ${slot}`
+        : `Falha ao equipar no slot ${slot}`,
+      lines: [
+        ...(lines.length ? lines : []),
+        meta.stockBefore != null && meta.stockAfter != null
+          ? `Stock: ${fmtQty(meta.stockBefore)} → ${fmtQty(meta.stockAfter)}`
+          : ''
+      ].filter(Boolean),
       technicalMeta: meta
     };
   }
   const minerUnequip = /^rack_miner_unequip:[^:]+:(\d+)$/.exec(scope);
   if (minerUnequip) {
-    const slot = minerUnequip[1];
+    const slot = str(meta.slotIndex) || minerUnequip[1];
+    const name = str(meta.itemName) || str(meta.itemId);
     return {
-      category: 'rigs',
+      category: 'inventory',
       severity: ok ? 'info' : 'warning',
-      title: 'GPU / ASIC desmontado',
-      summary: ok ? `Removeu miner do slot ${slot}` : `Falha ao remover miner do slot ${slot}`,
-      lines: lines.length ? lines : undefined,
+      title: 'Desequipou da rig',
+      summary: ok
+        ? name
+          ? `${name} ← slot ${slot} (devolveu ao stock)`
+          : `Removeu miner do slot ${slot}`
+        : `Falha ao remover do slot ${slot}`,
+      lines: [
+        ...(lines.length ? lines : []),
+        meta.stockBefore != null && meta.stockAfter != null
+          ? `Stock: ${fmtQty(meta.stockBefore)} → ${fmtQty(meta.stockAfter)}`
+          : ''
+      ].filter(Boolean),
       technicalMeta: meta
     };
   }
@@ -261,12 +492,31 @@ function formatRackEvent(action: string, meta: Record<string, unknown>): Activit
   if (action === 'mining_rack_update') {
     const parts = humanizeRackChanged(meta);
     const ctx = rackContextLine(meta);
+    const rackShort = str(meta.rackId).slice(0, 8);
     return {
       category: 'rigs',
       severity: 'info',
       title: 'Rig atualizada',
       summary: parts.length > 0 ? `Alterou: ${parts.join(', ')}` : 'Guardou configuração da rig',
-      lines: ctx ? [ctx] : undefined,
+      lines: [rackShort ? `Rig: ${rackShort}…` : '', ctx || ''].filter(Boolean),
+      technicalMeta: meta
+    };
+  }
+  if (action === 'room_coin_bulk') {
+    const roomId = str(meta.roomId);
+    const coinId = str(meta.coinId);
+    const roomLabel =
+      roomId === 'room_initial'
+        ? 'Sala inicial'
+        : /1775484506874/.test(roomId)
+          ? 'Sala NFT / Streamer'
+          : roomId || 'sala';
+    return {
+      category: 'rigs',
+      severity: 'info',
+      title: 'Moeda da sala alterada',
+      summary: `Mineração definida na ${roomLabel}`,
+      lines: coinId ? [`Moeda: ${coinId.slice(0, 12)}…`] : undefined,
       technicalMeta: meta
     };
   }
@@ -281,10 +531,13 @@ export function formatActivityEvent(action: string, meta: unknown): ActivityEven
     return formatSessionSnapshot(m);
   }
 
+  if (a === 'orphan_risk_detected') {
+    return formatOrphanRiskDetected(m);
+  }
+
   if (a === 'stock_delta' || a === 'stock_save_delta' || a === 'inventory_loss_alert') {
     if (a === 'inventory_loss_alert') {
-      const d = formatStockDelta(m);
-      return { ...d, severity: 'danger', title: 'Alerta: item sumiu do inventário' };
+      return formatStockDelta(m, { lossAlert: true });
     }
     return formatStockDelta(m);
   }
@@ -384,6 +637,13 @@ export function formatActivityEvent(action: string, meta: unknown): ActivityEven
     };
   }
 
+  if (a === 'rack_miner_equip') {
+    return formatRackMinerEquipEvent(m);
+  }
+  if (a === 'rack_miner_unequip') {
+    return formatRackMinerUnequipEvent(m);
+  }
+
   if (/^rack_/.test(a) || /^mining_rack/.test(a) || /^room_battery/.test(a) || /^room_coin_bulk/.test(a)) {
     if (/^room_battery/.test(a)) {
       return {
@@ -399,17 +659,7 @@ export function formatActivityEvent(action: string, meta: unknown): ActivityEven
   }
 
   if (/^p2p_/.test(a)) {
-    return {
-      category: 'p2p',
-      severity: 'info',
-      title: 'Mercado P2P',
-      summary: a.replace(/^p2p_/, '').replace(/_/g, ' '),
-      lines: [
-        m.itemId ? `Item: ${m.itemId}` : '',
-        m.totalUsdc != null ? `Total: ${fmtUsdc(m.totalUsdc)} USDC` : ''
-      ].filter(Boolean),
-      technicalMeta: m
-    };
+    return formatP2pAction(a, m);
   }
 
   if (/^client_/.test(a)) {
@@ -422,11 +672,26 @@ export function formatActivityEvent(action: string, meta: unknown): ActivityEven
     };
   }
 
-  if (/^hardware_buy|^shop_/.test(a)) {
+  if (a === 'hardware_buy') {
+    return formatHardwareBuy(m);
+  }
+  if (a === 'shop_checkout_ok') {
+    return formatShopCheckoutOk(m);
+  }
+  if (a === 'shop_checkout_attempt') {
+    return formatShopCheckoutAttempt(m);
+  }
+  if (a === 'shop_checkout_denied') {
+    return formatShopCheckoutDenied(m);
+  }
+  if (/^shop_cart_/.test(a)) {
+    return formatShopCartEvent(a, m);
+  }
+  if (/^shop_/.test(a)) {
     return {
       category: 'economy',
       severity: 'info',
-      title: 'Compra na loja',
+      title: 'Loja',
       summary: a.replace(/_/g, ' '),
       technicalMeta: m
     };
@@ -438,6 +703,37 @@ export function formatActivityEvent(action: string, meta: unknown): ActivityEven
       severity: 'success',
       title: 'Recompensa / jogo',
       summary: a.replace(/_/g, ' '),
+      technicalMeta: m
+    };
+  }
+
+  if (a === 'support_ticket_player_reply') {
+    return {
+      category: 'other',
+      severity: 'info',
+      title: 'Jogador respondeu no suporte',
+      summary: str(m.ticketId) ? `Ticket ${m.ticketId}` : 'Nova mensagem do jogador',
+      technicalMeta: m
+    };
+  }
+  if (a === 'support_ticket_admin_reply') {
+    return {
+      category: 'other',
+      severity: 'info',
+      title: 'Admin respondeu no suporte',
+      summary: str(m.ticketId) ? `Ticket ${m.ticketId}` : 'Resposta da equipa',
+      technicalMeta: m
+    };
+  }
+  if (a === 'support_attachment_download') {
+    const file = str(m.file);
+    const ticketId = str(m.ticketId);
+    return {
+      category: 'other',
+      severity: 'info',
+      title: 'Anexo de suporte transferido',
+      summary: file ? `Download: ${file}` : 'Transferência de anexo do ticket',
+      lines: ticketId ? [`Ticket ${ticketId.slice(0, 8)}…`] : undefined,
       technicalMeta: m
     };
   }
@@ -466,6 +762,14 @@ export function matchesActivityFilter(
   }
   if (filterId === 'session') return display.category === 'session';
   if (filterId === 'inventory') return display.category === 'inventory';
+  if (filterId === 'inventory_moves') {
+    return (
+      display.category === 'inventory' ||
+      /^rack_miner_(equip|unequip)$/.test(action) ||
+      /^(stock_delta|inventory_loss_alert)$/.test(action) ||
+      /^p2p_listing_(create|cancel|buy)$/.test(action)
+    );
+  }
   if (filterId === 'p2p') return display.category === 'p2p';
   if (filterId === 'auth') return display.category === 'auth';
   if (filterId === 'deposit') return /deposit/i.test(action);

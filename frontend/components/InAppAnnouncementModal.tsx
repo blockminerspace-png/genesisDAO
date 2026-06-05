@@ -1,5 +1,6 @@
 import React from 'react';
 import { ExternalLink, Info, X } from 'lucide-react';
+import { isSafeHttpsLink, normalizeSafeInAppImagePath } from '../utils/inAppAnnouncementSafe';
 import { RemoteBannerImage } from './RemoteBannerImage';
 
 export type InAppAnnouncement = {
@@ -19,8 +20,9 @@ type Props = {
 export const InAppAnnouncementModal: React.FC<Props> = ({ announcement, onDismiss, dismissing }) => {
   if (!announcement) return null;
 
-  const link = announcement.link?.trim() || null;
-  const imageUrl = announcement.imageUrl?.trim() || null;
+  const rawLink = announcement.link?.trim() || null;
+  const link = rawLink && isSafeHttpsLink(rawLink) ? rawLink : null;
+  const imageUrl = normalizeSafeInAppImagePath(announcement.imageUrl);
 
   return (
     <div
