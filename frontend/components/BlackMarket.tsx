@@ -854,10 +854,10 @@ export const BlackMarket: React.FC<BlackMarketProps> = ({
                               await refreshBuyListings();
                             }
                           }}
-                          disabled={!canAffordAny || isOwn || isReservedForOther || !isEnabled}
+                          disabled={!canAffordAny || isReservedForOther || !isEnabled}
                           className={[
                             'mt-2 px-4 py-1.5 rounded-lg text-xs font-bold inline-flex items-center justify-center gap-1 ml-auto transition-colors min-w-[5.5rem]',
-                            (!canAffordAny || isOwn || isReservedForOther || !isEnabled)
+                            (!canAffordAny || isReservedForOther || !isEnabled)
                               ? 'bg-slate-800 text-slate-600 cursor-not-allowed border border-slate-800'
                               : 'bg-red-900/60 text-red-200 border border-red-700/70 hover:bg-red-700'
                           ].join(' ')}
