@@ -99,7 +99,7 @@ function createAdminAdMulter(uploadsDir: string): ReturnType<typeof multer> {
     filename: (_req, file, cb) => {
       const ext = normalizeAdUploadExt(file.originalname, file.mimetype);
       if (!ext) {
-        cb(new Error('Formato de imagem inválido. Usa PNG, JPG ou GIF.'));
+        cb(new Error('Formato de imagem inválido. Usa PNG, JPG ou GIF.'), '');
         return;
       }
       const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
